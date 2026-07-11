@@ -18,6 +18,27 @@ https://mcp.spala.ai/mcp
 - Smoke test: `https://spala.ai/mcp-smoke-test/`
 - NPM installer: `https://www.npmjs.com/package/@spala-ai/mcp-install`
 
+## Tools
+
+### Public discovery tools
+
+- `spala_help`: explains what Spala is, what the public MCP does, and where agents should start.
+- `spala_get_onboarding`: returns first-call onboarding for agents, including public MCP vs project MCP boundaries.
+- `spala_get_tool_map`: returns machine-readable routing, OAuth metadata URLs, and tool availability.
+- `docs_search`: searches public Spala agent-facing docs for setup, OAuth, MCP, security, limits, and platform questions.
+- `template_list`: lists public Spala backend templates so agents can plan backend shape before using a project MCP.
+- `addon_list`: lists public Spala addons and integrations so agents can plan backend workflows.
+
+### Auth-gated project handoff tools
+
+These tools are advertised so agents understand the intended project flow, but they fail closed in this standalone release until a verified platform/project handoff contract exists.
+
+- `project_list`: intended to list projects available to an authenticated Spala platform user.
+- `project_create`: dry-run planning preview only in the current public deployment.
+- `project_select`: intended to select a project and return an explicit project MCP URL.
+- `project_get_mcp_manifest`: intended to return the selected project MCP install manifest.
+- `project_get_public_context`: intended to return safe project handoff context without tokens or private source data.
+
 ## Role
 
 `mcp.spala.ai` should be the public Spala MCP front door:
