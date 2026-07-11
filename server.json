@@ -1,0 +1,54 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.spala/public-mcp",
+  "title": "Spala Public MCP",
+  "description": "Discovery, OAuth metadata, and project MCP handoff guidance for Spala backend projects.",
+  "version": "1.0.0",
+  "websiteUrl": "https://spala.ai/mcp-profile/",
+  "icons": [
+    {
+      "src": "https://spala.ai/brand/icon-square-1024.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "1024x1024"
+      ],
+      "theme": "dark"
+    },
+    {
+      "src": "https://spala.ai/brand/icon-square.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ],
+      "theme": "dark"
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.spala.ai/mcp",
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json, text/event-stream",
+          "isRequired": true,
+          "description": "Required for raw Streamable HTTP JSON-RPC clients."
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "publicProfile": "https://spala.ai/mcp-profile/",
+      "smokeTest": "https://spala.ai/mcp-smoke-test/",
+      "installManifest": "https://mcp.spala.ai/mcp/install-manifest",
+      "oauthProtectedResource": "https://mcp.spala.ai/.well-known/oauth-protected-resource",
+      "oauthAuthorizationServer": "https://mcp.spala.ai/.well-known/oauth-authorization-server",
+      "maintainer": "Spala AI",
+      "contact": "paul@spala.ai",
+      "boundary": "Public MCP is for discovery, OAuth metadata, and project MCP handoff guidance. Backend changes happen on project MCP after Spala platform auth.",
+      "dryRunProjectCreate": "project_create is dry-run only in the current public MCP deployment."
+    }
+  }
+}
+
