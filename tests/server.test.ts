@@ -68,25 +68,31 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-test('CORS uses an exact non-credentialed allowlist and rejects arbitrary origins', async () => {
+test('CORS uses public non-credentialed safe-origin handling', async () => {
   const allowed = await fetch(`${baseUrl}/health`, { headers: { origin: 'https://client.example' } });
   assert.equal(allowed.status, 200);
   assert.equal(allowed.headers.get('x-powered-by'), null);
   assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://client.example');
   assert.equal(allowed.headers.get('access-control-allow-credentials'), null);
 
-  const disallowed = await fetch(`${baseUrl}/health`, { headers: { origin: 'https://evil.example' } });
-  assert.equal(disallowed.status, 403);
-  assert.equal(disallowed.headers.get('access-control-allow-origin'), null);
+  const arbitrarySafe = await fetch(`${baseUrl}/health`, { headers: { origin: 'https://example.com' } });
+  assert.equal(arbitrarySafe.status, 200);
+  assert.equal(arbitrarySafe.headers.get('access-control-allow-origin'), 'https://example.com');
+  assert.equal(arbitrarySafe.headers.get('access-control-allow-credentials'), null);
+
+  const unsafe = await fetch(`${baseUrl}/health`, { headers: { origin: 'http://evil.example' } });
+  assert.equal(unsafe.status, 403);
+  assert.equal(unsafe.headers.get('access-control-allow-origin'), null);
 
   const noOrigin = await fetch(`${baseUrl}/health`);
   assert.equal(noOrigin.headers.get('access-control-allow-origin'), null);
 
   const preflight = await fetch(`${baseUrl}/mcp`, {
     method: 'OPTIONS',
-    headers: { origin: 'https://client.example' },
+    headers: { origin: 'https://example.com' },
   });
   assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://example.com');
   assert.match(preflight.headers.get('access-control-allow-headers') || '', /Mcp-Protocol-Version/);
   assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
 });

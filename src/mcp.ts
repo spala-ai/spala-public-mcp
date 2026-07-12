@@ -69,6 +69,160 @@ const PROJECT_SELECTOR_JSON_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const NO_ARGUMENTS_JSON_SCHEMA = {
+  type: 'object',
+  description: 'No arguments. Call this tool with an empty object.',
+  properties: {},
+  additionalProperties: false,
+} as const;
+
+const SEARCH_JSON_SCHEMA = {
+  type: 'object',
+  description: 'Optional text search and result limit for public Spala documentation.',
+  properties: {
+    query: {
+      type: 'string',
+      description: 'Optional search phrase. Use words such as auth, OAuth, MCP, templates, addons, pricing, limits, frontend handoff, or project handoff.',
+      default: '',
+    },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 20,
+      description: 'Maximum number of ranked documentation results to return.',
+      default: 5,
+    },
+  },
+  additionalProperties: false,
+} as const;
+
+const CATALOG_LIST_JSON_SCHEMA = {
+  type: 'object',
+  description: 'Optional catalog search and result limit for public Spala planning resources.',
+  properties: {
+    query: {
+      type: 'string',
+      description: 'Optional filter phrase for matching public Spala templates or addons by name, tag, or use case.',
+      default: '',
+    },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 50,
+      description: 'Maximum number of catalog entries to return.',
+      default: 20,
+    },
+  },
+  additionalProperties: false,
+} as const;
+
+const PROJECT_CREATE_JSON_SCHEMA = {
+  type: 'object',
+  description: 'Auth-gated dry-run project creation request. In this standalone public MCP deployment it validates shape only and cannot create a real project.',
+  required: ['name'],
+  properties: {
+    name: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 120,
+      description: 'Human-readable project name to validate for a future Spala backend project.',
+    },
+    template: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'Optional public template id or template hint from template_list.',
+    },
+    description: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 2000,
+      description: 'Optional short product/backend description for planning. Do not include secrets or private customer data.',
+    },
+  },
+  additionalProperties: false,
+} as const;
+
+const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
+  spala_help: NO_ARGUMENTS_JSON_SCHEMA,
+  spala_get_onboarding: NO_ARGUMENTS_JSON_SCHEMA,
+  spala_get_tool_map: NO_ARGUMENTS_JSON_SCHEMA,
+  docs_search: SEARCH_JSON_SCHEMA,
+  template_list: CATALOG_LIST_JSON_SCHEMA,
+  addon_list: CATALOG_LIST_JSON_SCHEMA,
+  project_list: NO_ARGUMENTS_JSON_SCHEMA,
+  project_create: PROJECT_CREATE_JSON_SCHEMA,
+  project_select: PROJECT_SELECTOR_JSON_SCHEMA,
+  project_get_mcp_manifest: PROJECT_SELECTOR_JSON_SCHEMA,
+  project_get_public_context: PROJECT_SELECTOR_JSON_SCHEMA,
+};
+
+const READ_ONLY_TOOL_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+const TOOL_DESCRIPTIONS = {
+  spalaHelp: [
+    'Use first when an agent, directory reviewer, or MCP client needs a human-readable overview of Spala.',
+    'Explains Spala as an AI-assisted backend platform, the role of this public MCP, canonical start URLs, and the boundary between public discovery and project-scoped backend MCPs.',
+    'Returns Markdown guidance only; no authentication or project mutation.',
+  ].join(' '),
+  onboarding: [
+    'First structured call for fresh agents connected to mcp.spala.ai.',
+    'Returns JSON with product positioning, public MCP role, project MCP role, OAuth metadata URLs, fail-closed project-tool status, safe workflow order, and canonical links.',
+    'Use before any project lookup or backend build attempt.',
+  ].join(' '),
+  toolMap: [
+    'Return a machine-readable routing map for Spala MCP clients.',
+    'Shows which tools are public, which tools require authentication, OAuth/device-auth endpoints, unavailable project handoff status, forbidden URL-derivation patterns, and required first calls after connecting to a real project MCP.',
+  ].join(' '),
+  docsSearch: [
+    'Search the public Spala agent-facing documentation index by query.',
+    'Use for setup, OAuth/device auth, npm installer, public-vs-project MCP boundary, pricing, limits, security, launch kit, templates, addons, and project handoff questions.',
+    'Returns ranked docs entries with URLs and summaries.',
+  ].join(' '),
+  templateList: [
+    'List public Spala backend templates matching an optional query.',
+    'Use before dashboard or project-MCP work to pick a likely backend shape such as marketplace, dashboard API, reservation system, inventory, or document management.',
+    'Returns template ids, names, descriptions, and tags.',
+  ].join(' '),
+  addonList: [
+    'List public Spala addons and integrations matching an optional query.',
+    'Use before project work to plan workflows such as webhooks, outbound HTTP API calls, transactional email, media uploads, and realtime messaging.',
+    'Returns addon ids, names, descriptions, and tags.',
+  ].join(' '),
+  projectList: [
+    'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
+    'Intended future use: list projects available to an authenticated Spala platform user.',
+    'Current behavior: missing credentials receive an OAuth 401 challenge; supplied bearer credentials receive HTTP 503 because this service has no token verifier or generic platform project-management contract.',
+    'Read-only; does not guess project URLs.',
+  ].join(' '),
+  projectCreate: [
+    'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND DRY-RUN ONLY IN THIS STANDALONE PUBLIC MCP.',
+    'Intended future use: validate a requested project name/template/description and return a project-creation or planning result through an authenticated platform contract.',
+    'Current behavior: no real project is created, no project MCP URL is returned, and supplied bearer credentials receive HTTP 503 until token validation exists.',
+  ].join(' '),
+  projectSelect: [
+    'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
+    'Intended future use: select exactly one authenticated project by projectId or slug and return an exact platform-provided mcpUrl.',
+    'Agents must never infer project MCP URLs from slugs, hosts, or api.spala.ai patterns.',
+    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until token validation exists.',
+  ].join(' '),
+  projectManifest: [
+    'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
+    'Intended future use: select exactly one authenticated project by projectId or slug and return the project MCP install manifest, exact mcpUrl, transport, and auth requirements.',
+    'Current behavior: no manifest or URL is resolved until token validation and a generic platform contract exist.',
+  ].join(' '),
+  projectPublicContext: [
+    'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
+    'Intended future use: select exactly one authenticated project by projectId or slug and return safe handoff context for an agent without exposing tokens, private source code, or unrelated customer data.',
+    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until token validation exists.',
+  ].join(' '),
+} as const;
+
 type ProjectSelector = {
   projectId?: string;
   slug?: string;
@@ -76,7 +230,7 @@ type ProjectSelector = {
 
 type ListToolsHandler = (request: unknown, extra: unknown) => Promise<unknown> | unknown;
 
-function advertiseProjectSelectorXor(server: McpServer): void {
+function advertiseDirectoryQualityMetadata(server: McpServer): void {
   const internals = server as unknown as {
     setToolRequestHandlers?: () => void;
     server: {
@@ -89,10 +243,14 @@ function advertiseProjectSelectorXor(server: McpServer): void {
   if (!original) return;
 
   internals.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
-    const result = await original(request, extra) as { tools?: Array<{ name?: string; inputSchema?: unknown }> };
+    const result = await original(request, extra) as { tools?: Array<{ name?: string; inputSchema?: unknown; annotations?: unknown }> };
     for (const tool of result.tools || []) {
-      if (['project_select', 'project_get_mcp_manifest', 'project_get_public_context'].includes(tool.name || '')) {
-        tool.inputSchema = PROJECT_SELECTOR_JSON_SCHEMA;
+      const schema = tool.name ? TOOL_INPUT_SCHEMAS[tool.name] : undefined;
+      if (schema) {
+        tool.inputSchema = schema;
+      }
+      if (tool.name && ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'].includes(tool.name)) {
+        tool.annotations = READ_ONLY_TOOL_ANNOTATIONS;
       }
     }
     return result;
@@ -239,7 +397,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
     ].join('\n'),
   });
 
-  server.tool('spala_help', 'Explain what Spala is and how agents should start.', {}, async () => text([
+  server.tool('spala_help', TOOL_DESCRIPTIONS.spalaHelp, {}, async () => text([
     '# Spala Public MCP',
     '',
     'Spala is the backend control layer for AI-built apps.',
@@ -256,7 +414,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
     `Docs: ${config.docsUrl}`,
   ].join('\n')));
 
-  server.tool('spala_get_onboarding', 'First call for agents connected to mcp.spala.ai public MCP.', {}, async () => json({
+  server.tool('spala_get_onboarding', TOOL_DESCRIPTIONS.onboarding, {}, async () => json({
     product: 'Spala',
     publicMcpRole: 'Agent discovery, public docs/templates/addons lookup, OAuth metadata, and fail-closed project tool discovery.',
     projectMcpRole: 'Build and operate one Spala backend project.',
@@ -291,7 +449,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
     },
   }));
 
-  server.tool('spala_get_tool_map', 'Return machine-readable public MCP vs project MCP routing.', {}, async () => json({
+  server.tool('spala_get_tool_map', TOOL_DESCRIPTIONS.toolMap, {}, async () => json({
     publicMcp: {
       host: 'mcp.spala.ai',
       tools: {
@@ -338,23 +496,23 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
     },
   }));
 
-  server.tool('docs_search', 'Search Spala agent-facing docs index.', {
+  server.tool('docs_search', TOOL_DESCRIPTIONS.docsSearch, {
     query: z.string().default(''),
     limit: z.number().int().min(1).max(20).default(5),
   }, async ({ query, limit }) => json({ query, results: searchCatalog(docsIndex, query, limit) }));
 
-  server.tool('template_list', 'List Spala backend templates for agent planning.', {
+  server.tool('template_list', TOOL_DESCRIPTIONS.templateList, {
     query: z.string().default(''),
     limit: z.number().int().min(1).max(50).default(20),
   }, async ({ query, limit }) => json({ query, templates: searchCatalog(templateCatalog, query, limit) }));
 
-  server.tool('addon_list', 'List Spala addons/integrations for backend planning.', {
+  server.tool('addon_list', TOOL_DESCRIPTIONS.addonList, {
     query: z.string().default(''),
     limit: z.number().int().min(1).max(50).default(20),
   }, async ({ query, limit }) => json({ query, addons: searchCatalog(addonCatalog, query, limit) }));
 
   server.registerTool('project_list', {
-    description: 'AUTH REQUIRED, CURRENTLY UNAVAILABLE. Read-only. Missing credentials receive an OAuth 401 challenge; bearer credentials receive HTTP 503 until this service has a token verifier contract.',
+    description: TOOL_DESCRIPTIONS.projectList,
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
@@ -369,7 +527,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
   });
 
   server.registerTool('project_create', {
-    description: 'AUTH REQUIRED, CURRENTLY UNAVAILABLE. DRY-RUN ONLY. Effect: no-op. Input is validated, but no preview runs until this service can verify the caller.',
+    description: TOOL_DESCRIPTIONS.projectCreate,
     inputSchema: {
       name: z.string().trim().min(1).max(120),
       template: z.string().trim().min(1).max(128).optional(),
@@ -395,7 +553,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
   });
 
   server.registerTool('project_select', {
-    description: 'AUTH REQUIRED, CURRENTLY UNAVAILABLE. Read-only. Select by exactly one of projectId or slug and return an exact platform-provided mcpUrl.',
+    description: TOOL_DESCRIPTIONS.projectSelect,
     inputSchema: PROJECT_SELECTOR_SCHEMA,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
@@ -428,7 +586,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
   });
 
   server.registerTool('project_get_mcp_manifest', {
-    description: 'AUTH REQUIRED, CURRENTLY UNAVAILABLE. Read-only. Select by exactly one of projectId or slug and return the project MCP install manifest.',
+    description: TOOL_DESCRIPTIONS.projectManifest,
     inputSchema: PROJECT_SELECTOR_SCHEMA,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
@@ -458,7 +616,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
   });
 
   server.registerTool('project_get_public_context', {
-    description: 'AUTH REQUIRED, CURRENTLY UNAVAILABLE. Read-only. Future contract only: select by exactly one of projectId or slug and return safe project handoff context.',
+    description: TOOL_DESCRIPTIONS.projectPublicContext,
     inputSchema: PROJECT_SELECTOR_SCHEMA,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
@@ -484,6 +642,6 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
     }
   });
 
-  advertiseProjectSelectorXor(server);
+  advertiseDirectoryQualityMetadata(server);
   return server;
 }

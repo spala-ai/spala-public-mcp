@@ -25,6 +25,11 @@ test('loadConfig parses strict valid configuration', () => {
   assert.equal(config.dryRunProjectCreate, true);
 });
 
+test('loadConfig accepts hosted Unix socket listen targets', () => {
+  const config = loadConfig({ ...BASE_ENV, PORT: '/home/progra04/.system/nodejs/mcp.sock' });
+  assert.equal(config.port, '/home/progra04/.system/nodejs/mcp.sock');
+});
+
 test('loadConfig rejects malformed and unsafe configuration', () => {
   const invalid: Array<[string, Record<string, string>]> = [
     ['boolean', { DRY_RUN_PROJECT_CREATE: 'yes' }],

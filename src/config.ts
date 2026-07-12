@@ -1,5 +1,5 @@
 export type AppConfig = {
-  port: number;
+  port: number | string;
   publicBaseUrl: string;
   spalaApiBaseUrl: string;
   dashboardUrl: string;
@@ -31,6 +31,26 @@ function integerEnv(
     configError(name, `must be between ${minimum} and ${maximum}`);
   }
   return value;
+}
+
+function listenTargetEnv(
+  env: Environment,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number | string {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  if (/^\d+$/.test(raw)) {
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      configError(name, `must be between ${minimum} and ${maximum}`);
+    }
+    return value;
+  }
+  if (raw.startsWith('/') && raw.length <= 512 && !/[\0\r\n]/.test(raw)) return raw;
+  return configError(name, 'must be an integer TCP port or absolute Unix socket path');
 }
 
 function booleanEnv(env: Environment, name: string, fallback: boolean): boolean {
@@ -107,7 +127,7 @@ export function loadConfig(env: Environment = process.env): AppConfig {
   }
 
   return {
-    port: integerEnv(env, 'PORT', 4100, 1, 65_535),
+    port: listenTargetEnv(env, 'PORT', 4100, 1, 65_535),
     publicBaseUrl: absoluteUrl(env, 'PUBLIC_BASE_URL', 'http://localhost:4100', {
       originOnly: true,
       allowHttpLocalhost: true,
