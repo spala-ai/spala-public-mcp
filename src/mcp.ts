@@ -197,7 +197,7 @@ const TOOL_DESCRIPTIONS = {
   projectList: [
     'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
     'Intended future use: list projects available to an authenticated Spala platform user.',
-    'Current behavior: missing credentials receive an OAuth 401 challenge; supplied bearer credentials receive HTTP 503 because this service has no token verifier or generic platform project-management contract.',
+    'Current behavior: missing credentials receive an OAuth 401 challenge; supplied bearer credentials receive HTTP 503 because project handoff is not enabled in this standalone public MCP release.',
     'Read-only; does not guess project URLs.',
   ].join(' '),
   projectCreate: [
@@ -272,9 +272,9 @@ export function projectToolCapabilities(config: AppConfig) {
       name: 'project_list',
       requiresAuth: true,
       available: false,
-      blocker: 'Token validation and a generic authenticated platform project-management contract are unavailable.',
+      blocker: 'Project handoff is not enabled in this standalone public MCP release.',
       effect: 'read',
-      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 auth_validation_unavailable until this service has a verifier contract.',
+      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 project_handoff_unavailable until project handoff is enabled.',
       purpose: 'List projects available to the authenticated Spala platform user. Use this after OAuth; anonymous public MCP calls cannot list projects.',
     },
     {
@@ -283,9 +283,9 @@ export function projectToolCapabilities(config: AppConfig) {
       dryRunOnly: config.dryRunProjectCreate,
       implemented: true,
       available: false,
-      blocker: 'Token validation is unavailable; the dry-run cannot execute for an unverified caller.',
+      blocker: 'Project handoff is not enabled; the dry-run cannot execute for an unverified caller.',
       effect: config.dryRunProjectCreate ? 'no-op' : 'write',
-      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 auth_validation_unavailable until this service has a verifier contract.',
+      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 project_handoff_unavailable until project handoff is enabled.',
       purpose: config.dryRunProjectCreate
         ? 'Dry-run planning preview only in this deployment. Does not create a real project.'
         : 'Create a real Spala project through the authenticated platform API.',
@@ -294,27 +294,27 @@ export function projectToolCapabilities(config: AppConfig) {
       name: 'project_select',
       requiresAuth: true,
       available: false,
-      blocker: 'No existing generic authenticated platform project-management contract is available.',
+      blocker: 'Project handoff is not enabled in this standalone public MCP release.',
       effect: 'read',
-      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 auth_validation_unavailable until this service has a verifier contract.',
+      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 project_handoff_unavailable until project handoff is enabled.',
       purpose: 'Unavailable in this standalone release. Future compatible contracts may select a project and return an exact project mcpUrl; agents must not infer this URL from a slug, host, or api.spala.ai pattern.',
     },
     {
       name: 'project_get_mcp_manifest',
       requiresAuth: true,
       available: false,
-      blocker: 'No existing generic authenticated platform project-management contract is available.',
+      blocker: 'Project handoff is not enabled in this standalone public MCP release.',
       effect: 'read',
-      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 auth_validation_unavailable until this service has a verifier contract.',
+      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 project_handoff_unavailable until project handoff is enabled.',
       purpose: 'Unavailable in this standalone release. Future compatible contracts may return a selected project MCP install manifest shape with the exact mcpUrl, transport, and install URL.',
     },
     {
       name: 'project_get_public_context',
       requiresAuth: true,
       available: false,
-      blocker: 'No existing generic authenticated platform project-management contract is available.',
+      blocker: 'Project handoff is not enabled in this standalone public MCP release.',
       effect: 'read',
-      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 auth_validation_unavailable until this service has a verifier contract.',
+      authFailureHint: 'Missing bearer: HTTP 401 OAuth challenge. Bearer present: HTTP 503 project_handoff_unavailable until project handoff is enabled.',
       purpose: 'Unavailable in this standalone release. Future compatible contracts may return safe project handoff context without exposing tokens, private source code, or unrelated customer data.',
     },
   ];
@@ -331,9 +331,9 @@ function json(value: unknown, isError = false): ToolResult {
 function requireVerifiedPrincipal(ctx: RequestContext, tool: string): string | ToolResult {
   if (ctx.verifiedPrincipal) return ctx.verifiedPrincipal.subject;
   return json({
-    error: 'auth_validation_unavailable',
+    error: 'project_handoff_unavailable',
     tool,
-    message: 'Project operations are disabled because this standalone service has no token verifier contract. Bearer syntax is never treated as authentication.',
+    message: 'Project operations are disabled because project handoff is not enabled in this standalone public MCP release. Bearer syntax is never treated as authentication.',
   }, true);
 }
 
@@ -345,7 +345,7 @@ function projectAuthMetadata(config: AppConfig): Record<string, unknown> {
       tokenValidation: 'unavailable',
       available: false,
       missingBearerBehavior: 'HTTP 401 with WWW-Authenticate OAuth challenge',
-      bearerPresentBehavior: 'HTTP 503 auth_validation_unavailable before tool processing',
+      bearerPresentBehavior: 'HTTP 503 project_handoff_unavailable before tool processing',
       protectedResourceMetadata: `${config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`,
     },
   };

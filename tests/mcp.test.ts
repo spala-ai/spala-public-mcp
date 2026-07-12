@@ -59,7 +59,7 @@ test('tools/list advertises both project selectors and truthful auth metadata', 
         tokenValidation: 'unavailable',
         available: false,
         missingBearerBehavior: 'HTTP 401 with WWW-Authenticate OAuth challenge',
-        bearerPresentBehavior: 'HTTP 503 auth_validation_unavailable before tool processing',
+        bearerPresentBehavior: 'HTTP 503 project_handoff_unavailable before tool processing',
         protectedResourceMetadata: 'https://mcp.spala.ai/.well-known/oauth-protected-resource/mcp',
       });
     }

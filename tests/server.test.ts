@@ -194,7 +194,7 @@ test('bearer credentials fail closed before project tool processing without toke
     assert.equal(response.status, 503);
     assert.equal(response.headers.get('retry-after'), null);
     const text = JSON.stringify(await responseJson(response));
-    assert.match(text, /auth_validation_unavailable/);
+    assert.match(text, /project_handoff_unavailable/);
     assert.doesNotMatch(text, /retryable/);
     assert.doesNotMatch(text, new RegExp(secret));
     assert.doesNotMatch(text, /project_handoff_contract_unavailable|\/api\/projects/);

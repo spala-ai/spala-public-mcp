@@ -99,7 +99,7 @@ The public resource advertises only the `api` scope. Authenticated requests use:
 Authorization: Bearer <access token issued for this MCP resource>
 ```
 
-Bearer syntax is not authentication. This standalone service currently has no token verifier contract, so project calls without a bearer receive an OAuth `401` challenge and project calls with a bearer fail closed with `503 auth_validation_unavailable` before MCP tool processing. That failure is the permanent boundary of this standalone release, not a retryable verifier outage. Tokens are never forwarded, logged, or returned.
+Bearer syntax is not authentication. In this standalone release, project handoff is not enabled: project calls without a bearer receive an OAuth `401` challenge, and project calls with a bearer fail closed with `503 project_handoff_unavailable` before MCP tool processing. Tokens are never forwarded, logged, or returned.
 
 ## Client install
 
@@ -109,11 +109,11 @@ codex mcp login spala_public_mcp --scopes api
 gemini mcp add --scope user --transport http spala_public_mcp "https://mcp.spala.ai/mcp"
 ```
 
-## Current project-handoff blocker
+## Current project-handoff status
 
-The existing platform MCP OAuth token is audience-bound and verified by the selected project MCP. It is not a documented generic control-plane credential for project listing. The existing platform frontend API client uses its own platform/project authentication contract; that credential is not interchangeable with an opaque public-MCP token.
+The existing platform MCP OAuth token is audience-bound and verified by the selected project MCP. It is not a public project-listing credential. The platform frontend API client uses its own platform/project authentication flow; that credential is not interchangeable with an opaque public-MCP token.
 
-No existing token verifier or generic authenticated project-list/access-URL contract was found. Therefore this standalone service does not forward bearer tokens to guessed `/api/projects` routes and does not embed public MCP code into the platform. Every project tool fails closed with `auth_validation_unavailable` when a bearer is supplied. `project_list`, `project_select`, `project_get_mcp_manifest`, and `project_get_public_context` do not work in this standalone release. `project_create` remains defined as a URL-free dry-run, but cannot execute for an unverified caller.
+This standalone service does not forward bearer tokens to guessed `/api/projects` routes and does not embed public MCP code into the platform. Every project tool fails closed with `project_handoff_unavailable` when a bearer is supplied. `project_list`, `project_select`, `project_get_mcp_manifest`, and `project_get_public_context` do not work in this standalone release. `project_create` remains defined as a URL-free dry-run, but cannot execute until project handoff is enabled.
 
 ## Directory listing metadata
 
