@@ -48,7 +48,7 @@ These tools are advertised so agents understand the intended project flow, but t
 - expose docs/templates/addons discovery;
 - publish canonical Spala platform OAuth discovery with least-privilege `api` scope;
 - expose auth-gated project tool definitions as a fail-closed interface;
-- truthfully report that token validation, project listing, project selection, and project MCP URL handoff are unavailable in this standalone release.
+- truthfully report that project listing, project selection, and project MCP URL handoff are unavailable in this standalone release.
 
 It should not directly mutate project backend resources. Project changes belong in the project MCP.
 

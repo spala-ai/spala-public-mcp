@@ -27,10 +27,10 @@ export type SpalaApiClient = {
 };
 
 export class ProjectHandoffUnavailableError extends Error {
-  readonly code = 'project_handoff_contract_unavailable';
+  readonly code = 'project_handoff_unavailable';
 
   constructor() {
-    super('Authenticated project lookup is unavailable because no generic platform project-management contract is configured.');
+    super('Authenticated project lookup is unavailable because project handoff is not enabled for this public MCP release.');
     this.name = 'ProjectHandoffUnavailableError';
   }
 }

@@ -203,23 +203,23 @@ const TOOL_DESCRIPTIONS = {
   projectCreate: [
     'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND DRY-RUN ONLY IN THIS STANDALONE PUBLIC MCP.',
     'Intended future use: validate a requested project name/template/description and return a project-creation or planning result through an authenticated platform contract.',
-    'Current behavior: no real project is created, no project MCP URL is returned, and supplied bearer credentials receive HTTP 503 until token validation exists.',
+    'Current behavior: no real project is created, no project MCP URL is returned, and supplied bearer credentials receive HTTP 503 until project handoff is enabled.',
   ].join(' '),
   projectSelect: [
     'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
     'Intended future use: select exactly one authenticated project by projectId or slug and return an exact platform-provided mcpUrl.',
     'Agents must never infer project MCP URLs from slugs, hosts, or api.spala.ai patterns.',
-    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until token validation exists.',
+    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until project handoff is enabled.',
   ].join(' '),
   projectManifest: [
     'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
     'Intended future use: select exactly one authenticated project by projectId or slug and return the project MCP install manifest, exact mcpUrl, transport, and auth requirements.',
-    'Current behavior: no manifest or URL is resolved until token validation and a generic platform contract exist.',
+    'Current behavior: no manifest or URL is resolved until project handoff is enabled.',
   ].join(' '),
   projectPublicContext: [
     'AUTH REQUIRED; CURRENTLY FAIL-CLOSED AND UNAVAILABLE IN THIS STANDALONE PUBLIC MCP.',
     'Intended future use: select exactly one authenticated project by projectId or slug and return safe handoff context for an agent without exposing tokens, private source code, or unrelated customer data.',
-    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until token validation exists.',
+    'Current behavior: OAuth challenge without credentials; HTTP 503 with bearer until project handoff is enabled.',
   ].join(' '),
 } as const;
 
@@ -365,9 +365,9 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
 
 function projectContractError(): ToolResult {
   return json({
-    error: 'project_handoff_contract_unavailable',
-    message: 'Project lookup is disabled because the platform does not expose an existing generic authenticated project-management contract for this MCP resource.',
-    action: 'Use the Spala dashboard until a compatible generic platform contract is available.',
+    error: 'project_handoff_unavailable',
+    message: 'Project lookup is disabled because project handoff is not enabled for this public MCP release.',
+    action: 'Use the Spala dashboard until project handoff is enabled.',
   }, true);
 }
 
@@ -422,7 +422,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
       'Call spala_get_tool_map.',
       'Search docs/templates/addons if needed.',
       'Authenticate through the Spala platform/dashboard flow when using project tools.',
-      'Project tools are unavailable in this standalone release because token validation and a generic authenticated project-management contract are unavailable.',
+      'Project tools are unavailable in this standalone release because project handoff is not enabled for the public MCP.',
       'project_create is defined as dry-run only, but it also cannot execute for an unverified caller in this standalone release.',
       'Use the dashboard for project discovery/creation until a compatible platform contract exists.',
       'If a future authenticated platform contract returns a project MCP URL, connect only to that exact URL. Do not infer a URL pattern.',
@@ -445,7 +445,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
       name: 'Example Project',
       mcpUrl: 'https://returned-by-spala.example/mcp',
       transport: 'streamable-http',
-      note: 'Example only. This standalone release cannot validate tokens or return project MCP URLs.',
+      note: 'Example only. This standalone release cannot return project MCP URLs.',
     },
   }));
 
@@ -458,11 +458,11 @@ export function createSpalaPublicMcpServer(config: AppConfig, api: SpalaApiClien
       },
       toolCapabilities: [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)],
       authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-      authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; a supplied bearer returns HTTP 503 because token validation is unavailable in this standalone release.',
+      authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; a supplied bearer returns HTTP 503 project_handoff_unavailable because project handoff is not enabled in this standalone release.',
       projectHandoffStatus: {
         available: false,
-        code: 'project_handoff_contract_unavailable',
-        reason: 'Token validation, project listing, project selection, and project MCP URL handoff are unavailable in this standalone release.',
+        code: 'project_handoff_unavailable',
+      reason: 'Project listing, project selection, and project MCP URL handoff are unavailable in this standalone release.',
       },
       urlResolution: {
         rule: 'Do not hardcode, construct, append, or infer project MCP URL patterns.',
