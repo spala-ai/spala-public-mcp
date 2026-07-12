@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { createSpalaPublicMcpServer, projectToolCapabilities, PUBLIC_TOOL_CAPABILITIES } from './mcp.js';
@@ -15,9 +16,21 @@ app.set('trust proxy', 'loopback');
 const MCP_RATE_LIMIT_WINDOW_MS = 60_000;
 const mcpRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
+function isSafeCorsOrigin(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  const localHttp = url.protocol === 'http:'
+    && ['localhost', '127.0.0.1', '::1'].includes(url.hostname.toLowerCase());
+  return origin === url.origin && (url.protocol === 'https:' || localHttp);
+}
+
 app.use((req, res, next) => {
   const origin = req.get('origin');
-  if (origin && !config.corsAllowedOrigins.includes(origin)) {
+  if (origin && !isSafeCorsOrigin(origin)) {
     res.status(403).json({ error: 'origin_not_allowed' });
     return;
   }
@@ -388,6 +401,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
 - Project lookup, project selection, project handoff, and token validation are unavailable in this standalone release and fail closed until an existing generic authenticated platform contract is available.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
+- Do not hardcode project MCP URLs.
 - Do not hardcode, construct, append, or infer project MCP URLs. This standalone release does not return project MCP URLs.
 - Canonical agent start URL: ${AGENT_START_URL}
 - Public MCP docs: ${config.docsUrl}
@@ -992,6 +1006,16 @@ app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
 export { app, config };
 
 export function startServer() {
+  if (typeof config.port === 'string') {
+    if (existsSync(config.port) && statSync(config.port).isSocket()) {
+      unlinkSync(config.port);
+    }
+    return app.listen(config.port, () => {
+      console.log(`mcp-spala-ai listening on ${config.port}`);
+      console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
+    });
+  }
+
   return app.listen(config.port, '127.0.0.1', () => {
     console.log(`mcp-spala-ai listening on http://127.0.0.1:${config.port}`);
     console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
