@@ -26,8 +26,8 @@ test('loadConfig parses strict valid configuration', () => {
 });
 
 test('loadConfig accepts hosted Unix socket listen targets', () => {
-  const config = loadConfig({ ...BASE_ENV, PORT: '/home/progra04/.system/nodejs/mcp.sock' });
-  assert.equal(config.port, '/home/progra04/.system/nodejs/mcp.sock');
+  const config = loadConfig({ ...BASE_ENV, PORT: '/tmp/spala-public-mcp.sock' });
+  assert.equal(config.port, '/tmp/spala-public-mcp.sock');
 });
 
 test('loadConfig rejects malformed and unsafe configuration', () => {
