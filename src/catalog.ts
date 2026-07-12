@@ -9,22 +9,22 @@ export const docsIndex = [
   {
     id: 'public-mcp',
     title: 'Public MCP handoff',
-    url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Install https://mcp.spala.ai/mcp as the public Spala MCP for discovery, docs, OAuth metadata, and the fail-closed project tool interface. In this standalone release, token validation, project lookup, project selection, and project MCP handoff are unavailable.',
+    url: 'https://spala.ai/mcp-profile/',
+    summary: 'Install https://mcp.spala.ai/mcp as the public Spala MCP for discovery, docs, OAuth metadata, and the fail-closed project tool interface. In this standalone release, project lookup, project selection, and project MCP handoff are unavailable.',
     keywords: ['public mcp', 'spala public mcp', 'project mcp', 'handoff', 'setup', 'install', 'mcp install', 'codex', 'claude', 'cursor', 'gemini', 'route', 'project selection', 'oauth', 'token', 'auth'],
   },
   {
     id: 'agent-setup-auth-handoff',
     title: 'Agent setup, auth, OAuth token, and project MCP handoff',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'For Codex, Claude, Cursor, Gemini, and other MCP clients, add https://mcp.spala.ai/mcp. Call spala_get_onboarding and spala_get_tool_map first. Project tools publish OAuth metadata, but token validation is unavailable in this standalone release; project_list, project_select, and project MCP URL handoff fail closed.',
+    summary: 'For Codex, Claude, Cursor, Gemini, and other MCP clients, add https://mcp.spala.ai/mcp. Call spala_get_onboarding and spala_get_tool_map first. Project tools publish OAuth metadata, but project handoff is not enabled in this standalone release; project_list, project_select, and project MCP URL handoff fail closed.',
     keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'project_select', 'project_list', 'mcp_get_onboarding', 'mcp_get_tool_map'],
   },
   {
     id: 'auth-oauth-platform',
     title: 'Spala platform auth for public MCP',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Project tools publish Spala platform OAuth metadata with api scope. Protected-resource metadata is published by mcp.spala.ai and points to the canonical authorization server issuer at api.spala.ai/mcp, but token validation is unavailable in this standalone release, so bearer credentials fail closed before project operations.',
+    summary: 'Project tools publish Spala platform OAuth metadata with api scope. Protected-resource metadata is published by mcp.spala.ai and points to the canonical authorization server issuer at api.spala.ai/mcp, but project handoff is not enabled in this standalone release, so bearer credentials fail closed before project operations.',
     keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'bearer', 'google oauth', 'dashboard', 'platform auth', 'authorization server', 'protected resource', 'device auth', 'device authorization', 'www-authenticate', '401'],
   },
   {
@@ -38,7 +38,7 @@ export const docsIndex = [
     id: 'project-mcp-resolution',
     title: 'Project MCP URL resolution',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Agents must not hardcode or construct project MCP URLs. This standalone release cannot validate tokens, list/select projects, or return project MCP URLs. Future handoff should accept only an explicit validated HTTPS mcpUrl from a documented platform contract and never append /mcp to access URLs.',
+    summary: 'Agents must not hardcode or construct project MCP URLs. This standalone release cannot list/select projects or return project MCP URLs. Future handoff should accept only an explicit validated HTTPS mcpUrl from a documented platform handoff and never append /mcp to access URLs.',
     keywords: ['project mcp', 'access-url', 'access url', 'project handoff', 'mcp url', 'runtime', 'shared runtime', 'slug', 'project slug'],
   },
   {
@@ -79,7 +79,7 @@ export const docsIndex = [
   {
     id: 'mcp-profile',
     title: 'Spala Public MCP profile',
-    url: 'https://docs.spala.ai/agents/mcp',
+    url: 'https://spala.ai/mcp-profile/',
     summary: 'Canonical public MCP documentation for endpoint, transport, auth model, tool groups, install examples, standalone fail-closed boundary, and future project MCP URL rules.',
     keywords: ['mcp profile', 'registry', 'install', 'transport', 'streamable http', 'tools', 'handoff example', 'mcpUrl', 'docs'],
   },
@@ -107,8 +107,8 @@ export const docsIndex = [
   {
     id: 'mcp-smoke-test',
     title: 'Spala Public MCP smoke-test walkthrough',
-    url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Public MCP behavior guidance for reviewers and registries covering GET /mcp guidance, tools/list, docs_search, auth challenge, invalid JSON, unavailable token validation, and fail-closed project tools.',
+    url: 'https://spala.ai/mcp-smoke-test/',
+    summary: 'Public MCP behavior guidance for reviewers and registries covering GET /mcp guidance, tools/list, docs_search, auth challenge, invalid JSON, unavailable project handoff, and fail-closed project tools.',
     keywords: ['mcp smoke test', 'registry', 'tools/list', 'docs_search', '401', 'oauth', 'www-authenticate', 'accept header', 'mcpUrl'],
   },
   {

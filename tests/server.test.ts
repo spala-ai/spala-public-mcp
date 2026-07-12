@@ -197,7 +197,7 @@ test('bearer credentials fail closed before project tool processing without toke
     assert.match(text, /project_handoff_unavailable/);
     assert.doesNotMatch(text, /retryable/);
     assert.doesNotMatch(text, new RegExp(secret));
-    assert.doesNotMatch(text, /project_handoff_contract_unavailable|\/api\/projects/);
+    assert.doesNotMatch(text, /\/api\/projects/);
   }
 });
 

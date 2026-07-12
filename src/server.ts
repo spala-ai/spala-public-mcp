@@ -95,6 +95,7 @@ const PROJECT_HANDOFF_STATUS = {
   authValidation: 'unavailable',
   reason: 'Project handoff is not enabled in this standalone public MCP release.',
 };
+const PROJECT_AUTH_FAILURE_HINT = 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 project_handoff_unavailable because project handoff is not enabled in this standalone release.';
 
 function allToolCapabilities() {
   return [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)];
@@ -154,7 +155,7 @@ function authChallengeData() {
     agentStartUrl: AGENT_START_URL,
     expectedAuthorization: 'Authorization: Bearer <access token issued for this MCP resource>',
     scope: 'api',
-    projectHandoffStatus: 'blocked_pending_generic_platform_contract',
+    projectHandoffStatus: 'project_handoff_unavailable',
   };
 }
 
@@ -187,10 +188,10 @@ function projectMcpTestTemplate() {
   return {
     schemaVersion: 1,
     name: 'Spala Project MCP Handoff Test Template',
-    status: 'blocked_pending_generic_platform_contract',
+    status: 'project_handoff_unavailable',
     boundary: 'This is a public-safe test template, not proof of a completed OAuth handoff. It contains no tokens, private project IDs, private project URLs, customer data, source code, internal IPs, or private architecture.',
     canonicalPublicMcp: publicMcpUrl(),
-    agentRule: 'This standalone release cannot validate tokens or return project MCP URLs. Do not infer, append, or hardcode project MCP URLs.',
+    agentRule: 'This standalone release cannot return project MCP URLs. Do not infer, append, or hardcode project MCP URLs.',
     auth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
       authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
@@ -399,7 +400,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 ## Boundary
 
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
-- Project lookup, project selection, project handoff, and token validation are unavailable in this standalone release and fail closed until project handoff is enabled for the public MCP.
+- Project lookup, project selection, and project handoff are unavailable in this standalone release and fail closed until project handoff is enabled for the public MCP.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
 - Do not hardcode, construct, append, or infer project MCP URLs. This standalone release does not return project MCP URLs.
@@ -440,7 +441,7 @@ Agent start: ${AGENT_START_URL}
 Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
-Standalone-release boundary: token validation, project listing, project selection, and project MCP URL handoff are unavailable and fail closed.
+Standalone-release boundary: project listing, project selection, and project MCP URL handoff are unavailable and fail closed.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
@@ -704,7 +705,7 @@ app.get('/', (_req, res) => {
     authenticatedTools: AUTHENTICATED_TOOLS,
     toolCapabilities: allToolCapabilities(),
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-    authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 because token validation is unavailable in this standalone release.',
+    authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
@@ -744,7 +745,7 @@ app.get('/.well-known/agent.json', (_req, res) => {
       authorizationServer: platformAuthServerUrl(),
     },
     boundaries: {
-      publicMcp: 'Discovery, docs, auth metadata, and a fail-closed project tool interface. Token validation, project lookup, project selection, and handoff are unavailable in this standalone release.',
+      publicMcp: 'Discovery, docs, auth metadata, and a fail-closed project tool interface. Project lookup, project selection, and handoff are unavailable in this standalone release.',
       projectMcp: 'Backend build, validation, publishing, and operation for one project.',
       projectMcpResolution: 'Unavailable in this standalone release. A future compatible contract must return an exact mcpUrl; do not derive a URL from project names, slugs, hosts, or api.spala.ai patterns.',
     },
@@ -752,7 +753,7 @@ app.get('/.well-known/agent.json', (_req, res) => {
     authenticatedTools: AUTHENTICATED_TOOLS,
     toolCapabilities: allToolCapabilities(),
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-    authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 because token validation is unavailable in this standalone release.',
+    authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),
     links: discoveryLinks(),
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
@@ -786,7 +787,7 @@ app.get('/.well-known/mcp.json', (_req, res) => {
     },
     toolCapabilities: allToolCapabilities(),
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-    authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 because token validation is unavailable in this standalone release.',
+    authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),
     links: discoveryLinks(),
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
@@ -874,7 +875,7 @@ app.get('/mcp/install-manifest', (_req, res) => {
     authenticatedTools: AUTHENTICATED_TOOLS,
     toolCapabilities: allToolCapabilities(),
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-    authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 because project handoff is not enabled in this standalone release.',
+    authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     authenticatedToolNotes: {
       project_list: 'Blocked until project handoff is enabled for the public MCP.',
       project_select: 'Blocked until project handoff is enabled for the public MCP.',
@@ -911,11 +912,11 @@ app.get('/.well-known/project-mcp-test.md', (_req, res) => {
 });
 
 app.get('/mcp', (_req, res) => {
-  res.status(405).json({
-    error: 'Method not allowed. Use POST for MCP JSON-RPC requests.',
+  res.json({
     name: 'Spala Public MCP',
     purpose: 'Discovery, OAuth metadata, and a fail-closed project tool interface for Spala.',
     mcpUrl: publicMcpUrl(),
+    usage: 'Use POST with MCP JSON-RPC for protocol requests. This GET response is a human and crawler-friendly endpoint description.',
     maintainer: MAINTAINER,
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     links: discoveryLinks(),
@@ -928,7 +929,7 @@ app.get('/mcp', (_req, res) => {
     authenticatedTools: AUTHENTICATED_TOOLS,
     toolCapabilities: allToolCapabilities(),
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-    authFailureHint: 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 because token validation is unavailable in this standalone release.',
+    authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
   });
