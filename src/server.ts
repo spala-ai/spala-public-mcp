@@ -498,7 +498,7 @@ Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
-Call account_status first. project_connect enables project MCP through the control plane and returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
+Call account_status first. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
@@ -1067,7 +1067,7 @@ app.get('/mcp/install-manifest', (_req, res) => {
     authenticatedToolNotes: {
       account_status: 'First authenticated call. Verifies the active account session and returns available organizations.',
       project_list: 'Lists projects available to the signed-in account.',
-      project_connect: 'Idempotently enables project MCP through the control plane and returns workspace-only project bind argv with immediate one-time bootstrap consumption and local credential proxy setup.',
+      project_connect: 'Idempotently reuses the dashboard project-entry handoff, enables MCP directly on the exact project backend, and returns workspace-only project bind argv with one-time bootstrap consumption.',
       project_select: 'Compatibility alias for project_connect with the same honest write semantics.',
       project_get_mcp_manifest: 'Prepares project MCP and returns exact handoff URLs plus workspace-only project bind argv with one-time bootstrap.',
       project_get_public_context: 'Read-only project and handoff status without a client argument or executable installer argv.',

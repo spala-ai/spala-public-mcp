@@ -242,15 +242,6 @@ export function parseProjectHandoff(raw: unknown): ProjectMcpHandoff | undefined
   return { projectId, projectName, status, projectUrl, mcpEnabled, mcpUrl, manifestUrl };
 }
 
-function parsePreparedProjectMcpHandoff(raw: unknown): PreparedProjectMcpHandoff | undefined {
-  const handoff = parseProjectHandoff(raw);
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const record = raw as Record<string, unknown>;
-  const rawUrl = record['bootstrapConsumeUrl'];
-  if (!handoff || typeof rawUrl !== 'string' || !rawUrl || rawUrl !== rawUrl.trim() || rawUrl.length > 4_096) return undefined;
-  return { ...handoff, bootstrapConsumeUrl: rawUrl };
-}
-
 function parseOrganization(raw: unknown): SpalaOrganization | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
@@ -398,6 +389,74 @@ function validBearerToken(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 8_192 && !/\s/.test(value);
 }
 
+type ProjectAccess = {
+  projectUrl: string;
+  token: string;
+};
+
+function parseProjectBaseUrl(value: unknown): string | undefined {
+  const parsed = parsePublicHttpsUrl(value);
+  if (!parsed) return undefined;
+  const url = new URL(parsed);
+  if (url.search || url.hash) return undefined;
+  return url.toString().replace(/\/$/, '');
+}
+
+function decodeBase64Url(value: string): string | undefined {
+  if (!value || value.length > 4_096 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return undefined;
+  try {
+    const decoded = Buffer.from(value, 'base64').toString('utf8');
+    const canonicalInput = value.replace(/=+$/, '');
+    const canonicalOutput = Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '');
+    return canonicalInput === canonicalOutput ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseProjectAccess(raw: unknown, expectedSubdomain: string): ProjectAccess | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const accessUrlValue = stringField(raw as Record<string, unknown>, 'url', 16_384);
+  if (!accessUrlValue) return undefined;
+
+  let accessUrl: URL;
+  try {
+    accessUrl = new URL(accessUrlValue);
+  } catch {
+    return undefined;
+  }
+  if (
+    accessUrl.origin !== 'https://app.spala.ai'
+    || accessUrl.pathname !== '/'
+    || accessUrl.hash
+    || accessUrl.username
+    || accessUrl.password
+  ) return undefined;
+  const entries = [...accessUrl.searchParams.entries()];
+  if (entries.length !== 2 || new Set(entries.map(([key]) => key)).size !== 2) return undefined;
+  if (!accessUrl.searchParams.has('url') || !accessUrl.searchParams.has('auth_token')) return undefined;
+
+  const encodedProjectUrl = accessUrl.searchParams.get('url');
+  const token = accessUrl.searchParams.get('auth_token');
+  if (!encodedProjectUrl || !validBearerToken(token)) return undefined;
+  const decodedProjectUrl = decodeBase64Url(encodedProjectUrl);
+  const projectUrl = parseProjectBaseUrl(decodedProjectUrl);
+  const expectedProjectUrl = parseProjectBaseUrl(`https://${expectedSubdomain}`);
+  if (!projectUrl || !expectedProjectUrl || projectUrl !== expectedProjectUrl) return undefined;
+  return { projectUrl, token };
+}
+
+function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): string | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const consumeUrlValue = stringField(raw as Record<string, unknown>, 'consumeUrl', 4_096);
+  const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
+  if (!consumeUrl) return undefined;
+  const parsed = new URL(consumeUrl);
+  const expectedPrefix = `${projectUrl}/mcp/agent-instructions/`;
+  if (!consumeUrl.startsWith(expectedPrefix) || !parsed.pathname.endsWith('/consume')) return undefined;
+  return consumeUrl;
+}
+
 export function createSpalaApiClient(
   config: AppConfig,
   controlPlaneAccessToken: string,
@@ -460,6 +519,64 @@ export function createSpalaApiClient(
       throw new SpalaApiError({
         category: 'upstream_unavailable',
         message: 'The Spala control plane is temporarily unavailable.',
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const requestProjectJson = async (
+    projectUrl: string,
+    projectAccessToken: string,
+    method: 'POST',
+    pathname: '/project/config' | '/mcp/agent-instructions',
+    body?: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const url = new URL(`${projectUrl}${pathname}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: {
+          authorization: `Bearer ${projectAccessToken}`,
+          ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+        redirect: 'error',
+        cache: 'no-store',
+      });
+      const bodyText = await readBoundedResponseBody(response, config.spalaApiResponseLimitBytes);
+      let payload: unknown;
+      try {
+        payload = bodyText ? JSON.parse(bodyText) : null;
+      } catch {
+        if (response.ok) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            status: response.status,
+            message: 'The project backend returned an invalid response.',
+          });
+        }
+      }
+      if (!response.ok) {
+        const parsed = safeErrorPayload(payload, projectAccessToken);
+        const category = errorCategory(response.status, parsed.code, parsed.message);
+        throw new SpalaApiError({
+          category,
+          status: response.status,
+          code: parsed.code,
+          message: parsed.message || defaultErrorMessage(category),
+          checkoutUrl: parsed.checkoutUrl,
+        });
+      }
+      return payload;
+    } catch (error) {
+      if (error instanceof SpalaApiError) throw error;
+      throw new SpalaApiError({
+        category: 'upstream_unavailable',
+        message: 'The project backend is temporarily unavailable.',
       });
     } finally {
       clearTimeout(timeout);
@@ -582,20 +699,68 @@ export function createSpalaApiClient(
 
     async prepareProjectMcp(projectIdValue, client) {
       const id = normalizeProjectId(projectIdValue);
-      const payload = await requestJson('POST', `/api/projects/${encodeURIComponent(id)}/mcp/prepare`, {
-        body: { client },
-      });
-      const prepared = parsePreparedProjectMcpHandoff(payload);
-      const leaksControlPlaneCredential = prepared && Object.values(prepared).some(value =>
-        typeof value === 'string' && value.includes(controlPlaneAccessToken)
-      );
-      if (!prepared || prepared.projectId !== id || leaksControlPlaneCredential) {
+      const projectPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}`);
+      const project = parseCreatedProject(projectPayload);
+      if (!project || project.id !== id) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
-          message: 'The Spala control plane returned invalid project MCP bootstrap material.',
+          message: 'The Spala control plane returned an invalid project record.',
         });
       }
-      return prepared;
+
+      const accessPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/access-url`);
+      const access = parseProjectAccess(accessPayload, project.subdomain);
+      if (!access || access.token.includes(controlPlaneAccessToken)) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned an invalid project access handoff.',
+        });
+      }
+
+      await requestProjectJson(access.projectUrl, access.token, 'POST', '/project/config', {
+        securityConfig: { mcpEnabled: true },
+      });
+
+      const instructionSession = await requestProjectJson(
+        access.projectUrl,
+        access.token,
+        'POST',
+        '/mcp/agent-instructions',
+        {
+          scope: 'builder,project,data',
+          clientName: `Spala ${client} agent`,
+          deliveryMode: 'one-time',
+        },
+      );
+      const bootstrapConsumeUrl = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
+      const mcpUrl = parseProjectMcpUrl(`${access.projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
+      const manifestUrl = parsePublicHttpsUrl(
+        `${access.projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata`,
+        { allowProjectScope: true, requireCanonical: true },
+      );
+      if (
+        !bootstrapConsumeUrl
+        || bootstrapConsumeUrl.includes(access.token)
+        || bootstrapConsumeUrl.includes(controlPlaneAccessToken)
+        || !mcpUrl
+        || !manifestUrl
+      ) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The project backend returned invalid MCP bootstrap material.',
+        });
+      }
+
+      return {
+        projectId: project.id,
+        projectName: project.name,
+        status: project.status,
+        projectUrl: access.projectUrl,
+        mcpEnabled: true,
+        mcpUrl,
+        manifestUrl,
+        bootstrapConsumeUrl,
+      };
     },
   };
 }
