@@ -165,7 +165,7 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
       const encodedUrl = Buffer.from('https://one.example').toString('base64');
       return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
     }
-    if (url.origin === 'https://one.example' && url.pathname === '/project/config' && init.method === 'POST') {
+    if (url.origin === 'https://one.example' && url.pathname === '/api/__internal/project/config' && init.method === 'POST') {
       return jsonResponse({ success: true });
     }
     if (url.origin === 'https://one.example' && url.pathname === '/mcp/agent-instructions' && init.method === 'POST') {
@@ -235,9 +235,10 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
     assert.doesNotMatch(String(call.init.body || ''), /opaque-valid-token/);
   }
   assert.deepEqual(projectCalls.map(call => `${call.init.method} ${call.url.pathname}`), [
-    'POST /project/config',
+    'POST /api/__internal/project/config',
     'POST /mcp/agent-instructions',
   ]);
+  assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), true);
   assert.equal(projectCalls[0]?.init.body, JSON.stringify({
     securityConfig: { mcpEnabled: true },
   }));
@@ -334,7 +335,7 @@ test('project backend failures receive stage-specific fallback codes without exp
   const projectToken = 'temporary-stage-secret';
 
   for (const [stage, expectedCode] of [
-    ['/project/config', 'project_mcp_enable_failed'],
+    ['/api/__internal/project/config', 'project_mcp_enable_failed'],
     ['/mcp/agent-instructions', 'project_agent_instruction_failed'],
   ] as const) {
     const projectCalls: string[] = [];
@@ -349,7 +350,7 @@ test('project backend failures receive stage-specific fallback codes without exp
       if (url.origin === 'https://project.example') {
         projectCalls.push(url.pathname);
         if (url.pathname === stage) throw new Error(`backend network failure ${controlToken} ${projectToken}`);
-        if (url.pathname === '/project/config') return jsonResponse({ success: true });
+        if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
         if (url.pathname === '/mcp/agent-instructions') {
           return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
         }
@@ -364,9 +365,9 @@ test('project backend failures receive stage-specific fallback codes without exp
       assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
       return true;
     });
-    assert.deepEqual(projectCalls, stage === '/project/config'
-      ? ['/project/config']
-      : ['/project/config', '/mcp/agent-instructions']);
+    assert.deepEqual(projectCalls, stage === '/api/__internal/project/config'
+      ? ['/api/__internal/project/config']
+      : ['/api/__internal/project/config', '/mcp/agent-instructions']);
   }
 });
 
@@ -379,7 +380,7 @@ test('agent instructions 404 preserves not-found category and status with a stab
       const encodedUrl = Buffer.from('https://project.example').toString('base64');
       return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
     }
-    if (url.origin === 'https://project.example' && url.pathname === '/project/config') {
+    if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/project/config') {
       projectCalls.push(url.pathname);
       return jsonResponse({ success: true });
     }
@@ -398,7 +399,7 @@ test('agent instructions 404 preserves not-found category and status with a stab
     assert.doesNotMatch(error.message, new RegExp(projectToken));
     return true;
   });
-  assert.deepEqual(projectCalls, ['/project/config', '/mcp/agent-instructions']);
+  assert.deepEqual(projectCalls, ['/api/__internal/project/config', '/mcp/agent-instructions']);
 });
 
 test('project access handoff accepts top-level and nested URL aliases', async () => {
@@ -419,7 +420,7 @@ test('project access handoff accepts top-level and nested URL aliases', async ()
       if (url.pathname === '/api/projects/project-1/access-url') return jsonResponse(accessPayload);
       if (url.origin === 'https://project.example') {
         projectCalls.push(url);
-        if (url.pathname === '/project/config') return jsonResponse({ success: true });
+        if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
         if (url.pathname === '/mcp/agent-instructions') {
           return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
         }
@@ -429,7 +430,7 @@ test('project access handoff accepts top-level and nested URL aliases', async ()
 
     const prepared = await api.prepareProjectMcp('project-1', 'codex');
     assert.equal(prepared.projectId, 'project-1');
-    assert.deepEqual(projectCalls.map(url => url.pathname), ['/project/config', '/mcp/agent-instructions']);
+    assert.deepEqual(projectCalls.map(url => url.pathname), ['/api/__internal/project/config', '/mcp/agent-instructions']);
   }
 });
 
@@ -469,7 +470,7 @@ test('project access handoff rejects conflicting URL aliases', async () => {
   }
 });
 
-test('project config failure stops before agent instructions and redacts the temporary token', async () => {
+test('project admin config failure stops before agent instructions and redacts the temporary token', async () => {
   const projectToken = 'temporary-project-error-secret';
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
@@ -481,7 +482,7 @@ test('project config failure stops before agent instructions and redacts the tem
       const encodedUrl = Buffer.from('https://project.example').toString('base64');
       return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
     }
-    if (url.origin === 'https://project.example' && url.pathname === '/project/config') {
+    if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/project/config') {
       return jsonResponse({ error: { code: 'forbidden', message: `project rejected ${projectToken}` } }, 403);
     }
     return jsonResponse({ error: 'agent instructions must not be requested' }, 500);
@@ -496,7 +497,7 @@ test('project config failure stops before agent instructions and redacts the tem
     return true;
   });
   assert.deepEqual(calls.filter(call => call.url.origin === 'https://project.example')
-    .map(call => `${call.init.method} ${call.url.pathname}`), ['POST /project/config']);
+    .map(call => `${call.init.method} ${call.url.pathname}`), ['POST /api/__internal/project/config']);
 });
 
 test('project preparation treats bootstrap consumption URLs as opaque and rejects missing or bearer-leaking values', async () => {
@@ -518,7 +519,7 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
         const encodedUrl = Buffer.from('https://project.example').toString('base64');
         return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=project-entry-token` });
       }
-      if (url.pathname === '/project/config' && init.method === 'POST') return jsonResponse({ success: true });
+      if (url.pathname === '/api/__internal/project/config' && init.method === 'POST') return jsonResponse({ success: true });
       if (url.pathname === '/mcp/agent-instructions') return jsonResponse({ consumeUrl: bootstrapConsumeUrl }, 201);
       return jsonResponse({ error: 'not_found' }, 404);
     }));

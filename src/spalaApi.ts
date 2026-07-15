@@ -578,7 +578,7 @@ export function createSpalaApiClient(
     projectUrl: string,
     projectAccessToken: string,
     method: 'POST',
-    pathname: '/project/config' | '/mcp/agent-instructions',
+    pathname: '/api/__internal/project/config' | '/mcp/agent-instructions',
     body?: Record<string, unknown>,
   ): Promise<unknown> => {
     const url = new URL(`${projectUrl}${pathname}`);
@@ -828,7 +828,7 @@ export function createSpalaApiClient(
       }
 
       try {
-        await requestProjectJson(access.projectUrl, access.token, 'POST', '/project/config', {
+        await requestProjectJson(access.projectUrl, access.token, 'POST', '/api/__internal/project/config', {
           securityConfig: { mcpEnabled: true },
         });
       } catch (error) {
