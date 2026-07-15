@@ -1080,11 +1080,13 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
     commands: {
-      installerNpm: {
+      installerNpm: 'npx @spala-ai/mcp-install init --client <client> --yes --json',
+      installerPnpm: 'pnpm dlx @spala-ai/mcp-install init --client <client> --yes --json',
+      installerNpmArgv: {
         init: ['npx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
         status: ['npx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
       },
-      installerPnpm: {
+      installerPnpmArgv: {
         init: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
         status: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
       },
