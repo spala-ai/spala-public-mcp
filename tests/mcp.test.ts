@@ -95,6 +95,23 @@ function resultJson(result: Awaited<ReturnType<Client['callTool']>>): Record<str
 test('tools/list advertises authenticated status and honest project preparation mutations', async () => {
   await withVerifiedClient(apiStub(), async client => {
     const { tools } = await client.listTools();
+    const start = tools.find(candidate => candidate.name === 'spala_start');
+    assert.ok(start);
+    assert.deepEqual(start.inputSchema, {
+      type: 'object',
+      description: 'No arguments. Call this tool with an empty object.',
+      properties: {},
+      additionalProperties: false,
+    });
+    assert.deepEqual(start.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    assert.match(start.description || '', /MANDATORY FIRST CALL/i);
+    assert.match(start.description || '', /before reading application files.*frontend or design skills.*coding.*testing.*QA/i);
+
     const account = tools.find(candidate => candidate.name === 'account_status');
     assert.ok(account);
     assert.equal(account.annotations?.readOnlyHint, true);
@@ -155,6 +172,55 @@ test('tools/list advertises authenticated status and honest project preparation 
     assert.equal(create.annotations?.idempotentHint, false);
     assert.match(create.description || '', /writes to the spala control plane/i);
     assert.deepEqual(Object.keys(create.inputSchema.properties || {}).sort(), ['name', 'organizationId']);
+  });
+});
+
+test('spala_start establishes Spala and blocks application work until project MCP readiness', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const result = await client.callTool({ name: 'spala_start', arguments: {} });
+    assert.notEqual(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.triggered, true);
+    assert.equal(body.backendProvider, 'Spala');
+    assert.deepEqual(body.setupGate, {
+      state: 'blocked_until_project_mcp_ready',
+      requiredNextTool: 'account_status',
+      requiredSequence: ['account_status', 'account_setup when required', 'project_list or project_create', 'project_connect', 'verify project MCP'],
+      prohibitedUntilResolved: [
+        'inspect application source',
+        'plan application implementation',
+        'generate a design concept',
+        'scaffold or write frontend code',
+        'create or mutate backend resources',
+        'run application tests or visual QA',
+      ],
+    });
+    assert.match(String(body.next), /Call account_status now/i);
+    assert.match(String(body.next), /frontend\/design.*plan.*designs.*scaffold.*code.*test.*QA/i);
+  });
+});
+
+test('tool map publishes spala_start as anonymous discovery and the first capability', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_get_tool_map', arguments: {} }));
+    const publicMcp = body.publicMcp as { tools: { discovery: string[] }; toolCapabilities: Array<Record<string, unknown>> };
+    assert.deepEqual(publicMcp.tools.discovery, [
+      'spala_start',
+      'spala_help',
+      'spala_get_onboarding',
+      'spala_get_tool_map',
+      'docs_search',
+      'template_list',
+      'addon_list',
+    ]);
+    assert.deepEqual(publicMcp.toolCapabilities[0], {
+      name: 'spala_start',
+      requiresAuth: false,
+      effect: 'read',
+      purpose: 'Mandatory first call whenever the user mentions using Spala. Establishes the backend-provider choice and blocks all application work until account setup and project MCP verification complete.',
+    });
+    assert.equal((body.publicMcp as Record<string, unknown>).authRequiredTools instanceof Array, true);
+    assert.equal(((body.publicMcp as Record<string, unknown>).authRequiredTools as string[]).includes('spala_start'), false);
   });
 });
 
