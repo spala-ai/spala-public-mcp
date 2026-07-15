@@ -290,10 +290,43 @@ test('project preparation assigns a stable code to invalid project records witho
   await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'invalid_upstream_response');
-    assert.equal(error.code, 'invalid_project_record');
+    assert.equal(error.code, 'invalid_project_record_name');
     assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
     return true;
   });
+});
+
+test('project preparation reports granular invalid detail codes before resolving access', async () => {
+  const controlToken = 'control-plane-project-detail-secret';
+  const projectToken = 'temporary-project-detail-secret';
+  const invalidDetails: Array<{ code: string; payload: unknown }> = [
+    { code: 'invalid_project_record_shape', payload: null },
+    {
+      code: 'invalid_project_record_id',
+      payload: { id: 'project-2', project_name: 'Project One', status: 'ready', subdomain: 'project.example' },
+    },
+    { code: 'invalid_project_record_name', payload: { status: 'ready', subdomain: 'project.example' } },
+    { code: 'invalid_project_record_status', payload: { project_name: 'Project One', status: 42, subdomain: 'project.example' } },
+    { code: 'invalid_project_record_subdomain', payload: { project_name: 'Project One', status: 'ready' } },
+  ];
+
+  for (const { code, payload } of invalidDetails) {
+    const calls: URL[] = [];
+    const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+      calls.push(url);
+      if (url.pathname === '/api/projects/project-1') return jsonResponse(payload);
+      return jsonResponse({ error: `${controlToken} ${projectToken}` }, 500);
+    }));
+
+    await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.category, 'invalid_upstream_response');
+      assert.equal(error.code, code);
+      assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
+      return true;
+    });
+    assert.deepEqual(calls.map(url => url.pathname), ['/api/projects/project-1']);
+  }
 });
 
 test('project preparation accepts direct and supported wrapped detail records without an id', async () => {
@@ -340,7 +373,7 @@ test('project preparation rejects a conflicting project detail id', async () => 
   await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'invalid_upstream_response');
-    assert.equal(error.code, 'invalid_project_record');
+    assert.equal(error.code, 'invalid_project_record_id');
     return true;
   });
   assert.deepEqual(calls.map(url => url.pathname), ['/api/projects/project-1']);

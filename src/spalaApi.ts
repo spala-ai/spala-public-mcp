@@ -304,15 +304,29 @@ function parseCreatedProject(raw: unknown): SpalaProject | undefined {
   return parseProjectRecord(record['project'] ?? record);
 }
 
-function parseProjectDetail(raw: unknown, expectedId: string): SpalaProject | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+type ProjectDetailParseResult =
+  | { project: SpalaProject }
+  | { errorCode: string };
+
+function parseProjectDetail(raw: unknown, expectedId: string): ProjectDetailParseResult {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { errorCode: 'invalid_project_record_shape' };
+  }
   const outer = raw as Record<string, unknown>;
   const value = outer['project'] ?? outer['data'] ?? outer;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { errorCode: 'invalid_project_record_shape' };
+  }
   const record = value as Record<string, unknown>;
   const responseId = record['id'] == null ? expectedId : stringField(record, 'id');
-  if (responseId !== expectedId) return undefined;
-  return parseProjectRecord({ ...record, id: responseId });
+  if (responseId !== expectedId) return { errorCode: 'invalid_project_record_id' };
+  const name = stringField(record, 'project_name');
+  if (!name) return { errorCode: 'invalid_project_record_name' };
+  const status = stringField(record, 'status', 128);
+  if (!status) return { errorCode: 'invalid_project_record_status' };
+  const subdomain = stringField(record, 'subdomain');
+  if (!subdomain) return { errorCode: 'invalid_project_record_subdomain' };
+  return { project: { id: responseId, name, status, subdomain } };
 }
 
 function parseCreatedOrganization(raw: unknown): SpalaOrganization | undefined {
@@ -821,14 +835,15 @@ export function createSpalaApiClient(
     async prepareProjectMcp(projectIdValue, client) {
       const id = normalizeProjectId(projectIdValue);
       const projectPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}`);
-      const project = parseProjectDetail(projectPayload, id);
-      if (!project) {
+      const projectResult = parseProjectDetail(projectPayload, id);
+      if ('errorCode' in projectResult) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
-          code: 'invalid_project_record',
+          code: projectResult.errorCode,
           message: 'The Spala control plane returned an invalid project record.',
         });
       }
+      const { project } = projectResult;
 
       const accessPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/access-url`);
       const access = parseProjectAccess(accessPayload, project.subdomain);
