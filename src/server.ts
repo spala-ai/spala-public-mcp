@@ -465,7 +465,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - Account status/setup, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
-- Call account_status immediately after OAuth without waiting for another user request. If setup is required, ask for exactly the missing account fields and call account_setup before project selection, planning, or coding. Never invent placeholder profile, company, or project names.
+- Call account_status immediately after OAuth without waiting for another user request. If setup is required, STOP: the next assistant response must ask for exactly the missing account fields and then wait. Do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds. Never invent placeholder profile, company, or project names.
 - Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
 - Run project bind plans from the intended workspace. Project MCP must never be installed globally.
 - Run the returned installPlan.argv immediately and send the separate bootstrap.consumeUrl as its single stdin line. The capability is short-lived and one-time; never put it in argv or shell text, and do not inspect, log, store, or reuse it.
@@ -508,7 +508,7 @@ Public MCP docs: ${config.docsUrl}
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
 Intent boundary: ${SPALA_BACKEND_INTENT_TEXT}
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
-Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, ask one concise terminal question and call account_setup before asking for or deriving the project name, planning, or coding. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
+Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, STOP: the next assistant response must ask one concise terminal question for exactly missingFields and then wait. Do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}

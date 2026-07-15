@@ -20,7 +20,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
-const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.9';
+const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.8';
 
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
@@ -272,7 +272,7 @@ const TOOL_DESCRIPTIONS = {
   accountStatus: [
     'AUTH REQUIRED; READ-ONLY. Verify that the current public MCP OAuth credential is active.',
     'Returns the authenticated identity, available organizations, account readiness, and the exact missing account fields without exposing OAuth or dashboard credentials.',
-    'Call immediately after OAuth without waiting for another user request. When setup is incomplete, ask the human one concise terminal question for only the reported fields, then call account_setup before project selection, planning, or coding.',
+    'Call immediately after OAuth without waiting for another user request. When setup is incomplete, STOP: the next assistant response must ask the human one concise question for only the reported fields, then wait and call account_setup. Do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA.',
   ].join(' '),
   accountSetup: [
     'AUTH REQUIRED; WRITES MISSING ACCOUNT DATA TO THE SPALA CONTROL PLANE.',
@@ -443,6 +443,14 @@ function json(value: unknown, isError = false): ToolResult {
 
 type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
 const accountSetupLocks = new Map<string, Promise<void>>();
+const ACCOUNT_SETUP_BLOCKED_ACTIONS = [
+  'inspect application source',
+  'plan application implementation',
+  'generate a design concept',
+  'scaffold or write frontend code',
+  'create or mutate backend resources',
+  'run application tests or visual QA',
+] as const;
 
 function missingAccountSetupFields(principal: SpalaPrincipal): AccountSetupField[] {
   return [
@@ -450,6 +458,21 @@ function missingAccountSetupFields(principal: SpalaPrincipal): AccountSetupField
     ...(!principal.user.lastName ? ['lastName' as const] : []),
     ...(principal.organizations.length === 0 ? ['companyName' as const] : []),
   ];
+}
+
+function accountSetupGate(missingFields: AccountSetupField[]) {
+  return {
+    blocked: true,
+    gate: {
+      state: 'blocked',
+      reason: 'account_setup_required',
+      missingFields,
+      requiredNextAction: 'ask_human_then_call_account_setup',
+      nextAssistantResponse: 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
+      prohibitedUntilResolved: ACCOUNT_SETUP_BLOCKED_ACTIONS,
+    },
+    next: 'STOP. Ask the human one concise terminal question for exactly the missing account fields now, then wait and call account_setup with the real answers. Do not inspect source files or continue planning, design generation, scaffolding, coding, testing, or QA.',
+  };
 }
 
 async function withAccountSetupLock<T>(subject: string, operation: () => Promise<T>): Promise<T> {
@@ -681,7 +704,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'This is the public Spala MCP for mcp.spala.ai.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
-      'Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, ask the human for only those fields and call account_setup before project selection, planning, or coding.',
+      'Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, STOP. The next assistant response must ask only for those fields and then wait; do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds.',
       'After account setup, ask for or confidently derive a real project name, then reuse the project bound to the current workspace or create one only when needed.',
       SPALA_BACKEND_INTENT_TEXT,
       'Agents must not construct, append, or infer project MCP URLs.',
@@ -851,9 +874,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         missingFields,
         nextTool: accountReady ? undefined : 'account_setup',
       },
-      next: accountReady
-        ? 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.'
-        : 'Ask the human one concise terminal question for exactly the missing account fields, then call account_setup. Do not use placeholders.',
+      ...(accountReady
+        ? { next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.' }
+        : accountSetupGate(missingFields)),
     });
   });
 
@@ -880,6 +903,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         missingFields: stillMissing,
         action: { type: 'ask_human_for_account_data', fields: stillMissing },
         rule: 'Use real user-provided or explicitly known values. Do not invent placeholders.',
+        ...accountSetupGate(stillMissing),
       }, true);
     }
     try {

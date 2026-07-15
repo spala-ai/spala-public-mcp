@@ -317,7 +317,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
   const plan = connectedBody.installPlan as { argv: string[]; globalInstall: boolean; workspaceScope: string };
-  assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.8', 'project', 'bind']);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], 'https://project-one.example');
   assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], connectedBody.mcpUrl);
@@ -405,6 +405,24 @@ test('new account setup collects profile and company before first named project 
     missingFields: ['firstName', 'lastName', 'companyName'],
     nextTool: 'account_setup',
   });
+  assert.equal(initial.blocked, true);
+  assert.deepEqual(initial.gate, {
+    state: 'blocked',
+    reason: 'account_setup_required',
+    missingFields: ['firstName', 'lastName', 'companyName'],
+    requiredNextAction: 'ask_human_then_call_account_setup',
+    nextAssistantResponse: 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
+    prohibitedUntilResolved: [
+      'inspect application source',
+      'plan application implementation',
+      'generate a design concept',
+      'scaffold or write frontend code',
+      'create or mutate backend resources',
+      'run application tests or visual QA',
+    ],
+  });
+  assert.match(String(initial.next), /ask.*missing account fields.*wait/i);
+  assert.match(JSON.stringify(initial.gate), /frontend|design|coding|QA/i);
 
   const setup = await toolBody(await mcpRequest('account_setup', {
     firstName: 'Ada',
@@ -547,7 +565,7 @@ test('public discovery distinguishes the protocol authorization endpoint from da
   }
 });
 
-test('install manifest exposes machine-readable 0.1.9 installer init and status commands', async () => {
+test('install manifest exposes machine-readable 0.1.8 installer init and status commands', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
 

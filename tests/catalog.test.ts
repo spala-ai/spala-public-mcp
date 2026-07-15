@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { docsIndex, searchCatalog } from '../src/catalog.js';
 
-test('docs_search recommends the current 0.1.9 public MCP installer flow', () => {
+test('docs_search recommends the current 0.1.8 public MCP installer flow', () => {
   const result = searchCatalog(docsIndex, 'public mcp install command', 10).find(
     entry => entry.id === 'public-mcp-install-command',
   );
