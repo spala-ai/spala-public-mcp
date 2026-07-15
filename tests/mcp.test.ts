@@ -240,7 +240,7 @@ test('unscoped prepared handoffs produce workspace-only project bind plans witho
       const body = resultJson(result);
       assert.equal(body.mcpUrl, unscopedMcpUrl);
       const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
-      assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'project', 'bind']);
+      assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.8', 'project', 'bind']);
       assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], unscopedMcpUrl);
       assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
       assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], handoff.projectUrl);
@@ -335,7 +335,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.8', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -380,7 +380,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.8', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -445,13 +445,37 @@ test('incomplete accounts report exact fields and setup creates the first organi
       missingFields: ['firstName', 'lastName', 'companyName'],
       nextTool: 'account_setup',
     });
+    assert.equal(status.blocked, true);
+    assert.deepEqual(status.gate, {
+      state: 'blocked',
+      reason: 'account_setup_required',
+      missingFields: ['firstName', 'lastName', 'companyName'],
+      requiredNextAction: 'ask_human_then_call_account_setup',
+      nextAssistantResponse: 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
+      prohibitedUntilResolved: [
+        'inspect application source',
+        'plan application implementation',
+        'generate a design concept',
+        'scaffold or write frontend code',
+        'create or mutate backend resources',
+        'run application tests or visual QA',
+      ],
+    });
+    assert.match(String(status.next), /ask.*missing account fields.*wait/i);
+    assert.match(JSON.stringify(status.gate), /frontend|design|coding|QA/i);
 
     const incompleteSetup = await client.callTool({
       name: 'account_setup',
       arguments: { firstName: 'Ada' },
     });
     assert.equal(incompleteSetup.isError, true);
-    assert.deepEqual(resultJson(incompleteSetup).missingFields, ['lastName', 'companyName']);
+    const incompleteSetupBody = resultJson(incompleteSetup);
+    assert.deepEqual(incompleteSetupBody.missingFields, ['lastName', 'companyName']);
+    assert.equal(incompleteSetupBody.blocked, true);
+    assert.equal((incompleteSetupBody.gate as { reason: string }).reason, 'account_setup_required');
+    assert.deepEqual((incompleteSetupBody.gate as { missingFields: string[] }).missingFields, ['lastName', 'companyName']);
+    assert.match(String((incompleteSetupBody.gate as { nextAssistantResponse: string }).nextAssistantResponse), /ask.*then wait/i);
+    assert.match(JSON.stringify((incompleteSetupBody.gate as { prohibitedUntilResolved: string[] }).prohibitedUntilResolved), /frontend|design|coding|QA/i);
     assert.equal(setupInputs.length, 0);
 
     const setup = await client.callTool({

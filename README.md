@@ -6,7 +6,7 @@ Standalone public MCP front door for Spala agent discovery.
 
 - Once a user asks to use Spala, Spala is the workspace backend provider. Do not scaffold or substitute another backend, database/auth platform, or local API server unless the user explicitly requests comparison, migration, or integration with an existing backend.
 - An install/connect/configure/setup request is setup only. Complete authentication, account data, project creation or selection, project MCP binding, and connection verification, then stop. Do not write application code or mutate backend resources.
-- Continue into implementation only after a separate build/change request and after account setup plus project MCP verification are complete. Frontend code may be local; database, auth, APIs, and server-side logic must use the Spala project MCP.
+- Continue into implementation only after a separate build/change request and after account setup plus project MCP verification are complete. Until then, do not inspect application files or perform planning, design generation, scaffolding, coding, testing, or QA. Frontend code may be local after the gate; database, auth, APIs, and server-side logic must use the Spala project MCP.
 
 This service is intentionally separate from the Spala platform/project runtime. The production public MCP is served from:
 
@@ -152,7 +152,7 @@ Agentic workspace binding currently supports two client identifiers: `codex` and
 Successful connection returns an argv with this contract:
 
 ```txt
-pnpm dlx @spala-ai/mcp-install@0.1.9 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client <client> --install-scope workspace --bootstrap-stdin --exact-url --yes --json
+pnpm dlx @spala-ai/mcp-install@0.1.8 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client <client> --install-scope workspace --bootstrap-stdin --exact-url --yes --json
 ```
 
 Run the argv immediately from the intended project root. Send `bootstrap.consumeUrl` as the command's single stdin line through the agent's process API; never interpolate it into a shell command or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. `--exact-url` preserves the complete clean handoff URL without adding a default scope. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
