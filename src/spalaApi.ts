@@ -440,8 +440,19 @@ function decodeBase64Url(value: string): string | undefined {
 
 function parseProjectAccess(raw: unknown, expectedSubdomain: string): ProjectAccess | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const accessUrlValue = stringField(raw as Record<string, unknown>, 'url', 16_384);
-  if (!accessUrlValue) return undefined;
+  const record = raw as Record<string, unknown>;
+  const data = record['data'];
+  const dataRecord = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : undefined;
+  const candidates = [
+    stringField(record, 'url', 16_384),
+    stringField(record, 'accessUrl', 16_384),
+    dataRecord ? stringField(dataRecord, 'url', 16_384) : undefined,
+  ].filter((value): value is string => Boolean(value));
+  const uniqueCandidates = [...new Set(candidates)];
+  if (uniqueCandidates.length !== 1) return undefined;
+  const accessUrlValue = uniqueCandidates[0]!;
 
   let accessUrl: URL;
   try {
