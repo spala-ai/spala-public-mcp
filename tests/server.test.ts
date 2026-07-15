@@ -31,7 +31,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     if (authorization !== 'Bearer project-entry-token') {
       return Response.json({ error: 'invalid_project_token' }, { status: 401 });
     }
-    if (url.pathname === '/project/config' && init?.method === 'POST') {
+    if (url.pathname === '/api/__internal/project/config' && init?.method === 'POST') {
       if (projectConfigFailures.has('project-entry-token')) {
         return Response.json({ error: { code: 'forbidden', message: 'project-entry-token must not escape' } }, { status: 403 });
       }
@@ -338,7 +338,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(upstreamCalls.some(call => call.url.pathname === '/api/projects/project-1/mcp/prepare'), false);
   assert.deepEqual(
     upstreamCalls.filter(call => call.url.origin === 'https://project-one.example').map(call => `${call.method} ${call.url.pathname}`),
-    ['POST /project/config', 'POST /mcp/agent-instructions'],
+    ['POST /api/__internal/project/config', 'POST /mcp/agent-instructions'],
   );
   assert.ok(upstreamCalls.filter(call => call.url.origin === 'https://project-one.example')
     .every(call => call.authorization === 'Bearer project-entry-token'));
@@ -356,7 +356,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|api\.spala\.ai/);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
       .filter(call => call.url.origin === 'https://project-one.example')
-      .map(call => `${call.method} ${call.url.pathname}`), ['POST /project/config']);
+      .map(call => `${call.method} ${call.url.pathname}`), ['POST /api/__internal/project/config']);
   } finally {
     projectConfigFailures.delete('project-entry-token');
   }
