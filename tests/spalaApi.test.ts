@@ -370,6 +370,37 @@ test('project backend failures receive stage-specific fallback codes without exp
   }
 });
 
+test('agent instructions 404 preserves not-found category and status with a stable stage code', async () => {
+  const projectToken = 'temporary-agent-instruction-404-secret';
+  const projectCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff());
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from('https://project.example').toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/project/config') {
+      projectCalls.push(url.pathname);
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/mcp/agent-instructions') {
+      projectCalls.push(url.pathname);
+      return jsonResponse({ error: { code: 'not_found', message: `missing instructions ${projectToken}` } }, 404);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'not_found');
+    assert.equal(error.status, 404);
+    assert.equal(error.code, 'project_agent_instruction_failed');
+    assert.doesNotMatch(error.message, new RegExp(projectToken));
+    return true;
+  });
+  assert.deepEqual(projectCalls, ['/project/config', '/mcp/agent-instructions']);
+});
+
 test('project access handoff accepts top-level and nested URL aliases', async () => {
   const projectToken = 'project-entry-token';
   const encodedUrl = Buffer.from('https://project.example').toString('base64');
@@ -459,7 +490,8 @@ test('project config failure stops before agent instructions and redacts the tem
   await assert.rejects(api.prepareProjectMcp('project-1', 'roo'), (error: unknown) => {
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'forbidden');
-    assert.equal(error.code, 'forbidden');
+    assert.equal(error.status, 403);
+    assert.equal(error.code, 'project_mcp_enable_failed');
     assert.doesNotMatch(error.message, new RegExp(projectToken));
     return true;
   });
