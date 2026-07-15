@@ -316,7 +316,7 @@ function normalizedCode(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
-function safeErrorPayload(raw: unknown, accessToken: string): {
+function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   code?: string;
   message?: string;
   checkoutUrl?: string;
@@ -327,15 +327,18 @@ function safeErrorPayload(raw: unknown, accessToken: string): {
   const nestedRecord = nested && typeof nested === 'object' && !Array.isArray(nested)
     ? nested as Record<string, unknown>
     : undefined;
+  const containsSensitiveToken = (value: string): boolean => sensitiveTokens.some(token => token && value.includes(token));
   const rawCode = typeof nested === 'string' ? nested : nestedRecord?.['code'] ?? record['code'];
-  const code = typeof rawCode === 'string' && !rawCode.includes(accessToken)
+  const code = typeof rawCode === 'string' && !containsSensitiveToken(rawCode)
     ? normalizedCode(rawCode)
     : undefined;
   const rawMessage = (nestedRecord ? stringField(nestedRecord, 'message', 1_000) : undefined)
     ?? stringField(record, 'message', 1_000);
-  const message = rawMessage ? rawMessage.split(accessToken).join('[redacted]') : undefined;
+  const message = rawMessage
+    ? sensitiveTokens.reduce((value, token) => token ? value.split(token).join('[redacted]') : value, rawMessage)
+    : undefined;
   const rawCheckoutUrl = nestedRecord?.['checkoutUrl'] ?? nestedRecord?.['checkout_url'] ?? record['checkoutUrl'] ?? record['checkout_url'];
-  const checkoutUrl = typeof rawCheckoutUrl === 'string' && !rawCheckoutUrl.includes(accessToken)
+  const checkoutUrl = typeof rawCheckoutUrl === 'string' && !containsSensitiveToken(rawCheckoutUrl)
     ? parsePublicHttpsUrl(rawCheckoutUrl)
     : undefined;
   return { code, message, checkoutUrl };
@@ -552,7 +555,7 @@ export function createSpalaApiClient(
       }
 
       if (!response.ok) {
-        const parsed = safeErrorPayload(payload, controlPlaneAccessToken);
+        const parsed = safeErrorPayload(payload, [controlPlaneAccessToken]);
         const category = errorCategory(response.status, parsed.code, parsed.message);
         throw new SpalaApiError({
           category,
@@ -578,8 +581,9 @@ export function createSpalaApiClient(
     projectUrl: string,
     projectAccessToken: string,
     method: 'POST',
-    pathname: '/api/__internal/project/config' | '/mcp/agent-instructions',
+    pathname: '/api/__internal/builder-auth/external' | '/api/__internal/project/config' | '/mcp/agent-instructions',
     body?: Record<string, unknown>,
+    options: { authorization?: boolean; sensitiveTokens?: string[] } = {},
   ): Promise<unknown> => {
     const url = new URL(`${projectUrl}${pathname}`);
     const controller = new AbortController();
@@ -588,7 +592,7 @@ export function createSpalaApiClient(
       const response = await fetchImpl(url, {
         method,
         headers: {
-          authorization: `Bearer ${projectAccessToken}`,
+          ...(options.authorization === false ? {} : { authorization: `Bearer ${projectAccessToken}` }),
           ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -610,7 +614,7 @@ export function createSpalaApiClient(
         }
       }
       if (!response.ok) {
-        const parsed = safeErrorPayload(payload, projectAccessToken);
+        const parsed = safeErrorPayload(payload, [projectAccessToken, ...(options.sensitiveTokens || [])]);
         const category = errorCategory(response.status, parsed.code, parsed.message);
         throw new SpalaApiError({
           category,
@@ -827,10 +831,41 @@ export function createSpalaApiClient(
         });
       }
 
+      let builderToken: string;
       try {
-        await requestProjectJson(access.projectUrl, access.token, 'POST', '/api/__internal/project/config', {
-          securityConfig: { mcpEnabled: true },
-        });
+        const exchangePayload = await requestProjectJson(
+          access.projectUrl,
+          access.token,
+          'POST',
+          '/api/__internal/builder-auth/external',
+          { token: access.token },
+          { authorization: false, sensitiveTokens: [controlPlaneAccessToken] },
+        );
+        const exchangeRecord = exchangePayload && typeof exchangePayload === 'object' && !Array.isArray(exchangePayload)
+          ? exchangePayload as Record<string, unknown>
+          : undefined;
+        const token = exchangeRecord ? stringField(exchangeRecord, 'token', 8_192) : undefined;
+        if (!validBearerToken(token) || token === access.token || token.includes(controlPlaneAccessToken)) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            code: 'invalid_project_builder_token',
+            message: 'The project backend returned an invalid builder authentication response.',
+          });
+        }
+        builderToken = token;
+      } catch (error) {
+        rethrowProjectStage(error, 'project_token_exchange_failed');
+      }
+
+      try {
+        await requestProjectJson(
+          access.projectUrl,
+          builderToken,
+          'POST',
+          '/api/__internal/project/config',
+          { securityConfig: { mcpEnabled: true } },
+          { sensitiveTokens: [access.token, controlPlaneAccessToken] },
+        );
       } catch (error) {
         rethrowProjectStage(error, 'project_mcp_enable_failed');
       }
@@ -839,7 +874,7 @@ export function createSpalaApiClient(
       try {
         instructionSession = await requestProjectJson(
           access.projectUrl,
-          access.token,
+          builderToken,
           'POST',
           '/mcp/agent-instructions',
           {
@@ -847,6 +882,7 @@ export function createSpalaApiClient(
             clientName: `Spala ${client} agent`,
             deliveryMode: 'one-time',
           },
+          { sensitiveTokens: [access.token, controlPlaneAccessToken] },
         );
       } catch (error) {
         rethrowProjectStage(error, 'project_agent_instruction_failed');

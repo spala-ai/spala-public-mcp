@@ -11,6 +11,8 @@ const upstreamCalls: Array<{ url: URL; method: string; authorization: string; bo
 const expiredDashboardTokens = new Set<string>();
 const revokedAccessTokens = new Set<string>();
 const projectConfigFailures = new Set<string>();
+const temporaryProjectToken = 'project-entry-token';
+const builderProjectToken = 'project-builder-token';
 let newAccountProfile: { firstName: string; lastName: string } | undefined;
 let newAccountOrganization: { id: string; name: string } | undefined;
 const replayStatePath = mkdtempSync(join(tmpdir(), 'mcp-spala-ai-server-replay-'));
@@ -28,12 +30,19 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     body: typeof init?.body === 'string' ? init.body : undefined,
   });
   if (url.origin === 'https://project-one.example') {
-    if (authorization !== 'Bearer project-entry-token') {
+    if (url.pathname === '/api/__internal/builder-auth/external' && init?.method === 'POST') {
+      if (authorization) return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
+      if (String(init.body) !== JSON.stringify({ token: temporaryProjectToken })) {
+        return Response.json({ error: 'invalid_exchange_body' }, { status: 400 });
+      }
+      return Response.json({ token: builderProjectToken });
+    }
+    if (authorization !== `Bearer ${builderProjectToken}`) {
       return Response.json({ error: 'invalid_project_token' }, { status: 401 });
     }
     if (url.pathname === '/api/__internal/project/config' && init?.method === 'POST') {
-      if (projectConfigFailures.has('project-entry-token')) {
-        return Response.json({ error: { code: 'forbidden', message: 'project-entry-token must not escape' } }, { status: 403 });
+      if (projectConfigFailures.has(builderProjectToken)) {
+        return Response.json({ error: { code: 'forbidden', message: `${builderProjectToken} must not escape` } }, { status: 403 });
       }
       return Response.json({ success: true });
     }
@@ -103,7 +112,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     }
     const encodedUrl = Buffer.from('https://project-one.example').toString('base64');
     return Response.json({
-      url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=project-entry-token`,
+      url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${temporaryProjectToken}`,
     });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
@@ -338,27 +347,32 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(upstreamCalls.some(call => call.url.pathname === '/api/projects/project-1/mcp/prepare'), false);
   assert.deepEqual(
     upstreamCalls.filter(call => call.url.origin === 'https://project-one.example').map(call => `${call.method} ${call.url.pathname}`),
-    ['POST /api/__internal/project/config', 'POST /mcp/agent-instructions'],
+    ['POST /api/__internal/builder-auth/external', 'POST /api/__internal/project/config', 'POST /mcp/agent-instructions'],
   );
-  assert.ok(upstreamCalls.filter(call => call.url.origin === 'https://project-one.example')
-    .every(call => call.authorization === 'Bearer project-entry-token'));
+  const projectUpstreamCalls = upstreamCalls.filter(call => call.url.origin === 'https://project-one.example');
+  assert.equal(projectUpstreamCalls[0]?.authorization, '');
+  assert.equal(projectUpstreamCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
+  assert.ok(projectUpstreamCalls.slice(1).every(call => call.authorization === `Bearer ${builderProjectToken}`));
   assert.equal((connectedBody.handoff as Record<string, unknown>).bootstrapConsumeUrl, undefined);
   assert.equal(JSON.stringify(connectedBody).split('mcp_agent_test').length - 1, 1);
   assert.doesNotMatch(JSON.stringify(connectedBody), /dashboard-valid|project-entry-token|api\.spala\.ai/);
 
   const callsBeforeConfigFailure = upstreamCalls.length;
-  projectConfigFailures.add('project-entry-token');
+  projectConfigFailures.add(builderProjectToken);
   try {
     const configFailure = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
     assert.equal(configFailure.status, 200);
     const failureBody = await toolBody(configFailure);
     assert.equal(failureBody.category, 'forbidden');
-    assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|api\.spala\.ai/);
+    assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|project-builder-token|api\.spala\.ai/);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
       .filter(call => call.url.origin === 'https://project-one.example')
-      .map(call => `${call.method} ${call.url.pathname}`), ['POST /api/__internal/project/config']);
+      .map(call => `${call.method} ${call.url.pathname}`), [
+        'POST /api/__internal/builder-auth/external',
+        'POST /api/__internal/project/config',
+      ]);
   } finally {
-    projectConfigFailures.delete('project-entry-token');
+    projectConfigFailures.delete(builderProjectToken);
   }
 
   revokedAccessTokens.add('dashboard-valid');
