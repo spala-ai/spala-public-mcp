@@ -1080,8 +1080,14 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
     commands: {
-      installerNpm: 'npx @spala-ai/mcp-install --public --yes',
-      installerPnpm: 'pnpm dlx @spala-ai/mcp-install --public --yes',
+      installerNpm: {
+        init: ['npx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['npx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+      },
+      installerPnpm: {
+        init: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+      },
       codexAdd: `codex mcp add ${PUBLIC_MCP_SERVER_NAME} --url ${JSON.stringify(mcpUrl)}`,
       codexLogin: `codex mcp login ${PUBLIC_MCP_SERVER_NAME} --scopes api`,
       claudeCode: `claude mcp add --transport http ${PUBLIC_MCP_SERVER_NAME} ${JSON.stringify(mcpUrl)}`,
