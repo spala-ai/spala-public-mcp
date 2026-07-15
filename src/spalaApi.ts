@@ -5,6 +5,8 @@ export type SpalaUser = {
   id: string;
   email?: string;
   name?: string;
+  firstName?: string;
+  lastName?: string;
 };
 
 export type SpalaOrganization = {
@@ -48,8 +50,22 @@ export type CreateProjectInput = ProjectOrganizationInput & {
   name: string;
 };
 
+export type SetupAccountInput = {
+  firstName?: string;
+  lastName?: string;
+  companyName?: string;
+};
+
+export type SetupAccountResult = {
+  principal: SpalaPrincipal;
+  organization: SpalaOrganization;
+  profileUpdated: boolean;
+  organizationCreated: boolean;
+};
+
 export type SpalaApiClient = {
   getPrincipal(): Promise<SpalaPrincipal>;
+  setupAccount(input: SetupAccountInput): Promise<SetupAccountResult>;
   listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
@@ -245,7 +261,7 @@ export function parseProjectHandoff(raw: unknown): ProjectMcpHandoff | undefined
 function parseOrganization(raw: unknown): SpalaOrganization | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
-  const id = stringField(record, 'id');
+  const id = stringField(record, 'id') ?? stringField(record, 'organization_id');
   if (!id) return undefined;
   return { id, name: stringField(record, 'name') ?? stringField(record, 'organization_name') };
 }
@@ -265,6 +281,8 @@ function parsePrincipal(raw: unknown): SpalaPrincipal | undefined {
     id,
     email: stringField(userRecord, 'email', 320),
     name: stringField(userRecord, 'name'),
+    firstName: stringField(userRecord, 'first_name') ?? stringField(userRecord, 'firstName'),
+    lastName: stringField(userRecord, 'last_name') ?? stringField(userRecord, 'lastName'),
   };
   return { subject: id, user, organizations: organizations as SpalaOrganization[] };
 }
@@ -284,6 +302,12 @@ function parseCreatedProject(raw: unknown): SpalaProject | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   return parseProjectRecord(record['project'] ?? record);
+}
+
+function parseCreatedOrganization(raw: unknown): SpalaOrganization | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  return parseOrganization(record['organization'] ?? record['data'] ?? record);
 }
 
 function normalizedCode(value: unknown): string | undefined {
@@ -468,7 +492,7 @@ export function createSpalaApiClient(
 
   let principalPromise: Promise<SpalaPrincipal> | undefined;
 
-  const requestJson = async (method: 'GET' | 'POST', pathname: string, options?: {
+  const requestJson = async (method: 'GET' | 'POST' | 'PATCH', pathname: string, options?: {
     query?: Record<string, string>;
     body?: Record<string, unknown>;
   }): Promise<unknown> => {
@@ -481,7 +505,7 @@ export function createSpalaApiClient(
         method,
         headers: {
           authorization: `Bearer ${controlPlaneAccessToken}`,
-          ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+          ...(method !== 'GET' ? { 'content-type': 'application/json' } : {}),
         },
         body: options?.body ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
@@ -653,6 +677,67 @@ export function createSpalaApiClient(
 
   return {
     getPrincipal,
+
+    async setupAccount(input) {
+      principalPromise = undefined;
+      const principal = await getPrincipal();
+      const firstName = principal.user.firstName || input.firstName?.trim();
+      const lastName = principal.user.lastName || input.lastName?.trim();
+      const companyName = input.companyName?.trim();
+      const missingFields = [
+        ...(!firstName ? ['firstName'] : []),
+        ...(!lastName ? ['lastName'] : []),
+        ...(principal.organizations.length === 0 && !companyName ? ['companyName'] : []),
+      ];
+      if (missingFields.length > 0) {
+        throw new SpalaApiError({
+          category: 'request_failed',
+          code: 'account_data_required',
+          message: `Account setup requires: ${missingFields.join(', ')}.`,
+        });
+      }
+      if (firstName!.length > 120 || lastName!.length > 120 || (companyName?.length || 0) > 120) {
+        throw new SpalaApiError({
+          category: 'request_failed',
+          code: 'account_data_too_long',
+          message: 'Account names must be between 1 and 120 characters.',
+        });
+      }
+
+      const profileUpdated = !principal.user.firstName || !principal.user.lastName;
+      if (profileUpdated) {
+        const profileBody: Record<string, unknown> = {};
+        if (!principal.user.firstName) profileBody['first_name'] = firstName;
+        if (!principal.user.lastName) profileBody['last_name'] = lastName;
+        await requestJson('PATCH', '/api/users', {
+          body: profileBody,
+        });
+      }
+
+      let organization: SpalaOrganization | undefined = principal.organizations[0];
+      let organizationCreated = false;
+      if (!organization) {
+        const payload = await requestJson('POST', '/api/organizations', {
+          body: { name: companyName },
+        });
+        organization = parseCreatedOrganization(payload);
+        if (!organization) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            message: 'The Spala control plane returned an invalid created organization.',
+          });
+        }
+        organizationCreated = true;
+      }
+
+      const updatedPrincipal: SpalaPrincipal = {
+        ...principal,
+        user: { ...principal.user, firstName, lastName },
+        organizations: organizationCreated ? [organization] : principal.organizations,
+      };
+      principalPromise = Promise.resolve(updatedPrincipal);
+      return { principal: updatedPrincipal, organization, profileUpdated, organizationCreated };
+    },
 
     async listProjects(input = {}) {
       const organization = await resolveOrganization(input.organizationId);

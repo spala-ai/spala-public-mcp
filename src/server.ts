@@ -56,6 +56,7 @@ app.use(express.urlencoded({ extended: false, limit: config.mcpBodyLimitBytes })
 const PUBLIC_TOOLS = ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'];
 const AUTHENTICATED_TOOLS = [
   'account_status',
+  'account_setup',
   'project_list',
   'project_create',
   'project_connect',
@@ -254,23 +255,29 @@ function projectMcpTestTemplate() {
       {
         step: 5,
         call: 'account_status with Authorization',
-        expected: 'Confirms the public MCP account session is active and returns available organizations.',
+        expected: 'Confirms the session and reports whether profile/company setup is ready, including exact missing fields.',
         redact: ['emails', 'account IDs', 'organization IDs'],
       },
       {
         step: 6,
+        call: 'account_setup with Authorization when account_status reports missing fields',
+        expected: 'After one concise human prompt, fills missing first/last name and creates the first company/workspace organization without placeholders.',
+        redact: ['personal names', 'company names', 'account IDs', 'organization IDs'],
+      },
+      {
+        step: 7,
         call: 'project_list with Authorization',
         expected: 'Returns projects available to the signed-in account.',
         redact: ['project IDs', 'project names unless demo-approved', 'organization IDs', 'owner emails'],
       },
       {
-        step: 7,
+        step: 8,
         call: 'project_connect with the codex or roo agentic workspace client identifier',
         expected: 'Idempotently prepares MCP server-side and returns exact clean URLs plus a workspace-only project bind plan. Send the separate bootstrap.consumeUrl as the installer stdin line.',
         redact: ['private project IDs', 'private slugs', 'tenant identifiers', 'protected bootstrap URL'],
       },
       {
-        step: 8,
+        step: 9,
         call: 'project_get_mcp_manifest with the codex or roo agentic workspace client identifier',
         expected: 'Returns exact mcpUrl and manifestUrl values plus workspace project bind argv; omitted client returns a structured no-plan error.',
         redact: ['private project URL if it contains private identifiers'],
@@ -453,10 +460,10 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 ## Boundary
 
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
-- Account status, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
+- Account status/setup, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
-- Call account_status immediately after OAuth. A revoked account session returns a new OAuth challenge.
+- Call account_status immediately after OAuth. If setup is required, ask for exactly the missing account fields and call account_setup before project work. Never invent placeholder profile, company, or project names.
 - Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
 - Run project bind plans from the intended workspace. Project MCP must never be installed globally.
 - Run the returned installPlan.argv immediately and send the separate bootstrap.consumeUrl as its single stdin line. The capability is short-lived and one-time; never put it in argv or shell text, and do not inspect, log, store, or reuse it.
@@ -498,7 +505,7 @@ Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
-Call account_status first. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
+Call account_status first. If it reports missing account data, ask one concise terminal question and call account_setup before asking for or deriving the project name. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
@@ -1065,7 +1072,8 @@ app.get('/mcp/install-manifest', (_req, res) => {
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
     authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     authenticatedToolNotes: {
-      account_status: 'First authenticated call. Verifies the active account session and returns available organizations.',
+      account_status: 'First authenticated call. Verifies the session and returns account readiness plus exact missing account fields.',
+      account_setup: 'Fills missing profile data and creates the first company/workspace organization after the agent asks the human for required values.',
       project_list: 'Lists projects available to the signed-in account.',
       project_connect: 'Idempotently reuses the dashboard project-entry handoff, enables MCP directly on the exact project backend, and returns workspace-only project bind argv with one-time bootstrap consumption.',
       project_select: 'Compatibility alias for project_connect with the same honest write semantics.',

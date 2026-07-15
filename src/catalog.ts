@@ -17,8 +17,8 @@ export const docsIndex = [
     id: 'agent-setup-auth-handoff',
     title: 'Agent setup, auth, OAuth token, and project MCP handoff',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, call account_status and reuse or select/create a project. Agentic workspace binding through project_connect currently supports Codex and Roo only.',
-    keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'account status', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'account_status', 'project_connect', 'project_select', 'project_list', 'spala_get_onboarding', 'spala_get_tool_map'],
+    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, account_status reports missing account data and account_setup can complete it before project creation. Agentic workspace binding through project_connect currently supports Codex and Roo only.',
+    keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'account status', 'account setup', 'company name', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'account_status', 'account_setup', 'project_connect', 'project_select', 'project_list', 'spala_get_onboarding', 'spala_get_tool_map'],
   },
   {
     id: 'auth-oauth-platform',

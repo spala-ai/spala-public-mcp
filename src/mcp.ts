@@ -179,6 +179,26 @@ const PROJECT_CREATE_JSON_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const ACCOUNT_SETUP_JSON_SCHEMA = {
+  type: 'object',
+  description: 'Complete missing Spala account data after OAuth. Supply only real values confirmed by the user or confidently known from the current work context.',
+  properties: {
+    firstName: {
+      type: 'string', minLength: 1, maxLength: 120,
+      description: 'Account holder first name. Required when account_status reports firstName missing.',
+    },
+    lastName: {
+      type: 'string', minLength: 1, maxLength: 120,
+      description: 'Account holder last name. Required when account_status reports lastName missing.',
+    },
+    companyName: {
+      type: 'string', minLength: 1, maxLength: 120,
+      description: 'Company or workspace name. Required when account_status reports companyName missing.',
+    },
+  },
+  additionalProperties: false,
+} as const;
+
 const PROJECT_LIST_JSON_SCHEMA = {
   type: 'object',
   description: 'List projects for an organization available to the authenticated user.',
@@ -201,6 +221,7 @@ const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
   template_list: CATALOG_LIST_JSON_SCHEMA,
   addon_list: CATALOG_LIST_JSON_SCHEMA,
   account_status: NO_ARGUMENTS_JSON_SCHEMA,
+  account_setup: ACCOUNT_SETUP_JSON_SCHEMA,
   project_list: PROJECT_LIST_JSON_SCHEMA,
   project_create: PROJECT_CREATE_JSON_SCHEMA,
   project_connect: PROJECT_INSTALL_SELECTOR_JSON_SCHEMA,
@@ -248,8 +269,14 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   accountStatus: [
     'AUTH REQUIRED; READ-ONLY. Verify that the current public MCP OAuth credential is active.',
-    'Returns the authenticated account identity and available organizations without exposing OAuth or dashboard credentials.',
-    'Call this before project lookup, selection, or creation. A revoked dashboard session produces a new OAuth challenge.',
+    'Returns the authenticated identity, available organizations, account readiness, and the exact missing account fields without exposing OAuth or dashboard credentials.',
+    'When setup is incomplete, ask the human one concise terminal question for only the reported fields, then call account_setup before project work.',
+  ].join(' '),
+  accountSetup: [
+    'AUTH REQUIRED; WRITES MISSING ACCOUNT DATA TO THE SPALA CONTROL PLANE.',
+    'Fill missing first name and last name, and create the first company/workspace organization when none exists.',
+    'Use real values supplied by the human or confidently known from explicit context. Never create placeholder account or company names.',
+    'After success, ask for or confidently derive the project name, then call project_list before project_create to avoid duplicates.',
   ].join(' '),
   projectList: [
     'AUTH REQUIRED. List projects in an authoritative organization returned for the authenticated Spala user.',
@@ -336,7 +363,15 @@ export function projectToolCapabilities(config: AppConfig) {
       available: true,
       effect: 'read',
       authFailureHint: 'Missing, expired, or revoked bearer: HTTP 401 OAuth challenge; temporary service failure: HTTP 503.',
-      purpose: 'Verify that the current public MCP account session is authenticated and return its available organizations.',
+      purpose: 'Verify the account session and return account readiness plus exact missing profile or company fields.',
+    },
+    {
+      name: 'account_setup',
+      requiresAuth: true,
+      available: true,
+      effect: 'write',
+      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      purpose: 'Complete missing account profile data and create the first company/workspace organization without sending the user to the dashboard.',
     },
     {
       name: 'project_list',
@@ -404,6 +439,31 @@ function json(value: unknown, isError = false): ToolResult {
   return text(JSON.stringify(value, null, 2), isError);
 }
 
+type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
+const accountSetupLocks = new Map<string, Promise<void>>();
+
+function missingAccountSetupFields(principal: SpalaPrincipal): AccountSetupField[] {
+  return [
+    ...(!principal.user.firstName ? ['firstName' as const] : []),
+    ...(!principal.user.lastName ? ['lastName' as const] : []),
+    ...(principal.organizations.length === 0 ? ['companyName' as const] : []),
+  ];
+}
+
+async function withAccountSetupLock<T>(subject: string, operation: () => Promise<T>): Promise<T> {
+  const previous = accountSetupLocks.get(subject) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  accountSetupLocks.set(subject, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (accountSetupLocks.get(subject) === current) accountSetupLocks.delete(subject);
+  }
+}
+
 function requireVerifiedPrincipal(ctx: RequestContext, api: SpalaApiClient | undefined, tool: string): string | ToolResult {
   if (ctx.verifiedPrincipal && api) return ctx.verifiedPrincipal.subject;
   return json({
@@ -469,6 +529,7 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
   if (error instanceof SpalaApiError) {
     const planFailure = error.category === 'payment_required' || error.category === 'plan_restricted';
     const organizationSelection = error.category === 'organization_selection_required';
+    const accountSetupRequired = error.code === 'organization_required';
     let action: Record<string, unknown> | undefined;
     if (error.category === 'authentication') {
       action = {
@@ -476,6 +537,8 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
         authorizationEndpoint: `${config.publicBaseUrl}/oauth/authorize`,
         requiredScope: 'api',
       };
+    } else if (accountSetupRequired) {
+      action = { type: 'complete_account_setup', statusTool: 'account_status', setupTool: 'account_setup' };
     } else if (organizationSelection) {
       action = { type: 'select_organization', argument: 'organizationId' };
     } else if (planFailure) {
@@ -493,6 +556,8 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       status: error.status,
       message: planFailure
         ? 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.'
+        : accountSetupRequired
+          ? 'The account has no company/workspace organization yet. Call account_status, ask the human for its missing fields, then call account_setup and retry.'
         : error.category === 'authentication'
           ? 'The Spala account session expired or was revoked. Reauthenticate the public MCP, then retry this tool.'
           : error.category === 'forbidden'
@@ -612,7 +677,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'This is the public Spala MCP for mcp.spala.ai.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
-      'Call account_status first after OAuth, then reuse the project bound to the current workspace or create one only when needed.',
+      'Call account_status first after OAuth. If it reports missing account data, ask the human for only those fields and call account_setup before project work.',
+      'After account setup, ask for or confidently derive a real project name, then reuse the project bound to the current workspace or create one only when needed.',
       'Agents must not construct, append, or infer project MCP URLs.',
       'Do not mutate project backend internals here. Use the returned project MCP for backend changes.',
     ].join('\n'),
@@ -643,6 +709,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'Call spala_get_tool_map.',
       'Search docs/templates/addons if needed.',
       'Authenticate through Spala MCP OAuth with api scope, then call account_status to verify the session is active.',
+      'If account_status reports setup required, ask one concise terminal question for exactly its missingFields and call account_setup. Do not use placeholder personal, company, or workspace names.',
+      'After account setup is ready, ask for or confidently derive the project name from the explicit user request.',
       'If .spala/project.json exists in the current workspace, verify and reuse that project. Otherwise call project_list and create a project only when no intended project exists.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
       'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares agent instructions directly on that exact project backend.',
@@ -677,7 +745,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       host: 'mcp.spala.ai',
       tools: {
         discovery: ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'],
-        account: ['account_status'],
+        account: ['account_status', 'account_setup'],
         projectHandoff: ['project_list', 'project_create', 'project_connect', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context'],
       },
       toolCapabilities: [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)],
@@ -757,14 +825,64 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const auth = requireVerifiedPrincipal(ctx, api, 'account_status');
     if (typeof auth !== 'string') return auth;
     const principal = ctx.verifiedPrincipal!;
+    const missingFields = missingAccountSetupFields(principal);
+    const accountReady = missingFields.length === 0;
     return json({
       authenticated: true,
       tokenStatus: 'active',
       subject: principal.subject,
       user: principal.user,
       organizations: principal.organizations,
-      next: 'Reuse the project in .spala/project.json when present; otherwise call project_list before deciding whether project_create is needed.',
+      accountSetup: {
+        state: accountReady ? 'ready' : 'required',
+        missingFields,
+        nextTool: accountReady ? undefined : 'account_setup',
+      },
+      next: accountReady
+        ? 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.'
+        : 'Ask the human one concise terminal question for exactly the missing account fields, then call account_setup. Do not use placeholders.',
     });
+  });
+
+  server.registerTool('account_setup', {
+    description: TOOL_DESCRIPTIONS.accountSetup,
+    inputSchema: {
+      firstName: z.string().trim().min(1).max(120).optional(),
+      lastName: z.string().trim().min(1).max(120).optional(),
+      companyName: z.string().trim().min(1).max(120).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    _meta: projectAuthMetadata(config),
+  }, async (input) => {
+    const auth = requireVerifiedPrincipal(ctx, api, 'account_setup');
+    if (typeof auth !== 'string') return auth;
+    const principal = ctx.verifiedPrincipal!;
+    const missingFields = missingAccountSetupFields(principal);
+    const stillMissing = missingFields.filter(field => !input[field]?.trim());
+    if (stillMissing.length > 0) {
+      return json({
+        error: 'account_data_required',
+        category: 'account_setup_required',
+        message: 'Ask the human for the missing account data in one concise terminal question, then retry account_setup.',
+        missingFields: stillMissing,
+        action: { type: 'ask_human_for_account_data', fields: stillMissing },
+        rule: 'Use real user-provided or explicitly known values. Do not invent placeholders.',
+      }, true);
+    }
+    try {
+      const setup = await withAccountSetupLock(principal.subject, () => api!.setupAccount(input));
+      ctx.verifiedPrincipal = setup.principal;
+      return json({
+        accountSetup: 'complete',
+        profileUpdated: setup.profileUpdated,
+        organizationCreated: setup.organizationCreated,
+        user: setup.principal.user,
+        organization: setup.organization,
+        next: 'Ask for or confidently derive the real project name, call project_list to avoid duplicates, then call project_create only when needed.',
+      });
+    } catch (error) {
+      return safeProjectError(error, 'account_setup_failed', config);
+    }
   });
 
   server.registerTool('project_list', {

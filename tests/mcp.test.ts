@@ -17,7 +17,7 @@ const config = loadConfig({
 
 const principal: SpalaPrincipal = {
   subject: 'test-user',
-  user: { id: 'test-user', email: 'user@example.test' },
+  user: { id: 'test-user', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
   organizations: [{ id: 'org-1', name: 'Test organization' }],
 };
 
@@ -43,6 +43,14 @@ const handoff = {
 function apiStub(overrides: Partial<SpalaApiClient> = {}): SpalaApiClient {
   return {
     async getPrincipal() { return principal; },
+    async setupAccount() {
+      return {
+        principal,
+        organization: principal.organizations[0]!,
+        profileUpdated: false,
+        organizationCreated: false,
+      };
+    },
     async listProjects() { return { organization: principal.organizations[0]!, projects: [project] }; },
     async createProject(input) {
       return {
@@ -56,8 +64,12 @@ function apiStub(overrides: Partial<SpalaApiClient> = {}): SpalaApiClient {
   };
 }
 
-async function withVerifiedClient<T>(api: SpalaApiClient, run: (client: Client) => Promise<T>): Promise<T> {
-  const server = createSpalaPublicMcpServer(config, api, { verifiedPrincipal: principal });
+async function withVerifiedClient<T>(
+  api: SpalaApiClient,
+  run: (client: Client) => Promise<T>,
+  verifiedPrincipal: SpalaPrincipal = principal,
+): Promise<T> {
+  const server = createSpalaPublicMcpServer(config, api, { verifiedPrincipal });
   const client = new Client({ name: 'mcp-test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -87,6 +99,12 @@ test('tools/list advertises authenticated status and honest project preparation 
     assert.ok(account);
     assert.equal(account.annotations?.readOnlyHint, true);
     assert.deepEqual(account._meta?.['securitySchemes'], [{ type: 'oauth2', scopes: ['api'] }]);
+
+    const accountSetup = tools.find(candidate => candidate.name === 'account_setup');
+    assert.ok(accountSetup);
+    assert.equal(accountSetup.annotations?.readOnlyHint, false);
+    assert.equal(accountSetup.annotations?.idempotentHint, false);
+    assert.deepEqual(Object.keys(accountSetup.inputSchema.properties || {}).sort(), ['companyName', 'firstName', 'lastName']);
 
     for (const name of ['project_connect', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context']) {
       const tool = tools.find(candidate => candidate.name === name);
@@ -387,11 +405,64 @@ test('account_status reports only request-verified identity state', async () => 
       authenticated: true,
       tokenStatus: 'active',
       subject: 'test-user',
-      user: { id: 'test-user', email: 'user@example.test' },
+      user: { id: 'test-user', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
       organizations: [{ id: 'org-1', name: 'Test organization' }],
-      next: 'Reuse the project in .spala/project.json when present; otherwise call project_list before deciding whether project_create is needed.',
+      accountSetup: { state: 'ready', missingFields: [] },
+      next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.',
     });
   });
+});
+
+test('incomplete accounts report exact fields and setup creates the first organization', async () => {
+  const incomplete: SpalaPrincipal = {
+    subject: 'new-user',
+    user: { id: 'new-user', email: 'new@example.test' },
+    organizations: [],
+  };
+  const completed: SpalaPrincipal = {
+    ...incomplete,
+    user: { ...incomplete.user, firstName: 'Ada', lastName: 'Lovelace' },
+    organizations: [{ id: 'org-new', name: 'Analytical Apps' }],
+  };
+  const setupInputs: unknown[] = [];
+  const api = apiStub({
+    async getPrincipal() { return incomplete; },
+    async setupAccount(input) {
+      setupInputs.push(input);
+      return {
+        principal: completed,
+        organization: completed.organizations[0]!,
+        profileUpdated: true,
+        organizationCreated: true,
+      };
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const status = resultJson(await client.callTool({ name: 'account_status', arguments: {} }));
+    assert.deepEqual(status.accountSetup, {
+      state: 'required',
+      missingFields: ['firstName', 'lastName', 'companyName'],
+      nextTool: 'account_setup',
+    });
+
+    const incompleteSetup = await client.callTool({
+      name: 'account_setup',
+      arguments: { firstName: 'Ada' },
+    });
+    assert.equal(incompleteSetup.isError, true);
+    assert.deepEqual(resultJson(incompleteSetup).missingFields, ['lastName', 'companyName']);
+    assert.equal(setupInputs.length, 0);
+
+    const setup = await client.callTool({
+      name: 'account_setup',
+      arguments: { firstName: 'Ada', lastName: 'Lovelace', companyName: 'Analytical Apps' },
+    });
+    assert.notEqual(setup.isError, true);
+    assert.equal(resultJson(setup).accountSetup, 'complete');
+    assert.equal(resultJson(setup).organizationCreated, true);
+    assert.deepEqual(setupInputs, [{ firstName: 'Ada', lastName: 'Lovelace', companyName: 'Analytical Apps' }]);
+  }, incomplete);
 });
 
 test('project_connect retries without dashboard dependency when preparation is not ready', async () => {
