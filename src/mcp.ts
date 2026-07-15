@@ -20,7 +20,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
-const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.8';
+const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.9';
 
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
@@ -710,6 +710,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     instructions: [
       'This is the public Spala MCP for mcp.spala.ai.',
       'HARD TRIGGER: whenever the user asks to use, install, connect, configure, or build with Spala, call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
+      'CLIENT SAFETY: let one MCP/client operation own browser OAuth. Never start another login or manually open its authorization URL while it is pending. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
       'Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, STOP. The next assistant response must ask only for those fields and then wait; do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds.',
@@ -751,7 +752,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       requiredSequence: ['account_status', 'account_setup when required', 'project_list or project_create', 'project_connect', 'verify project MCP'],
       prohibitedUntilResolved: ACCOUNT_SETUP_BLOCKED_ACTIONS,
     },
-    next: 'Call account_status now. Do not inspect application files, load frontend/design skills, search for implementation guidance, plan, generate designs, scaffold, code, test, or run QA until account setup and project MCP verification are complete.',
+    next: 'Call account_status now and let that one tool call own browser OAuth if authentication is required. Do not run another login, manually open its URL, inspect client credential stores, or hand-roll MCP calls. Do not inspect application files, load frontend/design skills, search for implementation guidance, plan, generate designs, scaffold, code, test, or run QA until account setup and project MCP verification are complete.',
   }));
 
   server.tool('spala_get_onboarding', TOOL_DESCRIPTIONS.onboarding, {}, async () => json({

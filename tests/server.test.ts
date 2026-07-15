@@ -317,7 +317,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
   const plan = connectedBody.installPlan as { argv: string[]; globalInstall: boolean; workspaceScope: string };
-  assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.8', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'project', 'bind']);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], 'https://project-one.example');
   assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], connectedBody.mcpUrl);
@@ -604,23 +604,29 @@ test('anonymous spala_start is published in discovery capabilities and hard-trig
     assert.match(instructions, /whenever the user (mentions using|asks to use).*Spala, call spala_start before/i);
     assert.match(instructions, /filesystem inspection.*skill loading.*web search.*planning.*design generation.*scaffolding.*coding.*testing.*QA/i);
     assert.match(instructions, /overrides frontend-builder and design workflows/i);
+    assert.match(instructions, /let one MCP\/client operation own browser OAuth/i);
+    assert.match(instructions, /Never inspect client credential stores, tokens, or browser storage/i);
+    assert.match(instructions, /never hand-roll MCP HTTP\/JSON-RPC calls or helper scripts/i);
   }
 });
 
-test('install manifest exposes machine-readable 0.1.8 installer init and status commands', async () => {
+test('install manifest exposes machine-readable 0.1.9 installer commands', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
 
-  assert.equal(commands.installerNpm, 'npx @spala-ai/mcp-install init --client <client> --yes --json');
-  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install init --client <client> --yes --json');
+  assert.equal(commands.installerNpm, 'npx @spala-ai/mcp-install@0.1.9 init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.9 init --client <client> --yes --json');
   assert.deepEqual(commands.installerNpmArgv, {
-    init: ['npx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['npx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+    init: ['npx', '@spala-ai/mcp-install@0.1.9', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '@spala-ai/mcp-install@0.1.9', 'status', '--client', '<client>', '--json'],
   });
   assert.deepEqual(commands.installerPnpmArgv, {
-    init: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.9', 'status', '--client', '<client>', '--json'],
   });
+  assert.equal(commands.codex, 'pnpm dlx @spala-ai/mcp-install@0.1.9 init --client codex --yes --json');
+  assert.equal('codexAdd' in commands, false);
+  assert.equal('codexLogin' in commands, false);
   assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
 });
 
