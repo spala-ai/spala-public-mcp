@@ -145,7 +145,7 @@ Agentic workspace binding currently supports two client identifiers: `codex` and
 Successful connection returns an argv with this contract:
 
 ```txt
-pnpm dlx @spala-ai/mcp-install project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client <client> --install-scope workspace --bootstrap-stdin --exact-url --yes --json
+pnpm dlx @spala-ai/mcp-install@0.1.8 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client <client> --install-scope workspace --bootstrap-stdin --exact-url --yes --json
 ```
 
 Run the argv immediately from the intended project root. Send `bootstrap.consumeUrl` as the command's single stdin line through the agent's process API; never interpolate it into a shell command or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. `--exact-url` preserves the complete clean handoff URL without adding a default scope. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.

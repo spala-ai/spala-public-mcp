@@ -19,6 +19,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
+const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.8';
 
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
@@ -528,7 +529,7 @@ function projectMcpInstallPlan(
   const serverName = projectServerName(handoff.projectId);
   return {
     argv: [
-      'pnpm', 'dlx', '@spala-ai/mcp-install', 'project', 'bind',
+      'pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'project', 'bind',
       '--project-id', handoff.projectId,
       '--project-url', handoff.projectUrl,
       '--url', handoff.mcpUrl,
