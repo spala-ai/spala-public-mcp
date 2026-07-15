@@ -497,7 +497,7 @@ function rethrowProjectStage(error: unknown, code: string): never {
     throw new SpalaApiError({
       category: error.category,
       status: error.status,
-      code: error.code || code,
+      code,
       message: error.message,
       checkoutUrl: error.checkoutUrl,
       organizationChoices: error.organizationChoices,
