@@ -304,31 +304,6 @@ function parseCreatedProject(raw: unknown): SpalaProject | undefined {
   return parseProjectRecord(record['project'] ?? record);
 }
 
-type ProjectDetailParseResult =
-  | { project: SpalaProject }
-  | { errorCode: string };
-
-function parseProjectDetail(raw: unknown, expectedId: string): ProjectDetailParseResult {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { errorCode: 'invalid_project_record_shape' };
-  }
-  const outer = raw as Record<string, unknown>;
-  const value = outer['project'] ?? outer['data'] ?? outer;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { errorCode: 'invalid_project_record_shape' };
-  }
-  const record = value as Record<string, unknown>;
-  const responseId = record['id'] == null ? expectedId : stringField(record, 'id');
-  if (responseId !== expectedId) return { errorCode: 'invalid_project_record_id' };
-  const name = stringField(record, 'project_name');
-  if (!name) return { errorCode: 'invalid_project_record_name' };
-  const status = stringField(record, 'status', 128);
-  if (!status) return { errorCode: 'invalid_project_record_status' };
-  const subdomain = stringField(record, 'subdomain');
-  if (!subdomain) return { errorCode: 'invalid_project_record_subdomain' };
-  return { project: { id: responseId, name, status, subdomain } };
-}
-
 function parseCreatedOrganization(raw: unknown): SpalaOrganization | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
@@ -463,7 +438,7 @@ function decodeBase64Url(value: string): string | undefined {
   }
 }
 
-function parseProjectAccess(raw: unknown, expectedSubdomain: string): ProjectAccess | undefined {
+function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): ProjectAccess | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   const data = record['data'];
@@ -501,7 +476,7 @@ function parseProjectAccess(raw: unknown, expectedSubdomain: string): ProjectAcc
   if (!encodedProjectUrl || !validBearerToken(token)) return undefined;
   const decodedProjectUrl = decodeBase64Url(encodedProjectUrl);
   const projectUrl = parseProjectBaseUrl(decodedProjectUrl);
-  const expectedProjectUrl = parseProjectBaseUrl(`https://${expectedSubdomain}`);
+  const expectedProjectUrl = parseProjectBaseUrl(expectedProjectUrlValue);
   if (!projectUrl || !expectedProjectUrl || projectUrl !== expectedProjectUrl) return undefined;
   return { projectUrl, token };
 }
@@ -834,19 +809,16 @@ export function createSpalaApiClient(
 
     async prepareProjectMcp(projectIdValue, client) {
       const id = normalizeProjectId(projectIdValue);
-      const projectPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}`);
-      const projectResult = parseProjectDetail(projectPayload, id);
-      if ('errorCode' in projectResult) {
-        throw new SpalaApiError({
-          category: 'invalid_upstream_response',
-          code: projectResult.errorCode,
-          message: 'The Spala control plane returned an invalid project record.',
-        });
+      let projectHandoff: ProjectMcpHandoff;
+      try {
+        const handoffPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+        projectHandoff = verifiedProjectHandoff(handoffPayload, id);
+      } catch (error) {
+        rethrowProjectStage(error, 'invalid_project_mcp_handoff');
       }
-      const { project } = projectResult;
 
       const accessPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/access-url`);
-      const access = parseProjectAccess(accessPayload, project.subdomain);
+      const access = parseProjectAccess(accessPayload, projectHandoff.projectUrl);
       if (!access || access.token.includes(controlPlaneAccessToken)) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
@@ -900,9 +872,9 @@ export function createSpalaApiClient(
       }
 
       return {
-        projectId: project.id,
-        projectName: project.name,
-        status: project.status,
+        projectId: projectHandoff.projectId,
+        projectName: projectHandoff.projectName,
+        status: projectHandoff.status,
         projectUrl: access.projectUrl,
         mcpEnabled: true,
         mcpUrl,
