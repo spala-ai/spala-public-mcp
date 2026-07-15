@@ -296,6 +296,56 @@ test('project preparation assigns a stable code to invalid project records witho
   });
 });
 
+test('project preparation accepts direct and supported wrapped detail records without an id', async () => {
+  const detailPayloads = [
+    { project_name: 'Project One', status: 'ready', subdomain: 'project.example' },
+    { project: { project_name: 'Project One', status: 'ready', subdomain: 'project.example' } },
+    { data: { project_name: 'Project One', status: 'ready', subdomain: 'project.example' } },
+  ];
+
+  for (const detailPayload of detailPayloads) {
+    const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
+      if (url.pathname === '/api/projects/project-1' && init.method === 'GET') {
+        return jsonResponse(detailPayload);
+      }
+      if (url.pathname === '/api/projects/project-1/access-url' && init.method === 'GET') {
+        const encodedUrl = Buffer.from('https://project.example').toString('base64');
+        return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=project-entry-token` });
+      }
+      if (url.origin === 'https://project.example' && url.pathname === '/project/config') {
+        return jsonResponse({ success: true });
+      }
+      if (url.origin === 'https://project.example' && url.pathname === '/mcp/agent-instructions') {
+        return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
+      }
+      return jsonResponse({ error: 'unexpected_request' }, 500);
+    }));
+
+    const prepared = await api.prepareProjectMcp('project-1', 'codex');
+    assert.equal(prepared.projectId, 'project-1');
+    assert.equal(prepared.projectName, 'Project One');
+  }
+});
+
+test('project preparation rejects a conflicting project detail id', async () => {
+  const calls: URL[] = [];
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
+    calls.push(url);
+    if (url.pathname === '/api/projects/project-1') {
+      return jsonResponse({ id: 'project-2', project_name: 'Other Project', status: 'ready', subdomain: 'other.example' });
+    }
+    return jsonResponse({ error: 'access-url must not be requested' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'invalid_upstream_response');
+    assert.equal(error.code, 'invalid_project_record');
+    return true;
+  });
+  assert.deepEqual(calls.map(url => url.pathname), ['/api/projects/project-1']);
+});
+
 test('project preparation assigns a stable code to invalid access handoffs without exposing credentials', async () => {
   const controlToken = 'control-plane-access-handoff-secret';
   const projectToken = 'temporary-access-handoff-secret';
