@@ -304,6 +304,17 @@ function parseCreatedProject(raw: unknown): SpalaProject | undefined {
   return parseProjectRecord(record['project'] ?? record);
 }
 
+function parseProjectDetail(raw: unknown, expectedId: string): SpalaProject | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const outer = raw as Record<string, unknown>;
+  const value = outer['project'] ?? outer['data'] ?? outer;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const responseId = record['id'] == null ? expectedId : stringField(record, 'id');
+  if (responseId !== expectedId) return undefined;
+  return parseProjectRecord({ ...record, id: responseId });
+}
+
 function parseCreatedOrganization(raw: unknown): SpalaOrganization | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
@@ -810,8 +821,8 @@ export function createSpalaApiClient(
     async prepareProjectMcp(projectIdValue, client) {
       const id = normalizeProjectId(projectIdValue);
       const projectPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}`);
-      const project = parseCreatedProject(projectPayload);
-      if (!project || project.id !== id) {
+      const project = parseProjectDetail(projectPayload, id);
+      if (!project) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
           code: 'invalid_project_record',
