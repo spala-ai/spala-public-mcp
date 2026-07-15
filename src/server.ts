@@ -4,7 +4,15 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
-import { createSpalaPublicMcpServer, projectToolCapabilities, PUBLIC_TOOL_CAPABILITIES, SUPPORTED_INSTALL_CLIENTS } from './mcp.js';
+import {
+  createSpalaPublicMcpServer,
+  projectToolCapabilities,
+  PROJECT_INSTALLER_SPEC,
+  PROJECT_INSTALLER_VERSION,
+  PROJECT_INSTALL_EXECUTION,
+  PUBLIC_TOOL_CAPABILITIES,
+  SUPPORTED_INSTALL_CLIENTS,
+} from './mcp.js';
 import { createSpalaApiClient, SpalaApiError } from './spalaApi.js';
 import { PublicOAuthError, PublicOAuthFacade } from './publicOAuth.js';
 import { SPALA_BACKEND_INTENT_TEXT } from './intent.js';
@@ -1063,8 +1071,9 @@ app.get('/mcp/install-manifest', (_req, res) => {
     links: discoveryLinks(),
     projectMcpResolution: {
       source: 'The authenticated project handoff returned by Spala.',
-      rule: 'Call project_connect, execute its workspace-only project bind plan with the exact clean mcpUrl, and send the separate one-time bootstrap.consumeUrl as the installer stdin line.',
+      rule: 'Call project_connect, execute its workspace-only project bind plan with the exact clean mcpUrl, and follow its process execution guidance for the separate one-time bootstrap.consumeUrl.',
       note: 'Agents must not derive project URLs, expose bearer credentials, retain the protected bootstrap URL, install a project MCP globally, or start project OAuth for the agentic flow.',
+      execution: PROJECT_INSTALL_EXECUTION,
     },
     oauth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
@@ -1094,18 +1103,25 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
+    installer: {
+      package: '@spala-ai/mcp-install',
+      version: PROJECT_INSTALLER_VERSION,
+      spec: PROJECT_INSTALLER_SPEC,
+      codexArgvPrefix: ['npx', '--yes', PROJECT_INSTALLER_SPEC],
+      execution: PROJECT_INSTALL_EXECUTION,
+    },
     commands: {
-      installerNpm: 'npx @spala-ai/mcp-install@0.1.10 init --client <client> --yes --json',
-      installerPnpm: 'pnpm dlx @spala-ai/mcp-install@0.1.10 init --client <client> --yes --json',
+      installerNpm: `npx --yes ${PROJECT_INSTALLER_SPEC} init --client <client> --yes --json`,
+      installerPnpm: `pnpm dlx ${PROJECT_INSTALLER_SPEC} init --client <client> --yes --json`,
       installerNpmArgv: {
-        init: ['npx', '@spala-ai/mcp-install@0.1.10', 'init', '--client', '<client>', '--yes', '--json'],
-        status: ['npx', '@spala-ai/mcp-install@0.1.10', 'status', '--client', '<client>', '--json'],
+        init: ['npx', '--yes', PROJECT_INSTALLER_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['npx', '--yes', PROJECT_INSTALLER_SPEC, 'status', '--client', '<client>', '--json'],
       },
       installerPnpmArgv: {
-        init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.10', 'init', '--client', '<client>', '--yes', '--json'],
-        status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.10', 'status', '--client', '<client>', '--json'],
+        init: ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'status', '--client', '<client>', '--json'],
       },
-      codex: 'pnpm dlx @spala-ai/mcp-install@0.1.10 init --client codex --yes --json',
+      codex: `npx --yes ${PROJECT_INSTALLER_SPEC} init --client codex --yes --json`,
       claudeCode: `claude mcp add --transport http ${PUBLIC_MCP_SERVER_NAME} ${JSON.stringify(mcpUrl)}`,
       geminiCliUser: `gemini mcp add --scope user --transport http ${PUBLIC_MCP_SERVER_NAME} ${JSON.stringify(mcpUrl)}`,
     },

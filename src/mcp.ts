@@ -20,7 +20,45 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
-const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.10';
+export const PROJECT_INSTALLER_VERSION = '0.1.11';
+export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
+
+export const PROJECT_INSTALL_EXECUTION = {
+  method: 'process',
+  shell: false,
+  tty: true,
+  waitForRunningProcess: true,
+  stdin: {
+    tool: 'process_stdin',
+    processSource: 'running_process',
+    valueSource: 'bootstrap.consumeUrl',
+    appendNewline: true,
+    shell: false,
+    argv: false,
+  },
+  sequence: [
+    {
+      order: 1,
+      action: 'start_process',
+      argvSource: 'installPlan.argv',
+      shell: false,
+      tty: true,
+    },
+    {
+      order: 2,
+      action: 'wait_for_running_process',
+      required: true,
+    },
+    {
+      order: 3,
+      action: 'send_process_stdin',
+      tool: 'process_stdin',
+      processSource: 'running_process',
+      valueSource: 'bootstrap.consumeUrl',
+      appendNewline: true,
+    },
+  ],
+} as const;
 
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
@@ -624,9 +662,12 @@ function projectMcpInstallPlan(
 ) {
   if (!handoff.mcpUrl) throw new Error('Prepared project MCP URL is missing.');
   const serverName = projectServerName(handoff.projectId);
+  const runnerArgv = client === 'codex'
+    ? ['npx', '--yes', PROJECT_INSTALLER_SPEC]
+    : ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC];
   return {
     argv: [
-      'pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'project', 'bind',
+      ...runnerArgv, 'project', 'bind',
       '--project-id', handoff.projectId,
       '--project-url', handoff.projectUrl,
       '--url', handoff.mcpUrl,
@@ -653,6 +694,7 @@ function projectMcpInstallPlan(
     immediateConsumptionRequired: true,
     bootstrapInput: 'stdin_single_line',
     bootstrapExposedInArgv: false,
+    execution: PROJECT_INSTALL_EXECUTION,
     projectOAuthRequired: false,
     credentialMode: 'local_proxy_after_bootstrap',
     shell: false,
@@ -663,7 +705,8 @@ function projectMcpInstallPlan(
 }
 
 const PROJECT_MCP_INSTALL_NEXT_STEPS = [
-  'Start installPlan.argv immediately from the intended local project root and send bootstrap.consumeUrl as its single stdin line through the process API. Never interpolate it into a shell command.',
+  'Start installPlan.argv immediately as a direct process from the intended local project root with tty:true and shell:false.',
+  'Wait for the process tool to report a running process, then use the process stdin tool to send bootstrap.consumeUrl plus a newline. Never place it in shell text or argv.',
   'Confirm the installer created or updated .spala/project.json and did not install this project MCP globally.',
   'Confirm the installer consumed the bootstrap URL and configured its local credential proxy. Do not store, inspect, print, or reuse the bootstrap URL.',
   'Do not start native or manual project OAuth for this agentic flow. Manual UI OAuth is separate.',
@@ -769,7 +812,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'If .spala/project.json exists in the current workspace, verify and reuse that project. Otherwise call project_list and create a project only when no intended project exists.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
       'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares agent instructions directly on that exact project backend.',
-      'Run installPlan.argv immediately from the intended project root and feed bootstrap.consumeUrl as its single stdin line through the process API. It must bind .spala/project.json and must not install project MCP globally.',
+      'Run installPlan.argv immediately as a direct process from the intended project root with tty:true and shell:false. Wait for the running process, then use the process stdin tool to send bootstrap.consumeUrl plus a newline; never place it in shell text or argv.',
       'The installer configures a local credential proxy after bootstrap. Do not start native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated.',
       'Follow the installer JSON reload instruction for the selected client.',
       'If the user asked only to install, connect, configure, or set up Spala, stop after verifying the project MCP connection. Do not write application code or mutate project resources.',
@@ -823,6 +866,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       },
       installer: {
         package: '@spala-ai/mcp-install',
+        version: PROJECT_INSTALLER_VERSION,
+        spec: PROJECT_INSTALLER_SPEC,
         clientArgument: 'client',
         supportedClients: SUPPORTED_INSTALL_CLIENTS,
         omittedClientBehavior: 'client_selection_required without installPlan',
@@ -831,7 +876,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         bindingFile: '.spala/project.json',
         globalProjectInstallAllowed: false,
         bootstrapArgument: '--bootstrap-stdin',
-        bootstrapHandling: 'Opaque, short-lived, and one-time. It is returned separately as bootstrap.consumeUrl and must be sent as one stdin line, never as argv or shell text.',
+        execution: PROJECT_INSTALL_EXECUTION,
+        bootstrapHandling: 'Opaque, short-lived, and one-time. Start installPlan.argv with tty:true and shell:false, wait for the running process, then send bootstrap.consumeUrl plus a newline through the process stdin tool. Never place it in argv or shell text.',
         credentialModeAfterBootstrap: 'local_proxy',
         projectOAuthRequired: false,
         exactUrlBehavior: 'Pass the exact clean mcpUrl with --exact-url so the installer never injects or changes scope.',

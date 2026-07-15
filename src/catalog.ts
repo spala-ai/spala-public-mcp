@@ -38,14 +38,14 @@ export const docsIndex = [
     id: 'public-mcp-install-command',
     title: 'Install Spala Public MCP with npm',
     url: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
-    summary: 'Use pnpm dlx @spala-ai/mcp-install init --client <client> --yes --json, then run pnpm dlx @spala-ai/mcp-install status --client <client> --json with the same client and follow the exact JSON steps. After authentication, call project_connect once for workspace binding and execute its returned workspace-only plan. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
+    summary: 'For Codex use npx --yes @spala-ai/mcp-install@0.1.11 init --client codex --yes --json, then run npx --yes @spala-ai/mcp-install@0.1.11 status --client codex --json and follow the exact JSON steps. After authentication, call project_connect once for workspace binding. Execute installPlan.argv as a direct process with tty:true and shell:false, wait for the running process, then send bootstrap.consumeUrl plus a newline through the process stdin tool; never put it in shell text or argv. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
     id: 'project-mcp-resolution',
     title: 'Project MCP URL resolution',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Agents choose Codex or Roo. project_connect prepares MCP server-side and returns workspace-only project bind argv plus a separate short-lived one-time capability. Send the capability through installer stdin; it must never appear in argv or shell text.',
+    summary: 'Agents choose Codex or Roo. project_connect prepares MCP server-side and returns workspace-only project bind argv plus a separate short-lived one-time capability. For Codex the argv starts with npx --yes @spala-ai/mcp-install@0.1.11. Start it with tty:true and shell:false, wait for the running process, then send the capability plus a newline through the process stdin tool; it must never appear in argv or shell text.',
     keywords: ['project mcp', 'access-url', 'access url', 'project handoff', 'mcp url', 'runtime', 'shared runtime', 'slug', 'project slug'],
   },
   {

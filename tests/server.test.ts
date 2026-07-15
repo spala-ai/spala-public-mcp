@@ -325,8 +325,18 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(connectedBody.workspaceOnly, true);
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
-  const plan = connectedBody.installPlan as { argv: string[]; globalInstall: boolean; workspaceScope: string };
-  assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.10', 'project', 'bind']);
+  const plan = connectedBody.installPlan as {
+    argv: string[];
+    globalInstall: boolean;
+    workspaceScope: string;
+    execution: {
+      shell: boolean;
+      tty: boolean;
+      waitForRunningProcess: boolean;
+      stdin: Record<string, unknown>;
+    };
+  };
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.11', 'project', 'bind']);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], 'https://project-one.example');
   assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], connectedBody.mcpUrl);
@@ -339,6 +349,17 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume');
   assert.equal(plan.globalInstall, false);
   assert.equal(plan.workspaceScope, 'workspace');
+  assert.equal(plan.execution.shell, false);
+  assert.equal(plan.execution.tty, true);
+  assert.equal(plan.execution.waitForRunningProcess, true);
+  assert.deepEqual(plan.execution.stdin, {
+    tool: 'process_stdin',
+    processSource: 'running_process',
+    valueSource: 'bootstrap.consumeUrl',
+    appendNewline: true,
+    shell: false,
+    argv: false,
+  });
   assert.ok(upstreamCalls.some(call => (
     call.url.pathname === '/api/projects/project-1/access-url'
     && call.method === 'GET'
@@ -625,21 +646,32 @@ test('anonymous spala_start is published in discovery capabilities and hard-trig
   }
 });
 
-test('install manifest exposes machine-readable 0.1.10 installer commands', async () => {
+test('install manifest exposes machine-readable 0.1.11 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
 
-  assert.equal(commands.installerNpm, 'npx @spala-ai/mcp-install@0.1.10 init --client <client> --yes --json');
-  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.10 init --client <client> --yes --json');
+  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.11 init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.11 init --client <client> --yes --json');
   assert.deepEqual(commands.installerNpmArgv, {
-    init: ['npx', '@spala-ai/mcp-install@0.1.10', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['npx', '@spala-ai/mcp-install@0.1.10', 'status', '--client', '<client>', '--json'],
+    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.11', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.11', 'status', '--client', '<client>', '--json'],
   });
   assert.deepEqual(commands.installerPnpmArgv, {
-    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.10', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.10', 'status', '--client', '<client>', '--json'],
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.11', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.11', 'status', '--client', '<client>', '--json'],
   });
-  assert.equal(commands.codex, 'pnpm dlx @spala-ai/mcp-install@0.1.10 init --client codex --yes --json');
+  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.11 init --client codex --yes --json');
+  const installer = manifest.installer as Record<string, unknown>;
+  assert.equal(installer.version, '0.1.11');
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.11']);
+  assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
+    tool: 'process_stdin',
+    processSource: 'running_process',
+    valueSource: 'bootstrap.consumeUrl',
+    appendNewline: true,
+    shell: false,
+    argv: false,
+  });
   assert.equal('codexAdd' in commands, false);
   assert.equal('codexLogin' in commands, false);
   assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
