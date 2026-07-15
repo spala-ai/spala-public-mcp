@@ -9,20 +9,39 @@ import { after, before, test } from 'node:test';
 const nativeFetch = globalThis.fetch;
 const upstreamCalls: Array<{ url: URL; method: string; authorization: string; body?: string }> = [];
 const expiredDashboardTokens = new Set<string>();
-const revokedPrepareTokens = new Set<string>();
+const revokedAccessTokens = new Set<string>();
+const projectConfigFailures = new Set<string>();
 const replayStatePath = mkdtempSync(join(tmpdir(), 'mcp-spala-ai-server-replay-'));
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : input.toString());
   const authorization = new Headers(init?.headers).get('authorization') || '';
-  if (url.origin !== 'https://api.spala.ai') return nativeFetch(input, init);
-
+  if (url.origin !== 'https://api.spala.ai' && url.origin !== 'https://project-one.example') {
+    return nativeFetch(input, init);
+  }
   upstreamCalls.push({
     url,
     method: init?.method || 'GET',
     authorization,
     body: typeof init?.body === 'string' ? init.body : undefined,
   });
+  if (url.origin === 'https://project-one.example') {
+    if (authorization !== 'Bearer project-entry-token') {
+      return Response.json({ error: 'invalid_project_token' }, { status: 401 });
+    }
+    if (url.pathname === '/project/config' && init?.method === 'POST') {
+      if (projectConfigFailures.has('project-entry-token')) {
+        return Response.json({ error: { code: 'forbidden', message: 'project-entry-token must not escape' } }, { status: 403 });
+      }
+      return Response.json({ success: true });
+    }
+    if (url.pathname === '/mcp/agent-instructions' && init?.method === 'POST') {
+      return Response.json({
+        consumeUrl: 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume',
+      }, { status: 201 });
+    }
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
   const dashboardToken = authorization.replace(/^Bearer /, '');
   if (!['dashboard-valid', 'dashboard-plan'].includes(dashboardToken) || expiredDashboardTokens.has(dashboardToken)) {
     return Response.json({ error: 'invalid_token' }, { status: 401 });
@@ -34,7 +53,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     });
   }
   if (url.pathname === '/api/projects' && init?.method === 'GET') {
-    return Response.json({ projects: [{ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project-one' }] });
+    return Response.json({ projects: [{ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project-one.example' }] });
   }
   if (url.pathname === '/api/projects' && init?.method === 'POST') {
     if (dashboardToken === 'dashboard-plan') {
@@ -53,19 +72,16 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       manifestUrl: 'https://project-one.example/mcp/install-manifest?scope=builder%2Cproject%2Cdata',
     });
   }
-  if (url.pathname === '/api/projects/project-1/mcp/prepare' && init?.method === 'POST') {
-    if (revokedPrepareTokens.has(dashboardToken)) {
+  if (url.pathname === '/api/projects/project-1' && init?.method === 'GET') {
+    return Response.json({ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project-one.example' });
+  }
+  if (url.pathname === '/api/projects/project-1/access-url' && init?.method === 'GET') {
+    if (revokedAccessTokens.has(dashboardToken)) {
       return Response.json({ error: 'invalid_token' }, { status: 401 });
     }
+    const encodedUrl = Buffer.from('https://project-one.example').toString('base64');
     return Response.json({
-      projectId: 'project-1',
-      projectName: 'Project One',
-      status: 'ready',
-      projectUrl: 'https://project-one.example',
-      mcpEnabled: true,
-      mcpUrl: 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata',
-      manifestUrl: 'https://project-one.example/mcp/install-manifest?scope=builder%2Cproject%2Cdata',
-      bootstrapConsumeUrl: 'https://project-one.example/mcp/bootstrap?session=opaque-session-secret',
+      url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=project-entry-token`,
     });
   }
   return Response.json({ error: 'not_found' }, { status: 404 });
@@ -248,7 +264,7 @@ test('authorize, dashboard approval, token redemption, and project list work end
   assert.equal(listed.status, 200);
   assert.deepEqual(await toolBody(listed), {
     organization: { id: 'org-1', name: 'First organization' },
-    projects: [{ id: 'project-1', name: 'Project One', status: 'ready', subdomain: 'project-one', organizationId: 'org-1' }],
+    projects: [{ id: 'project-1', name: 'Project One', status: 'ready', subdomain: 'project-one.example', organizationId: 'org-1' }],
   });
   assert.ok(upstreamCalls.some(call => call.url.pathname === '/api/me' && call.authorization === 'Bearer dashboard-valid'));
   assert.ok(upstreamCalls.some(call => call.url.pathname === '/api/projects' && call.authorization === 'Bearer dashboard-valid'));
@@ -273,10 +289,10 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const connected = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
-  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata');
+  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp?scope=builder%2Cproject%2Cdata');
   assert.equal(connectedBody.workspaceOnly, true);
-  assert.equal(connectedBody.preparedByControlPlane, true);
-  assert.equal(connectedBody.bootstrapPreparedByControlPlane, true);
+  assert.equal(connectedBody.preparedByProjectBackend, true);
+  assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
   const plan = connectedBody.installPlan as { argv: string[]; globalInstall: boolean; workspaceScope: string };
   assert.deepEqual(plan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install', 'project', 'bind']);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
@@ -287,22 +303,42 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(plan.argv[plan.argv.indexOf('--install-scope') + 1], 'workspace');
   assert.equal(plan.argv.includes('--bootstrap-stdin'), true);
   assert.equal(plan.argv.includes('--bootstrap-url'), false);
-  assert.equal(plan.argv.includes('https://project-one.example/mcp/bootstrap?session=opaque-session-secret'), false);
-  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, 'https://project-one.example/mcp/bootstrap?session=opaque-session-secret');
+  assert.equal(plan.argv.includes('https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume'), false);
+  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume');
   assert.equal(plan.globalInstall, false);
   assert.equal(plan.workspaceScope, 'workspace');
   assert.ok(upstreamCalls.some(call => (
-    call.url.pathname === '/api/projects/project-1/mcp/prepare'
-    && call.method === 'POST'
-    && call.body === JSON.stringify({ client: 'codex' })
+    call.url.pathname === '/api/projects/project-1/access-url'
+    && call.method === 'GET'
     && call.authorization === 'Bearer dashboard-valid'
   )));
-  assert.equal(upstreamCalls.some(call => call.url.origin === 'https://project-one.example'), false);
+  assert.equal(upstreamCalls.some(call => call.url.pathname === '/api/projects/project-1/mcp/prepare'), false);
+  assert.deepEqual(
+    upstreamCalls.filter(call => call.url.origin === 'https://project-one.example').map(call => `${call.method} ${call.url.pathname}`),
+    ['POST /project/config', 'POST /mcp/agent-instructions'],
+  );
+  assert.ok(upstreamCalls.filter(call => call.url.origin === 'https://project-one.example')
+    .every(call => call.authorization === 'Bearer project-entry-token'));
   assert.equal((connectedBody.handoff as Record<string, unknown>).bootstrapConsumeUrl, undefined);
-  assert.equal(JSON.stringify(connectedBody).split('opaque-session-secret').length - 1, 1);
-  assert.doesNotMatch(JSON.stringify(connectedBody), /dashboard-valid|api\.spala\.ai/);
+  assert.equal(JSON.stringify(connectedBody).split('mcp_agent_test').length - 1, 1);
+  assert.doesNotMatch(JSON.stringify(connectedBody), /dashboard-valid|project-entry-token|api\.spala\.ai/);
 
-  revokedPrepareTokens.add('dashboard-valid');
+  const callsBeforeConfigFailure = upstreamCalls.length;
+  projectConfigFailures.add('project-entry-token');
+  try {
+    const configFailure = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
+    assert.equal(configFailure.status, 200);
+    const failureBody = await toolBody(configFailure);
+    assert.equal(failureBody.category, 'forbidden');
+    assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|api\.spala\.ai/);
+    assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
+      .filter(call => call.url.origin === 'https://project-one.example')
+      .map(call => `${call.method} ${call.url.pathname}`), ['POST /project/config']);
+  } finally {
+    projectConfigFailures.delete('project-entry-token');
+  }
+
+  revokedAccessTokens.add('dashboard-valid');
   try {
     const revokedDuringPrepare = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
     assert.equal(revokedDuringPrepare.status, 200);
@@ -317,7 +353,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     });
     assert.doesNotMatch(JSON.stringify(revokedBody), /upstream_unavailable|service unavailable|api\.spala\.ai/i);
   } finally {
-    revokedPrepareTokens.delete('dashboard-valid');
+    revokedAccessTokens.delete('dashboard-valid');
   }
 
   expiredDashboardTokens.add('dashboard-valid');

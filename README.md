@@ -36,7 +36,7 @@ These tools require a public MCP bearer with scope `api`. The public MCP validat
 - `account_status`: verifies that the browser-approved Spala account session is still active and returns the account's organizations. Call this first after OAuth.
 - `project_list`: lists projects available to the signed-in account.
 - `project_create`: creates a real project for the signed-in account.
-- `project_connect`: idempotently prepares or enables the selected project's MCP through the authenticated control plane, then returns exact clean handoff URLs and a workspace-only installer plan.
+- `project_connect`: reuses the dashboard's authenticated project-entry handoff, enables MCP directly on the selected project backend, then returns exact clean handoff URLs and a workspace-only installer plan.
 - `project_select`: compatibility alias for `project_connect`, with the same idempotent write behavior.
 - `project_get_mcp_manifest`: prepares the selected project's MCP and returns exact MCP and manifest URLs plus a workspace-only installer plan.
 - `project_get_public_context`: read-only project and handoff context without requiring a client or returning installer argv.
@@ -124,7 +124,7 @@ The public MCP accepts an issued MCP OAuth token for `https://mcp.spala.ai/mcp` 
 
 The upstream origin is configuration-only and never caller-controlled. Responses are parsed from documented fields; the service does not search arbitrary payloads for URLs or credentials.
 
-After public MCP OAuth, call `account_status`. Reuse the project recorded in the current workspace's `.spala/project.json` when it exists. Otherwise call `project_list`, and call `project_create` only when the intended project does not already exist. Then call `project_connect` with the project and either `codex` or `roo`. This calls `POST /api/projects/:id/mcp/prepare` using the already-validated dashboard bearer. The control plane verifies user access, membership, and billing; exchanges internal project builder access; enables MCP; calls the authenticated project agent-instructions endpoint; and returns the exact handoff plus a short-lived one-time protected bootstrap-consumption URL. Public MCP treats that URL as opaque and never fetches or inspects it.
+After public MCP OAuth, call `account_status`. Reuse the project recorded in the current workspace's `.spala/project.json` when it exists. Otherwise call `project_list`, and call `project_create` only when the intended project does not already exist. Then call `project_connect` with the project and either `codex` or `roo`. Public MCP requests the existing dashboard project access URL, keeps its temporary project-entry credential server-side, and calls that exact project backend directly. The project backend performs its normal permission checks, enables MCP through the existing project settings API, and creates a short-lived one-time bootstrap-consumption URL. Public MCP never returns the dashboard or project-entry credential and treats the bootstrap URL as opaque.
 
 ## Directory listing metadata
 

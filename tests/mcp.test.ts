@@ -313,8 +313,8 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.notEqual(connected.isError, true);
     const connectedBody = resultJson(connected);
     assert.equal(connectedBody.mcpUrl, handoff.mcpUrl);
-    assert.equal(connectedBody.preparedByControlPlane, true);
-    assert.equal(connectedBody.bootstrapPreparedByControlPlane, true);
+    assert.equal(connectedBody.preparedByProjectBackend, true);
+    assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.deepEqual(connectPlan.argv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install', 'project', 'bind']);
@@ -412,7 +412,7 @@ test('project_connect retries without dashboard dependency when preparation is n
       tool: 'project_connect',
       arguments: { projectId: 'project-1', client: 'codex' },
     });
-    assert.equal(JSON.stringify(body).includes('dashboard'), false);
+    assert.doesNotMatch(JSON.stringify(body), /dashboard|bootstrapConsumeUrl|opaque-session-secret/i);
   });
 });
 
