@@ -277,6 +277,88 @@ test('project access handoff must resolve to the exact project backend before us
   assert.equal(calls.some(call => call.url.origin === 'https://other-project.example'), false);
 });
 
+test('project preparation assigns a stable code to invalid project records without exposing credentials', async () => {
+  const controlToken = 'control-plane-project-record-secret';
+  const projectToken = 'temporary-project-record-secret';
+  const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1') {
+      return jsonResponse({ id: 'project-1', status: 'ready', subdomain: 'project.example' });
+    }
+    return jsonResponse({ error: projectToken }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'invalid_upstream_response');
+    assert.equal(error.code, 'invalid_project_record');
+    assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
+    return true;
+  });
+});
+
+test('project preparation assigns a stable code to invalid access handoffs without exposing credentials', async () => {
+  const controlToken = 'control-plane-access-handoff-secret';
+  const projectToken = 'temporary-access-handoff-secret';
+  const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1') {
+      return jsonResponse({ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project.example' });
+    }
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      return jsonResponse({ url: `https://app.spala.ai/?url=not-base64&auth_token=${projectToken}` });
+    }
+    return jsonResponse({ error: controlToken }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'invalid_upstream_response');
+    assert.equal(error.code, 'invalid_project_access_handoff');
+    assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
+    return true;
+  });
+});
+
+test('project backend failures receive stage-specific fallback codes without exposing credentials', async () => {
+  const controlToken = 'control-plane-stage-secret';
+  const projectToken = 'temporary-stage-secret';
+
+  for (const [stage, expectedCode] of [
+    ['/project/config', 'project_mcp_enable_failed'],
+    ['/mcp/agent-instructions', 'project_agent_instruction_failed'],
+  ] as const) {
+    const projectCalls: string[] = [];
+    const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+      if (url.pathname === '/api/projects/project-1') {
+        return jsonResponse({ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project.example' });
+      }
+      if (url.pathname === '/api/projects/project-1/access-url') {
+        const encodedUrl = Buffer.from('https://project.example').toString('base64');
+        return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+      }
+      if (url.origin === 'https://project.example') {
+        projectCalls.push(url.pathname);
+        if (url.pathname === stage) throw new Error(`backend network failure ${controlToken} ${projectToken}`);
+        if (url.pathname === '/project/config') return jsonResponse({ success: true });
+        if (url.pathname === '/mcp/agent-instructions') {
+          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
+        }
+      }
+      return jsonResponse({ error: 'unexpected_request' }, 500);
+    }));
+
+    await assert.rejects(api.prepareProjectMcp('project-1', 'roo'), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.category, 'upstream_unavailable');
+      assert.equal(error.code, expectedCode);
+      assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
+      return true;
+    });
+    assert.deepEqual(projectCalls, stage === '/project/config'
+      ? ['/project/config']
+      : ['/project/config', '/mcp/agent-instructions']);
+  }
+});
+
 test('project access handoff accepts top-level and nested URL aliases', async () => {
   const projectToken = 'project-entry-token';
   const encodedUrl = Buffer.from('https://project.example').toString('base64');
@@ -366,6 +448,7 @@ test('project config failure stops before agent instructions and redacts the tem
   await assert.rejects(api.prepareProjectMcp('project-1', 'roo'), (error: unknown) => {
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'forbidden');
+    assert.equal(error.code, 'forbidden');
     assert.doesNotMatch(error.message, new RegExp(projectToken));
     return true;
   });
@@ -399,7 +482,8 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
     await assert.rejects(api.prepareProjectMcp('project-1', 'roo'), (error: unknown) => {
       assert.ok(error instanceof SpalaApiError);
       assert.equal(error.category, 'invalid_upstream_response');
-      assert.doesNotMatch(error.message, /control-plane-secret/);
+      assert.equal(error.code, 'invalid_project_bootstrap_material');
+      assert.doesNotMatch(error.message, /control-plane-secret|project-entry-token/);
       return true;
     });
     assert.equal(calls.some(url => url.pathname === '/api/projects/project-1/mcp/prepare'), false);
