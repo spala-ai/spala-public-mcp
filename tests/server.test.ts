@@ -11,6 +11,8 @@ const upstreamCalls: Array<{ url: URL; method: string; authorization: string; bo
 const expiredDashboardTokens = new Set<string>();
 const revokedAccessTokens = new Set<string>();
 const projectConfigFailures = new Set<string>();
+let newAccountProfile: { firstName: string; lastName: string } | undefined;
+let newAccountOrganization: { id: string; name: string } | undefined;
 const replayStatePath = mkdtempSync(join(tmpdir(), 'mcp-spala-ai-server-replay-'));
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -43,14 +45,34 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     return Response.json({ error: 'not_found' }, { status: 404 });
   }
   const dashboardToken = authorization.replace(/^Bearer /, '');
-  if (!['dashboard-valid', 'dashboard-plan'].includes(dashboardToken) || expiredDashboardTokens.has(dashboardToken)) {
+  if (!['dashboard-valid', 'dashboard-plan', 'dashboard-new'].includes(dashboardToken) || expiredDashboardTokens.has(dashboardToken)) {
     return Response.json({ error: 'invalid_token' }, { status: 401 });
   }
   if (url.pathname === '/api/me') {
+    if (dashboardToken === 'dashboard-new') {
+      return Response.json({
+        user: {
+          id: 'user-new',
+          email: 'new@example.test',
+          ...(newAccountProfile ? { first_name: newAccountProfile.firstName, last_name: newAccountProfile.lastName } : {}),
+        },
+        organizations: newAccountOrganization ? [newAccountOrganization] : [],
+      });
+    }
     return Response.json({
-      user: { id: 'user-1', email: 'user@example.test' },
+      user: { id: 'user-1', email: 'user@example.test', first_name: 'Test', last_name: 'User' },
       organizations: [{ id: 'org-1', name: 'First organization' }],
     });
+  }
+  if (dashboardToken === 'dashboard-new' && url.pathname === '/api/users' && init?.method === 'PATCH') {
+    const body = JSON.parse(String(init.body)) as { first_name: string; last_name: string };
+    newAccountProfile = { firstName: body.first_name, lastName: body.last_name };
+    return Response.json({});
+  }
+  if (dashboardToken === 'dashboard-new' && url.pathname === '/api/organizations' && init?.method === 'POST') {
+    const body = JSON.parse(String(init.body)) as { name: string };
+    newAccountOrganization = { id: 'org-new', name: body.name };
+    return Response.json({ organization: { organization_id: 'org-new', name: body.name } }, { status: 201 });
   }
   if (url.pathname === '/api/projects' && init?.method === 'GET') {
     return Response.json({ projects: [{ id: 'project-1', project_name: 'Project One', status: 'ready', subdomain: 'project-one.example' }] });
@@ -281,9 +303,10 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     authenticated: true,
     tokenStatus: 'active',
     subject: 'user-1',
-    user: { id: 'user-1', email: 'user@example.test' },
+    user: { id: 'user-1', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
     organizations: [{ id: 'org-1', name: 'First organization' }],
-    next: 'Reuse the project in .spala/project.json when present; otherwise call project_list before deciding whether project_create is needed.',
+    accountSetup: { state: 'ready', missingFields: [] },
+    next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.',
   });
 
   const connected = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
@@ -367,6 +390,55 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   } finally {
     expiredDashboardTokens.delete('dashboard-valid');
   }
+});
+
+test('new account setup collects profile and company before first named project creation', async () => {
+  newAccountProfile = undefined;
+  newAccountOrganization = undefined;
+  const authorization = await authorize('dashboard-new');
+  const token = await responseJson(await redeem(authorization.clientId, authorization.code, authorization.verifier));
+  const bearer = `Bearer ${token.access_token as string}`;
+
+  const initial = await toolBody(await mcpRequest('account_status', {}, bearer));
+  assert.deepEqual(initial.accountSetup, {
+    state: 'required',
+    missingFields: ['firstName', 'lastName', 'companyName'],
+    nextTool: 'account_setup',
+  });
+
+  const setup = await toolBody(await mcpRequest('account_setup', {
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    companyName: 'Analytical Apps',
+  }, bearer));
+  assert.equal(setup.accountSetup, 'complete');
+  assert.equal(setup.profileUpdated, true);
+  assert.equal(setup.organizationCreated, true);
+  assert.deepEqual(setup.organization, { id: 'org-new', name: 'Analytical Apps' });
+
+  const organizationCreates = upstreamCalls.filter(call => (
+    call.authorization === 'Bearer dashboard-new'
+    && call.url.pathname === '/api/organizations'
+    && call.method === 'POST'
+  )).length;
+  const repeatedSetup = await toolBody(await mcpRequest('account_setup', {}, bearer));
+  assert.equal(repeatedSetup.accountSetup, 'complete');
+  assert.equal(repeatedSetup.profileUpdated, false);
+  assert.equal(repeatedSetup.organizationCreated, false);
+  assert.equal(upstreamCalls.filter(call => (
+    call.authorization === 'Bearer dashboard-new'
+    && call.url.pathname === '/api/organizations'
+    && call.method === 'POST'
+  )).length, organizationCreates, 'repeating setup must not create another organization');
+
+  const created = await toolBody(await mcpRequest('project_create', {
+    name: 'Task Management App',
+    organizationId: 'org-new',
+  }, bearer));
+  assert.equal(created.created, true);
+  assert.equal((created.organization as { id: string }).id, 'org-new');
+  assert.ok(upstreamCalls.some(call => call.url.pathname === '/api/users' && call.method === 'PATCH'));
+  assert.ok(upstreamCalls.some(call => call.url.pathname === '/api/organizations' && call.method === 'POST'));
 });
 
 test('authorization rejects replay, PKCE mismatch, dashboard auth failure, and unregistered redirects', async () => {
