@@ -492,6 +492,20 @@ function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): strin
   return consumeUrl;
 }
 
+function rethrowProjectStage(error: unknown, code: string): never {
+  if (error instanceof SpalaApiError) {
+    throw new SpalaApiError({
+      category: error.category,
+      status: error.status,
+      code: error.code || code,
+      message: error.message,
+      checkoutUrl: error.checkoutUrl,
+      organizationChoices: error.organizationChoices,
+    });
+  }
+  throw error;
+}
+
 export function createSpalaApiClient(
   config: AppConfig,
   controlPlaneAccessToken: string,
@@ -800,6 +814,7 @@ export function createSpalaApiClient(
       if (!project || project.id !== id) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
+          code: 'invalid_project_record',
           message: 'The Spala control plane returned an invalid project record.',
         });
       }
@@ -809,25 +824,35 @@ export function createSpalaApiClient(
       if (!access || access.token.includes(controlPlaneAccessToken)) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
+          code: 'invalid_project_access_handoff',
           message: 'The Spala control plane returned an invalid project access handoff.',
         });
       }
 
-      await requestProjectJson(access.projectUrl, access.token, 'POST', '/project/config', {
-        securityConfig: { mcpEnabled: true },
-      });
+      try {
+        await requestProjectJson(access.projectUrl, access.token, 'POST', '/project/config', {
+          securityConfig: { mcpEnabled: true },
+        });
+      } catch (error) {
+        rethrowProjectStage(error, 'project_mcp_enable_failed');
+      }
 
-      const instructionSession = await requestProjectJson(
-        access.projectUrl,
-        access.token,
-        'POST',
-        '/mcp/agent-instructions',
-        {
-          scope: 'builder,project,data',
-          clientName: `Spala ${client} agent`,
-          deliveryMode: 'one-time',
-        },
-      );
+      let instructionSession: unknown;
+      try {
+        instructionSession = await requestProjectJson(
+          access.projectUrl,
+          access.token,
+          'POST',
+          '/mcp/agent-instructions',
+          {
+            scope: 'builder,project,data',
+            clientName: `Spala ${client} agent`,
+            deliveryMode: 'one-time',
+          },
+        );
+      } catch (error) {
+        rethrowProjectStage(error, 'project_agent_instruction_failed');
+      }
       const bootstrapConsumeUrl = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
       const mcpUrl = parseProjectMcpUrl(`${access.projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
       const manifestUrl = parsePublicHttpsUrl(
@@ -843,6 +868,7 @@ export function createSpalaApiClient(
       ) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
+          code: 'invalid_project_bootstrap_material',
           message: 'The project backend returned invalid MCP bootstrap material.',
         });
       }
