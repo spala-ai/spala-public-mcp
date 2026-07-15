@@ -495,10 +495,102 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.deepEqual(calls, [
       'list:org-1',
       'prepare:project-1:codex',
+      'list:org-1',
       'prepare:project-1:codex',
+      'list:org-1',
       'prepare:project-1:roo',
     ]);
   });
+});
+
+test('raw project IDs are verified against every request-principal organization before project preparation', async () => {
+  const accountA: SpalaPrincipal = {
+    subject: 'account-a',
+    user: { id: 'account-a', email: 'account-a@example.test' },
+    organizations: [
+      { id: 'org-a-1', name: 'Account A first organization' },
+      { id: 'org-a-2', name: 'Account A second organization' },
+    ],
+  };
+  const accountB: SpalaPrincipal = {
+    subject: 'account-b',
+    user: { id: 'account-b', email: 'account-b@example.test' },
+    organizations: [{ id: 'org-b', name: 'Account B organization' }],
+  };
+  const accountAProject = { ...project, id: 'project-a', organizationId: 'org-a-2' };
+  const accountBProject = { ...project, id: 'project-b', organizationId: 'org-b' };
+  const calls: string[] = [];
+  const api = apiStub({
+    async listProjects(input) {
+      const organizationId = input?.organizationId;
+      calls.push(`list:${organizationId}`);
+      const projectsByOrganization: Record<string, typeof project[]> = {
+        'org-a-1': [],
+        'org-a-2': [accountAProject],
+        'org-b': [accountBProject],
+      };
+      return {
+        organization: { id: organizationId!, name: `Organization ${organizationId}` },
+        projects: projectsByOrganization[organizationId!] || [],
+      };
+    },
+    async prepareProjectMcp(projectId, client) {
+      calls.push(`prepare:${projectId}:${client}`);
+      return { ...handoff, projectId, projectName: projectId };
+    },
+    async getProjectHandoff(projectId) {
+      calls.push(`handoff:${projectId}`);
+      return { ...handoff, projectId, projectName: projectId };
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    for (const name of ['project_connect', 'project_select', 'project_get_mcp_manifest']) {
+      const result = await client.callTool({ name, arguments: { projectId: 'project-b', client: 'codex' } });
+      assert.equal(result.isError, true, name);
+      assert.equal(resultJson(result).error, 'project_not_found', name);
+    }
+    const publicContext = await client.callTool({
+      name: 'project_get_public_context',
+      arguments: { projectId: 'project-b' },
+    });
+    assert.equal(publicContext.isError, true);
+    assert.equal(resultJson(publicContext).error, 'project_not_found');
+  }, accountA);
+  assert.deepEqual(calls, [
+    'list:org-a-1', 'list:org-a-2',
+    'list:org-a-1', 'list:org-a-2',
+    'list:org-a-1', 'list:org-a-2',
+    'list:org-a-1', 'list:org-a-2',
+  ]);
+  assert.equal(
+    calls.some(call => call.startsWith('handoff:')),
+    false,
+    'foreign IDs must not call getProjectHandoff',
+  );
+  assert.equal(
+    calls.some(call => call.startsWith('prepare:')),
+    false,
+    'foreign IDs must not call getProjectAccessUrl or the project backend through prepareProjectMcp',
+  );
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: 'project-a', client: 'codex' },
+    });
+    assert.notEqual(result.isError, true);
+  }, accountA);
+  assert.deepEqual(calls.slice(-3), ['list:org-a-1', 'list:org-a-2', 'prepare:project-a:codex']);
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: 'project-b', client: 'codex' },
+    });
+    assert.notEqual(result.isError, true);
+  }, accountB);
+  assert.deepEqual(calls.slice(-2), ['list:org-b', 'prepare:project-b:codex']);
 });
 
 test('account_status reports only request-verified identity state', async () => {

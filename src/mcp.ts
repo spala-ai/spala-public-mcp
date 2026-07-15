@@ -719,8 +719,16 @@ const PROJECT_MCP_INSTALL_NEXT_STEPS = [
 async function resolveProjectId(
   api: SpalaApiClient,
   selector: ProjectSelector,
+  verifiedPrincipal: SpalaPrincipal,
 ): Promise<{ project?: SpalaProject; projectId: string } | null> {
-  if (selector.projectId) return { projectId: selector.projectId };
+  if (selector.projectId) {
+    for (const organization of verifiedPrincipal.organizations) {
+      const listed = await api.listProjects({ organizationId: organization.id });
+      const project = byIdOrSubdomain(listed.projects, selector.projectId);
+      if (project) return { project, projectId: project.id };
+    }
+    return null;
+  }
   const listed = await api.listProjects({ organizationId: selector.organizationId });
   const project = byIdOrSubdomain(listed.projects, undefined, selector.subdomain);
   return project ? { project, projectId: project.id } : null;
@@ -729,8 +737,9 @@ async function resolveProjectId(
 async function resolveHandoff(
   api: SpalaApiClient,
   selector: ProjectSelector,
+  verifiedPrincipal: SpalaPrincipal,
 ): Promise<{ project?: SpalaProject; handoff: Awaited<ReturnType<SpalaApiClient['getProjectHandoff']>> } | null> {
-  const resolved = await resolveProjectId(api, selector);
+  const resolved = await resolveProjectId(api, selector, verifiedPrincipal);
   if (!resolved) return null;
   return { project: resolved.project, handoff: await api.getProjectHandoff(resolved.projectId) };
 }
@@ -739,8 +748,9 @@ async function prepareHandoff(
   api: SpalaApiClient,
   selector: ProjectSelector,
   client: SupportedInstallClient,
+  verifiedPrincipal: SpalaPrincipal,
 ): Promise<{ project?: SpalaProject; handoff: Awaited<ReturnType<SpalaApiClient['prepareProjectMcp']>> } | null> {
-  const resolved = await resolveProjectId(api, selector);
+  const resolved = await resolveProjectId(api, selector, verifiedPrincipal);
   if (!resolved) return null;
   return { project: resolved.project, handoff: await api.prepareProjectMcp(resolved.projectId, client) };
 }
@@ -1049,7 +1059,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const client = requireInstallClient(selector);
     if (typeof client !== 'string') return client;
     try {
-      const resolved = await prepareHandoff(api!, selector, client);
+      const resolved = await prepareHandoff(api!, selector, client, ctx.verifiedPrincipal!);
       if (!resolved) return json({ error: 'project_not_found' }, true);
       const { handoff } = resolved;
       if (!handoff.mcpEnabled || !handoff.mcpUrl) {
@@ -1119,7 +1129,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const client = requireInstallClient(selector);
     if (typeof client !== 'string') return client;
     try {
-      const resolved = await prepareHandoff(api!, selector, client);
+      const resolved = await prepareHandoff(api!, selector, client, ctx.verifiedPrincipal!);
       if (!resolved) return json({ error: 'project_not_found' }, true);
       const { handoff } = resolved;
       if (!handoff.mcpEnabled || !handoff.mcpUrl || !handoff.manifestUrl) {
@@ -1176,7 +1186,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const auth = requireVerifiedPrincipal(ctx, api, 'project_get_public_context');
     if (typeof auth !== 'string') return auth;
     try {
-      const resolved = await resolveHandoff(api!, selector);
+      const resolved = await resolveHandoff(api!, selector, ctx.verifiedPrincipal!);
       if (!resolved) return json({ error: 'project_not_found' }, true);
       return json({
         project: resolved.project,
