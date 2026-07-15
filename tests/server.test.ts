@@ -475,6 +475,21 @@ test('public discovery distinguishes the protocol authorization endpoint from da
   }
 });
 
+test('install manifest exposes machine-readable 0.1.8 installer init and status commands', async () => {
+  const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
+  const commands = manifest.commands as Record<string, unknown>;
+
+  assert.deepEqual(commands.installerNpm, {
+    init: ['npx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+  });
+  assert.deepEqual(commands.installerPnpm, {
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
+  });
+  assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
+});
+
 test('public response bodies, headers, metadata, and tool results never disclose the internal origin', async () => {
   const checks: Array<Promise<Response>> = [
     fetch(`${baseUrl}/`),

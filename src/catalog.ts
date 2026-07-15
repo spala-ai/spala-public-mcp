@@ -31,7 +31,7 @@ export const docsIndex = [
     id: 'public-mcp-install-command',
     title: 'Install Spala Public MCP with npm',
     url: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
-    summary: 'Use npx @spala-ai/mcp-install --public --yes to install the public Spala MCP as spala_public_mcp. A project handoff uses pnpm dlx @spala-ai/mcp-install project bind with projectId, projectUrl, exact mcpUrl, deterministic serverName, client, and workspace scope. Project MCP must never be installed globally.',
+    summary: 'Use pnpm dlx @spala-ai/mcp-install init --client <client> --yes --json, then run pnpm dlx @spala-ai/mcp-install status --client <client> --json with the same client and follow the exact JSON steps. After authentication, call project_connect once for workspace binding and execute its returned workspace-only plan. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
