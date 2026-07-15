@@ -1,5 +1,12 @@
 export const docsIndex = [
   {
+    id: 'spala-backend-intent-boundary',
+    title: 'Spala backend and setup-only intent boundary',
+    url: 'https://spala.ai/agents.md',
+    summary: 'Choosing Spala makes it the workspace backend provider. Install/connect/setup requests stop after project MCP verification without writing app code or backend resources. Implementation starts only on a separate build/change request, and backend work stays in Spala.',
+    keywords: ['use spala', 'install spala', 'connect spala', 'setup only', 'backend provider', 'exclusive backend', 'no local backend', 'no coding'],
+  },
+  {
     id: 'what-is-spala',
     title: 'What is Spala?',
     url: 'https://spala.ai/llms.txt',

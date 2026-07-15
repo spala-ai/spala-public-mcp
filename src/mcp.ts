@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catalog.js';
 import type { AppConfig } from './config.js';
+import { SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 
 type ToolResult = {
@@ -19,7 +20,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
-const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.8';
+const PROJECT_INSTALLER_SPEC = '@spala-ai/mcp-install@0.1.9';
 
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
@@ -241,6 +242,7 @@ const TOOL_DESCRIPTIONS = {
   spalaHelp: [
     'Use first when an agent, directory reviewer, or MCP client needs a human-readable overview of Spala.',
     'Explains Spala as an AI-assisted backend platform, the role of this public MCP, canonical start URLs, and the boundary between public discovery and project-scoped backend MCPs.',
+    SPALA_BACKEND_INTENT_TEXT,
     'Returns Markdown guidance only; no authentication or project mutation.',
   ].join(' '),
   onboarding: [
@@ -270,7 +272,7 @@ const TOOL_DESCRIPTIONS = {
   accountStatus: [
     'AUTH REQUIRED; READ-ONLY. Verify that the current public MCP OAuth credential is active.',
     'Returns the authenticated identity, available organizations, account readiness, and the exact missing account fields without exposing OAuth or dashboard credentials.',
-    'When setup is incomplete, ask the human one concise terminal question for only the reported fields, then call account_setup before project work.',
+    'Call immediately after OAuth without waiting for another user request. When setup is incomplete, ask the human one concise terminal question for only the reported fields, then call account_setup before project selection, planning, or coding.',
   ].join(' '),
   accountSetup: [
     'AUTH REQUIRED; WRITES MISSING ACCOUNT DATA TO THE SPALA CONTROL PLANE.',
@@ -637,6 +639,8 @@ const PROJECT_MCP_INSTALL_NEXT_STEPS = [
   'Do not start native or manual project OAuth for this agentic flow. Manual UI OAuth is separate.',
   'Call mcp_get_onboarding on the newly added project MCP.',
   'Follow the installer JSON reload instruction for the selected client.',
+  SPALA_BACKEND_INTENT.setupOnly,
+  SPALA_BACKEND_INTENT.buildRequest,
 ] as const;
 
 async function resolveProjectId(
@@ -677,8 +681,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'This is the public Spala MCP for mcp.spala.ai.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
-      'Call account_status first after OAuth. If it reports missing account data, ask the human for only those fields and call account_setup before project work.',
+      'Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, ask the human for only those fields and call account_setup before project selection, planning, or coding.',
       'After account setup, ask for or confidently derive a real project name, then reuse the project bound to the current workspace or create one only when needed.',
+      SPALA_BACKEND_INTENT_TEXT,
       'Agents must not construct, append, or infer project MCP URLs.',
       'Do not mutate project backend internals here. Use the returned project MCP for backend changes.',
     ].join('\n'),
@@ -688,6 +693,10 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     '# Spala Public MCP',
     '',
     'Spala is the backend control layer for AI-built apps.',
+    '',
+    '## Intent boundary',
+    '',
+    SPALA_BACKEND_INTENT_TEXT,
     '',
     'Use this public MCP to discover Spala, list templates/addons/docs, manage authenticated projects, and obtain exact project MCP handoffs.',
       'Public tools are anonymous. Account and project tools require an api-scoped Spala MCP OAuth bearer and use secure server-side delegation.',
@@ -705,10 +714,11 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     product: 'Spala',
     publicMcpRole: 'Agent discovery, public docs/templates/addons lookup, OAuth metadata, authenticated project management, and exact project MCP handoff.',
     projectMcpRole: 'Build and operate one Spala backend project.',
+    intentBoundary: SPALA_BACKEND_INTENT,
     workflow: [
       'Call spala_get_tool_map.',
       'Search docs/templates/addons if needed.',
-      'Authenticate through Spala MCP OAuth with api scope, then call account_status to verify the session is active.',
+      'Authenticate through Spala MCP OAuth with api scope, then call account_status immediately without waiting for another user request, source files, planning, or coding.',
       'If account_status reports setup required, ask one concise terminal question for exactly its missingFields and call account_setup. Do not use placeholder personal, company, or workspace names.',
       'After account setup is ready, ask for or confidently derive the project name from the explicit user request.',
       'If .spala/project.json exists in the current workspace, verify and reuse that project. Otherwise call project_list and create a project only when no intended project exists.',
@@ -717,6 +727,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'Run installPlan.argv immediately from the intended project root and feed bootstrap.consumeUrl as its single stdin line through the process API. It must bind .spala/project.json and must not install project MCP globally.',
       'The installer configures a local credential proxy after bootstrap. Do not start native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated.',
       'Follow the installer JSON reload instruction for the selected client.',
+      'If the user asked only to install, connect, configure, or set up Spala, stop after verifying the project MCP connection. Do not write application code or mutate project resources.',
+      'Only continue when the user separately requested implementation, and only after account setup and project MCP verification are complete. Keep all backend work in Spala project MCP; do not scaffold a competing local backend.',
       'On project MCP call mcp_get_onboarding, mcp_get_tool_map, mcp_list_skills, mcp_get_skill({ name: "spala-developer" }), and project_get_builder_context.',
     ],
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
@@ -756,6 +768,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         code: 'enabled',
         reason: 'Project connect prepares MCP server-side and returns exact workspace-only handoff URLs plus one-time installer bootstrap.',
       },
+      intentBoundary: SPALA_BACKEND_INTENT,
       urlResolution: {
         rule: 'Do not hardcode, construct, append, or infer project MCP URL patterns.',
         preferredSource: 'Authenticated project handoff returned by Spala.',
@@ -979,6 +992,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           projectOAuthRequired: false,
         },
         nextSteps: PROJECT_MCP_INSTALL_NEXT_STEPS,
+        intentBoundary: SPALA_BACKEND_INTENT,
         rule: 'Use this exact clean mcpUrl only in the bound workspace. Never guess the URL or install this project MCP globally.',
       });
     } catch (error) {
@@ -1050,6 +1064,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           projectOAuthRequired: false,
         },
         nextSteps: PROJECT_MCP_INSTALL_NEXT_STEPS,
+        intentBoundary: SPALA_BACKEND_INTENT,
         manifestNote: 'manifestUrl is informational. Do not fetch or pass a remote manifest to the installer; install with the exact mcpUrl in installPlan.argv.',
         rule: 'Use this exact mcpUrl for project MCP. Do not derive a URL from the project subdomain or host.',
       });
@@ -1073,6 +1088,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       if (!resolved) return json({ error: 'project_not_found' }, true);
       return json({
         project: resolved.project,
+        intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {
           ...resolved.handoff,
           firstCalls: ['mcp_get_onboarding', 'mcp_get_tool_map', 'mcp_list_skills', 'mcp_get_skill({ name: "spala-developer" })', 'project_get_builder_context'],
