@@ -1,38 +1,106 @@
-import type { AppConfig } from './config.js';
 import { isIP } from 'node:net';
+import type { AppConfig } from './config.js';
+
+export type SpalaUser = {
+  id: string;
+  email?: string;
+  name?: string;
+};
+
+export type SpalaOrganization = {
+  id: string;
+  name?: string;
+};
+
+export type SpalaPrincipal = {
+  subject: string;
+  user: SpalaUser;
+  organizations: SpalaOrganization[];
+};
 
 export type SpalaProject = {
   id: string;
   name: string;
-  slug?: string;
-  status?: string;
-  dashboardUrl?: string;
-  mcpUrl?: string;
-  template?: string;
-  description?: string;
-  dryRunOnly?: boolean;
-  note?: string;
+  status: string;
+  subdomain: string;
+  organizationId?: string;
 };
 
-export type CreateProjectInput = {
+export type ProjectMcpHandoff = {
+  projectId: string;
+  projectName: string;
+  status: string;
+  projectUrl: string;
+  mcpEnabled: boolean;
+  mcpUrl?: string;
+  manifestUrl?: string;
+};
+
+export type PreparedProjectMcpHandoff = ProjectMcpHandoff & {
+  bootstrapConsumeUrl: string;
+};
+
+export type ProjectOrganizationInput = {
+  organizationId?: string;
+};
+
+export type CreateProjectInput = ProjectOrganizationInput & {
   name: string;
-  template?: string;
-  description?: string;
 };
 
 export type SpalaApiClient = {
-  listProjects(): Promise<SpalaProject[]>;
-  createProject(input: CreateProjectInput): Promise<SpalaProject>;
-  resolveProjectAccess(project: SpalaProject): Promise<SpalaProject>;
+  getPrincipal(): Promise<SpalaPrincipal>;
+  listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
+  createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
+  getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
+  prepareProjectMcp(projectId: string, client: 'codex' | 'roo'): Promise<PreparedProjectMcpHandoff>;
 };
 
-export class ProjectHandoffUnavailableError extends Error {
-  readonly code = 'project_handoff_unavailable';
+export type SpalaApiErrorCategory =
+  | 'authentication'
+  | 'insufficient_scope'
+  | 'forbidden'
+  | 'organization_selection_required'
+  | 'payment_required'
+  | 'plan_restricted'
+  | 'not_found'
+  | 'upstream_unavailable'
+  | 'invalid_upstream_response'
+  | 'request_failed';
 
-  constructor() {
-    super('Authenticated project lookup is unavailable because project handoff is not enabled for this public MCP release.');
-    this.name = 'ProjectHandoffUnavailableError';
+export class SpalaApiError extends Error {
+  readonly category: SpalaApiErrorCategory;
+  readonly status?: number;
+  readonly code?: string;
+  readonly checkoutUrl?: string;
+  readonly organizationChoices?: SpalaOrganization[];
+
+  constructor(options: {
+    category: SpalaApiErrorCategory;
+    message: string;
+    status?: number;
+    code?: string;
+    checkoutUrl?: string;
+    organizationChoices?: SpalaOrganization[];
+  }) {
+    super(options.message);
+    this.name = 'SpalaApiError';
+    this.category = options.category;
+    this.status = options.status;
+    this.code = options.code;
+    this.checkoutUrl = options.checkoutUrl;
+    this.organizationChoices = options.organizationChoices?.map(organization => ({ ...organization }));
   }
+}
+
+type FetchLike = typeof fetch;
+
+
+function stringField(record: Record<string, unknown>, key: string, maximum = 256): string | undefined {
+  const value = record[key];
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= maximum ? trimmed : undefined;
 }
 
 function ipv4Octets(value: string): number[] | undefined {
@@ -62,12 +130,7 @@ function ipv4MappedOctets(normalizedIpv6: string): number[] | undefined {
   if (groups.length !== 2) return undefined;
   const values = groups.map(group => Number.parseInt(group, 16));
   if (!values.every(value => Number.isInteger(value) && value >= 0 && value <= 0xffff)) return undefined;
-  return [
-    values[0] >> 8,
-    values[0] & 0xff,
-    values[1] >> 8,
-    values[1] & 0xff,
-  ];
+  return [values[0] >> 8, values[0] & 0xff, values[1] >> 8, values[1] & 0xff];
 }
 
 function isForbiddenHostname(hostname: string): boolean {
@@ -94,10 +157,22 @@ function isForbiddenHostname(hostname: string): boolean {
   return false;
 }
 
-/** Accept only a complete public HTTPS MCP endpoint explicitly returned by the platform. */
-export function parseProjectMcpUrl(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim() || value.length > 2_048) return undefined;
-  const raw = value.trim();
+function hasValidProjectScopeQuery(url: URL): boolean {
+  const entries = [...url.searchParams.entries()];
+  if (entries.length !== 1) return false;
+  const [key, value] = entries[0]!;
+  if (key !== 'scope') return false;
+
+  const scopes = value.split(',');
+  const allowedScopes = new Set(['builder', 'project', 'data']);
+  return scopes.length > 0
+    && scopes.every(scope => scope.length > 0 && allowedScopes.has(scope))
+    && new Set(scopes).size === scopes.length;
+}
+
+function parsePublicHttpsUrl(value: unknown, options: { allowProjectScope?: boolean; requireCanonical?: boolean } = {}): string | undefined {
+  if (typeof value !== 'string' || !value || value !== value.trim() || value.length > 2_048) return undefined;
+  const raw = value;
   if (/\/(?:\.{1,2}|%2e(?:%2e)?)(?:\/|$)/i.test(raw)) return undefined;
 
   let url: URL;
@@ -107,7 +182,10 @@ export function parseProjectMcpUrl(value: unknown): string | undefined {
     return undefined;
   }
 
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash) return undefined;
+  if (url.search) {
+    if (!options.allowProjectScope || !hasValidProjectScopeQuery(url)) return undefined;
+  }
   if (!url.hostname || isForbiddenHostname(url.hostname)) return undefined;
   if (url.pathname.includes('//') || /%2f|%5c/i.test(url.pathname)) return undefined;
 
@@ -119,68 +197,405 @@ export function parseProjectMcpUrl(value: unknown): string | undefined {
   }
   if (decodedPath.split('/').some(segment => segment === '.' || segment === '..')) return undefined;
 
-  const normalizedPath = url.pathname.replace(/\/+$/, '');
-  if (!normalizedPath.endsWith('/mcp')) return undefined;
-  url.pathname = normalizedPath;
-  return url.toString();
+  if (options.requireCanonical && url.toString() !== raw) return undefined;
+  return raw;
 }
 
-/** Parse only documented top-level project fields. Never recurse into arbitrary payloads or derive URLs. */
+/** Accept only a complete public HTTPS MCP endpoint explicitly returned by the platform. */
+export function parseProjectMcpUrl(value: unknown): string | undefined {
+  const parsed = parsePublicHttpsUrl(value, { allowProjectScope: true, requireCanonical: true });
+  if (!parsed) return undefined;
+  const url = new URL(parsed);
+  if (!/\/mcp\/?$/.test(url.pathname)) return undefined;
+  return parsed;
+}
+
+/** Parse only the documented project list/create fields. */
 export function parseProjectRecord(raw: unknown): SpalaProject | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
-  const id = typeof record['id'] === 'string' ? record['id'].trim() : '';
-  const name = typeof record['name'] === 'string' ? record['name'].trim() : '';
-  if (!id || !name || id.length > 256 || name.length > 256) return undefined;
-
-  const slug = typeof record['slug'] === 'string' && record['slug'].trim()
-    ? record['slug'].trim()
-    : undefined;
-  const status = typeof record['status'] === 'string' && record['status'].trim()
-    ? record['status'].trim()
-    : undefined;
-  const mcpUrl = parseProjectMcpUrl(record['mcpUrl'] ?? record['mcp_url']);
-  return { id, name, slug, status, mcpUrl };
+  const id = stringField(record, 'id');
+  const name = stringField(record, 'project_name');
+  const status = stringField(record, 'status', 128);
+  const subdomain = stringField(record, 'subdomain');
+  if (!id || !name || !status || !subdomain) return undefined;
+  return { id, name, status, subdomain };
 }
 
-function dryRunProject(config: AppConfig, input: CreateProjectInput): SpalaProject {
-  const name = input.name.trim();
-  const template = input.template?.trim();
-  const description = input.description?.trim();
-  if (!name || name.length > 120) throw new Error('Dry-run project name must be between 1 and 120 characters.');
-  if (template !== undefined && (!template || template.length > 128)) {
-    throw new Error('Dry-run project template must be between 1 and 128 characters.');
-  }
-  if (description !== undefined && (!description || description.length > 2_000)) {
-    throw new Error('Dry-run project description must be between 1 and 2000 characters.');
-  }
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'project';
-  return {
-    id: `dry-run-${slug}`,
-    name,
-    slug,
-    status: 'dry-run',
-    dashboardUrl: config.dashboardUrl,
-    template,
-    description,
-    dryRunOnly: true,
-    note: 'Planning preview only. No project was created and no project MCP URL was resolved.',
+export function parseProjectHandoff(raw: unknown): ProjectMcpHandoff | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const projectId = stringField(record, 'projectId');
+  const projectName = stringField(record, 'projectName');
+  const status = stringField(record, 'status', 128);
+  const projectUrl = parsePublicHttpsUrl(record['projectUrl']);
+  const mcpEnabled = record['mcpEnabled'];
+  if (!projectId || !projectName || !status || !projectUrl || typeof mcpEnabled !== 'boolean') return undefined;
+
+  const mcpUrl = record['mcpUrl'] == null ? undefined : parseProjectMcpUrl(record['mcpUrl']);
+  const manifestUrl = record['manifestUrl'] == null
+    ? undefined
+    : parsePublicHttpsUrl(record['manifestUrl'], { allowProjectScope: true, requireCanonical: true });
+  if (record['mcpUrl'] != null && !mcpUrl) return undefined;
+  if (record['manifestUrl'] != null && !manifestUrl) return undefined;
+  if (mcpEnabled && (!mcpUrl || !manifestUrl)) return undefined;
+  return { projectId, projectName, status, projectUrl, mcpEnabled, mcpUrl, manifestUrl };
+}
+
+function parsePreparedProjectMcpHandoff(raw: unknown): PreparedProjectMcpHandoff | undefined {
+  const handoff = parseProjectHandoff(raw);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const rawUrl = record['bootstrapConsumeUrl'];
+  if (!handoff || typeof rawUrl !== 'string' || !rawUrl || rawUrl !== rawUrl.trim() || rawUrl.length > 4_096) return undefined;
+  return { ...handoff, bootstrapConsumeUrl: rawUrl };
+}
+
+function parseOrganization(raw: unknown): SpalaOrganization | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const id = stringField(record, 'id');
+  if (!id) return undefined;
+  return { id, name: stringField(record, 'name') ?? stringField(record, 'organization_name') };
+}
+
+function parsePrincipal(raw: unknown): SpalaPrincipal | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const userRaw = record['user'];
+  const organizationsRaw = record['organizations'];
+  if (!userRaw || typeof userRaw !== 'object' || Array.isArray(userRaw) || !Array.isArray(organizationsRaw)) return undefined;
+  const userRecord = userRaw as Record<string, unknown>;
+  const id = stringField(userRecord, 'id');
+  if (!id) return undefined;
+  const organizations = organizationsRaw.map(parseOrganization);
+  if (organizations.some(organization => !organization)) return undefined;
+  const user: SpalaUser = {
+    id,
+    email: stringField(userRecord, 'email', 320),
+    name: stringField(userRecord, 'name'),
   };
+  return { subject: id, user, organizations: organizations as SpalaOrganization[] };
 }
 
-export function createSpalaApiClient(config: AppConfig): SpalaApiClient {
+function parseProjectCollection(raw: unknown): SpalaProject[] | undefined {
+  const values = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray((raw as Record<string, unknown>)['projects'])
+      ? (raw as Record<string, unknown>)['projects'] as unknown[]
+      : undefined;
+  if (!values) return undefined;
+  const projects = values.map(parseProjectRecord);
+  return projects.some(project => !project) ? undefined : projects as SpalaProject[];
+}
+
+function parseCreatedProject(raw: unknown): SpalaProject | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  return parseProjectRecord(record['project'] ?? record);
+}
+
+function normalizedCode(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 128);
+  return normalized || undefined;
+}
+
+function safeErrorPayload(raw: unknown, accessToken: string): {
+  code?: string;
+  message?: string;
+  checkoutUrl?: string;
+} {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const record = raw as Record<string, unknown>;
+  const nested = record['error'];
+  const nestedRecord = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : undefined;
+  const rawCode = typeof nested === 'string' ? nested : nestedRecord?.['code'] ?? record['code'];
+  const code = typeof rawCode === 'string' && !rawCode.includes(accessToken)
+    ? normalizedCode(rawCode)
+    : undefined;
+  const rawMessage = (nestedRecord ? stringField(nestedRecord, 'message', 1_000) : undefined)
+    ?? stringField(record, 'message', 1_000);
+  const message = rawMessage ? rawMessage.split(accessToken).join('[redacted]') : undefined;
+  const rawCheckoutUrl = nestedRecord?.['checkoutUrl'] ?? nestedRecord?.['checkout_url'] ?? record['checkoutUrl'] ?? record['checkout_url'];
+  const checkoutUrl = typeof rawCheckoutUrl === 'string' && !rawCheckoutUrl.includes(accessToken)
+    ? parsePublicHttpsUrl(rawCheckoutUrl)
+    : undefined;
+  return { code, message, checkoutUrl };
+}
+
+function errorCategory(status: number, code?: string, message?: string): SpalaApiErrorCategory {
+  if (status === 401) return 'authentication';
+  if (status === 402) return 'payment_required';
+  if (status === 404) return 'not_found';
+  if (status >= 500) return 'upstream_unavailable';
+  if (/(?:free[ _-]?plan|plan[ _-]?restricted|payment|billing|subscription|upgrade|quota)/i.test(`${code || ''} ${message || ''}`)) {
+    return 'plan_restricted';
+  }
+  if (status === 403) return 'forbidden';
+  return 'request_failed';
+}
+
+function defaultErrorMessage(category: SpalaApiErrorCategory): string {
+  if (category === 'authentication') return 'The Spala MCP access token is invalid or expired.';
+  if (category === 'insufficient_scope') return 'The Spala MCP access token does not include the required api scope.';
+  if (category === 'organization_selection_required') return 'Select an organization before continuing.';
+  if (category === 'payment_required' || category === 'plan_restricted') return 'This operation requires an eligible Spala plan or completed payment.';
+  if (category === 'forbidden') return 'The authenticated user is not allowed to perform this project operation.';
+  if (category === 'not_found') return 'The requested Spala resource was not found.';
+  if (category === 'upstream_unavailable') return 'The Spala control plane is temporarily unavailable.';
+  return 'The Spala control-plane request failed.';
+}
+
+async function readBoundedResponseBody(response: Response, maximumBytes: number): Promise<string> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maximumBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      status: response.status,
+      code: 'upstream_response_too_large',
+      message: 'The Spala control plane returned a response that exceeds the allowed size.',
+    });
+  }
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          status: response.status,
+          code: 'upstream_response_too_large',
+          message: 'The Spala control plane returned a response that exceeds the allowed size.',
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
+function validBearerToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8_192 && !/\s/.test(value);
+}
+
+export function createSpalaApiClient(
+  config: AppConfig,
+  controlPlaneAccessToken: string,
+  fetchImpl: FetchLike = fetch,
+): SpalaApiClient {
+  if (!validBearerToken(controlPlaneAccessToken)) {
+    throw new SpalaApiError({ category: 'authentication', message: 'The Spala MCP access token is invalid.' });
+  }
+
+  let principalPromise: Promise<SpalaPrincipal> | undefined;
+
+  const requestJson = async (method: 'GET' | 'POST', pathname: string, options?: {
+    query?: Record<string, string>;
+    body?: Record<string, unknown>;
+  }): Promise<unknown> => {
+    const url = new URL(pathname, config.spalaApiBaseUrl);
+    for (const [key, value] of Object.entries(options?.query || {})) url.searchParams.set(key, value);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: {
+          authorization: `Bearer ${controlPlaneAccessToken}`,
+          ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+        },
+        body: options?.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+        redirect: 'error',
+        cache: 'no-store',
+      });
+      const bodyText = await readBoundedResponseBody(response, config.spalaApiResponseLimitBytes);
+      let payload: unknown;
+      try {
+        payload = bodyText ? JSON.parse(bodyText) : null;
+      } catch {
+        if (response.ok) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            status: response.status,
+            message: 'The Spala control plane returned an invalid response.',
+          });
+        }
+      }
+
+      if (!response.ok) {
+        const parsed = safeErrorPayload(payload, controlPlaneAccessToken);
+        const category = errorCategory(response.status, parsed.code, parsed.message);
+        throw new SpalaApiError({
+          category,
+          status: response.status,
+          code: parsed.code,
+          message: parsed.message || defaultErrorMessage(category),
+          checkoutUrl: parsed.checkoutUrl,
+        });
+      }
+      return payload;
+    } catch (error) {
+      if (error instanceof SpalaApiError) throw error;
+      throw new SpalaApiError({
+        category: 'upstream_unavailable',
+        message: 'The Spala control plane is temporarily unavailable.',
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const getPrincipal = (): Promise<SpalaPrincipal> => {
+    principalPromise ??= requestJson('GET', '/api/me').then(payload => {
+      const principal = parsePrincipal(payload);
+      if (!principal) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned an invalid identity response.',
+        });
+      }
+      return principal;
+    });
+    return principalPromise;
+  };
+
+  const resolveOrganization = async (organizationId?: string): Promise<SpalaOrganization> => {
+    const principal = await getPrincipal();
+    const requestedId = organizationId?.trim();
+    if (requestedId) {
+      const organization = principal.organizations.find(candidate => candidate.id === requestedId);
+      if (organization) return organization;
+      throw new SpalaApiError({
+        category: 'forbidden',
+        status: 403,
+        code: 'organization_access_denied',
+        message: 'The requested organization is not available to the authenticated user.',
+      });
+    }
+    if (principal.organizations.length === 0) {
+      throw new SpalaApiError({
+        category: 'forbidden',
+        status: 403,
+        code: 'organization_required',
+        message: 'The authenticated user does not have an available Spala organization.',
+      });
+    }
+    if (principal.organizations.length > 1) {
+      throw new SpalaApiError({
+        category: 'organization_selection_required',
+        code: 'organization_selection_required',
+        message: 'Multiple organizations are available. Provide organizationId to select one.',
+        organizationChoices: principal.organizations,
+      });
+    }
+    return principal.organizations[0]!;
+  };
+
+  const normalizeProjectId = (value: string): string => {
+    const id = value.trim();
+    if (!id || id.length > 256) {
+      throw new SpalaApiError({ category: 'request_failed', message: 'Project ID must be between 1 and 256 characters.' });
+    }
+    return id;
+  };
+
+  const verifiedProjectHandoff = (payload: unknown, expectedProjectId: string): ProjectMcpHandoff => {
+    const handoff = parseProjectHandoff(payload);
+    const containsAccessToken = handoff && Object.values(handoff).some(value =>
+      typeof value === 'string' && value.includes(controlPlaneAccessToken)
+    );
+    if (!handoff || handoff.projectId !== expectedProjectId || containsAccessToken) {
+      throw new SpalaApiError({
+        category: 'invalid_upstream_response',
+        message: 'Spala returned an invalid project MCP handoff.',
+      });
+    }
+    return handoff;
+  };
+
   return {
-    async listProjects() {
-      throw new ProjectHandoffUnavailableError();
+    getPrincipal,
+
+    async listProjects(input = {}) {
+      const organization = await resolveOrganization(input.organizationId);
+      const payload = await requestJson('GET', '/api/projects', {
+        query: { organizationId: organization.id },
+      });
+      const projects = parseProjectCollection(payload);
+      if (!projects) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned an invalid project list.',
+        });
+      }
+      return {
+        organization,
+        projects: projects.map(project => ({ ...project, organizationId: organization.id })),
+      };
     },
 
     async createProject(input) {
-      return dryRunProject(config, input);
+      const name = input.name.trim();
+      if (!name || name.length > 120) {
+        throw new SpalaApiError({ category: 'request_failed', message: 'Project name must be between 1 and 120 characters.' });
+      }
+      const organization = await resolveOrganization(input.organizationId);
+      const payload = await requestJson('POST', '/api/projects', {
+        body: { project_name: name, organization_id: organization.id },
+      });
+      const project = parseCreatedProject(payload);
+      if (!project) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned an invalid created project.',
+        });
+      }
+      return { organization, project: { ...project, organizationId: organization.id } };
     },
 
-    async resolveProjectAccess(project) {
-      if (project.dryRunOnly) return project;
-      throw new ProjectHandoffUnavailableError();
+    async getProjectHandoff(projectId) {
+      const id = normalizeProjectId(projectId);
+      const payload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+      return verifiedProjectHandoff(payload, id);
+    },
+
+    async prepareProjectMcp(projectIdValue, client) {
+      const id = normalizeProjectId(projectIdValue);
+      const payload = await requestJson('POST', `/api/projects/${encodeURIComponent(id)}/mcp/prepare`, {
+        body: { client },
+      });
+      const prepared = parsePreparedProjectMcpHandoff(payload);
+      const leaksControlPlaneCredential = prepared && Object.values(prepared).some(value =>
+        typeof value === 'string' && value.includes(controlPlaneAccessToken)
+      );
+      if (!prepared || prepared.projectId !== id || leaksControlPlaneCredential) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned invalid project MCP bootstrap material.',
+        });
+      }
+      return prepared;
     },
   };
 }

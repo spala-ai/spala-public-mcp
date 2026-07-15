@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "ai.spala/public-mcp",
   "title": "Spala Public MCP",
-  "description": "Discovery, OAuth metadata, and project MCP handoff guidance for Spala backend projects.",
+  "description": "Discovery, OAuth metadata, authenticated project operations, and exact project MCP handoff for Spala backend projects.",
   "version": "1.0.0",
   "websiteUrl": "https://spala.ai/mcp-profile/",
   "icons": [
@@ -46,9 +46,10 @@
       "oauthAuthorizationServer": "https://mcp.spala.ai/.well-known/oauth-authorization-server",
       "maintainer": "Spala AI",
       "contact": "paul@spala.ai",
-      "boundary": "Public MCP is for discovery, OAuth metadata, and project MCP handoff guidance. Backend changes happen on project MCP after Spala platform auth.",
-      "dryRunProjectCreate": "project_create is dry-run only in the current public MCP deployment."
+      "boundary": "Public MCP handles browser OAuth, authenticated account status, project selection/creation, and idempotent project MCP preparation. Backend resource changes happen on the selected project MCP.",
+      "projectCreateEffect": "project_create performs a real authenticated project creation.",
+      "projectMcpResolution": "Call project_connect, execute its workspace-only project bind argv, and send bootstrap.consumeUrl as the installer's single stdin line. Never place the capability in argv or shell text; do not use project OAuth or install globally.",
+      "projectMcpPreparationEffect": "project_connect, project_select, and project_get_mcp_manifest perform an idempotent authenticated control-plane write that verifies access and billing, enables MCP, prepares project agent instructions, and returns one-time installer bootstrap."
     }
   }
 }
-

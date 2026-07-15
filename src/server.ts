@@ -4,17 +4,19 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
-import { createSpalaPublicMcpServer, projectToolCapabilities, PUBLIC_TOOL_CAPABILITIES } from './mcp.js';
-import { createSpalaApiClient } from './spalaApi.js';
+import { createSpalaPublicMcpServer, projectToolCapabilities, PUBLIC_TOOL_CAPABILITIES, SUPPORTED_INSTALL_CLIENTS } from './mcp.js';
+import { createSpalaApiClient, SpalaApiError } from './spalaApi.js';
+import { PublicOAuthError, PublicOAuthFacade } from './publicOAuth.js';
 
 const config = loadConfig();
-const api = createSpalaApiClient(config);
+const publicOAuth = new PublicOAuthFacade(config);
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
 
-const MCP_RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_WINDOW_MS = 60_000;
 const mcpRateBuckets = new Map<string, { count: number; resetAt: number }>();
+const oauthRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function isSafeCorsOrigin(origin: string): boolean {
   let url: URL;
@@ -23,9 +25,7 @@ function isSafeCorsOrigin(origin: string): boolean {
   } catch {
     return false;
   }
-  const localHttp = url.protocol === 'http:'
-    && ['localhost', '127.0.0.1', '::1'].includes(url.hostname.toLowerCase());
-  return origin === url.origin && (url.protocol === 'https:' || localHttp);
+  return origin === url.origin && (origin === config.dashboardUrl || config.corsAllowedOrigins.includes(origin));
 }
 
 app.use((req, res, next) => {
@@ -49,10 +49,21 @@ app.use((req, res, next) => {
 });
 
 app.use('/mcp', mcpRateLimit);
+app.use('/oauth', oauthRateLimit);
 app.use(express.json({ limit: config.mcpBodyLimitBytes, strict: false }));
+app.use(express.urlencoded({ extended: false, limit: config.mcpBodyLimitBytes }));
 
 const PUBLIC_TOOLS = ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'];
-const AUTHENTICATED_TOOLS = ['project_list', 'project_create', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context'];
+const AUTHENTICATED_TOOLS = [
+  'account_status',
+  'project_list',
+  'project_create',
+  'project_connect',
+  'project_select',
+  'project_get_mcp_manifest',
+  'project_get_public_context',
+] as const;
+const AUTHENTICATED_TOOL_NAMES = new Set<string>(AUTHENTICATED_TOOLS);
 const MCP_SCOPES = ['api'];
 const ACCEPTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18'] as const;
 const AGENT_START_URL = 'https://spala.ai/agents.md';
@@ -84,18 +95,19 @@ const PROTOCOL_COMPATIBILITY = {
 const PROJECT_HANDOFF_EXAMPLE = {
   projectId: 'proj_xxx',
   name: 'Example Project',
-  mcpUrl: 'https://returned-by-spala.example/mcp',
+  mcpUrl: 'https://returned-by-spala.example/mcp?scope=builder%2Cproject%2Cdata',
   transport: 'streamable-http',
-  note: 'Example only for a future authenticated platform handoff. This standalone release cannot return project MCP URLs.',
+  note: 'Shape example only. Real URLs come exclusively from the authenticated project mcp-handoff endpoint.',
 };
 const PUBLIC_MCP_SERVER_NAME = 'spala_public_mcp';
 const PROJECT_HANDOFF_STATUS = {
-  available: false,
-  code: 'project_handoff_unavailable',
-  authValidation: 'unavailable',
-  reason: 'Project handoff is not enabled in this standalone public MCP release.',
+  available: true,
+  code: 'enabled',
+  authValidation: 'The public MCP securely validates api-scoped access before authenticated project operations.',
+  reason: 'Authenticated project connect prepares MCP server-side and returns exact project handoff URLs plus one-time installer bootstrap.',
+  installerScopeHandling: 'Project handoffs return workspace-only project bind plans with exact clean URLs, immediate one-time bootstrap consumption, local credential proxy setup, and no global project installation or project OAuth.',
 };
-const PROJECT_AUTH_FAILURE_HINT = 'Missing bearer returns HTTP 401 OAuth metadata; supplied bearer returns HTTP 503 project_handoff_unavailable because project handoff is not enabled in this standalone release.';
+const PROJECT_AUTH_FAILURE_HINT = 'Missing or invalid bearer returns HTTP 401 OAuth metadata; missing api scope returns HTTP 403 insufficient_scope; temporary service failures return HTTP 503.';
 
 function allToolCapabilities() {
   return [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)];
@@ -109,53 +121,65 @@ function protectedResourceMetadataUrl(): string {
   return `${config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`;
 }
 
-function platformAuthServerUrl(): string {
-  return `${config.spalaApiBaseUrl}/mcp`;
+function publicAuthorizationServerUrl(): string {
+  return config.publicBaseUrl;
 }
 
-function canonicalAuthorizationServerMetadataUrl(): string {
-  return `${config.spalaApiBaseUrl}/.well-known/oauth-authorization-server/mcp`;
+function authorizationServerMetadataUrl(): string {
+  return `${config.publicBaseUrl}/.well-known/oauth-authorization-server/mcp`;
 }
 
-function canonicalOpenIdMetadataUrl(): string {
-  return `${config.spalaApiBaseUrl}/.well-known/openid-configuration/mcp`;
+function dashboardAuthorizationUrl(): string {
+  return `${config.dashboardUrl}/mcp/authorize`;
 }
 
-function authServerOnlyNote(): string {
-  return 'api.spala.ai/mcp is the canonical Spala OAuth authorization server issuer, not the public MCP URL clients should configure. Token validation, project lookup, project selection, and project MCP URL handoff are unavailable in this standalone release.';
+function publicAuthorizationEndpoint(): string {
+  return `${config.publicBaseUrl}/oauth/authorize`;
+}
+
+function publicOAuthMetadata() {
+  return {
+    issuer: publicAuthorizationServerUrl(),
+    authorization_endpoint: publicAuthorizationEndpoint(),
+    token_endpoint: `${config.publicBaseUrl}/oauth/token`,
+    registration_endpoint: `${config.publicBaseUrl}/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    token_endpoint_auth_methods_supported: ['none'],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: MCP_SCOPES,
+  };
 }
 
 function protectedResourceMetadata() {
   return {
     resource: publicMcpUrl(),
-    authorization_servers: [platformAuthServerUrl()],
+    authorization_servers: [publicAuthorizationServerUrl()],
     bearer_methods_supported: ['header'],
     scopes_supported: MCP_SCOPES,
     resource_documentation: config.docsUrl,
     agent_start_url: AGENT_START_URL,
     maintainer: MAINTAINER,
-    note: authServerOnlyNote(),
+    authorization_ui: dashboardAuthorizationUrl(),
   };
 }
 
 function authChallengeData() {
-  const authorizationServer = platformAuthServerUrl();
   return {
     error: 'authentication_required',
-    message: 'Authenticate with Spala platform/dashboard OAuth before using project tools.',
+    message: 'Account sign-in required. Stop and ask the human to sign in or create an account in the Spala dashboard, then retry this tool.',
     protectedResourceMetadata: protectedResourceMetadataUrl(),
-    authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-    authorizationServer,
-    authorizationServerOnlyNote: authServerOnlyNote(),
-    authorizationEndpoint: `${authorizationServer}/oauth/authorize`,
-    tokenEndpoint: `${authorizationServer}/oauth/token`,
-    deviceAuthorizationEndpoint: `${authorizationServer}/oauth/device_authorization`,
-    registrationEndpoint: `${authorizationServer}/oauth/register`,
+    authorizationServerMetadata: authorizationServerMetadataUrl(),
+    authorizationServer: publicAuthorizationServerUrl(),
+    authorizationEndpoint: publicAuthorizationEndpoint(),
+    dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
+    tokenEndpoint: `${config.publicBaseUrl}/oauth/token`,
+    registrationEndpoint: `${config.publicBaseUrl}/oauth/register`,
     dashboardUrl: config.dashboardUrl,
     agentStartUrl: AGENT_START_URL,
     expectedAuthorization: 'Authorization: Bearer <access token issued for this MCP resource>',
     scope: 'api',
-    projectHandoffStatus: 'project_handoff_unavailable',
+    projectHandoffStatus: 'enabled',
   };
 }
 
@@ -170,7 +194,7 @@ function discoveryLinks() {
     npmInstaller: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
     installManifest: `${config.publicBaseUrl}/mcp/install-manifest`,
     oauthProtectedResource: protectedResourceMetadataUrl(),
-    oauthAuthorizationServer: canonicalAuthorizationServerMetadataUrl(),
+    oauthAuthorizationServer: authorizationServerMetadataUrl(),
     dashboard: config.dashboardUrl,
     docs: config.docsUrl,
     security: 'https://spala.ai/security/',
@@ -188,17 +212,19 @@ function projectMcpTestTemplate() {
   return {
     schemaVersion: 1,
     name: 'Spala Project MCP Handoff Test Template',
-    status: 'project_handoff_unavailable',
+    status: 'enabled',
     boundary: 'This is a public-safe test template, not proof of a completed OAuth handoff. It contains no tokens, private project IDs, private project URLs, customer data, source code, internal IPs, or private architecture.',
     canonicalPublicMcp: publicMcpUrl(),
-    agentRule: 'This standalone release cannot return project MCP URLs. Do not infer, append, or hardcode project MCP URLs.',
+    agentRule: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated project handoff endpoint. Do not infer, append, or hardcode project MCP URLs.',
     auth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-      authorizationServer: platformAuthServerUrl(),
+      authorizationServerMetadata: authorizationServerMetadataUrl(),
+      authorizationServer: publicAuthorizationServerUrl(),
+      authorizationEndpoint: publicAuthorizationEndpoint(),
+      dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
       expectedAuthorizationHeader: 'Authorization: Bearer <access token issued for this MCP resource>',
       scope: 'api',
-      authFailureBehavior: 'Missing bearer credentials return HTTP 401 with OAuth metadata. Supplied bearer credentials return HTTP 503 project_handoff_unavailable until project handoff is enabled.',
+      authFailureBehavior: PROJECT_AUTH_FAILURE_HINT,
     },
     requiredFlow: [
       {
@@ -215,7 +241,7 @@ function projectMcpTestTemplate() {
       },
       {
         step: 3,
-        call: 'project_list without Authorization',
+        call: 'account_status without Authorization',
         expected: 'HTTP 401 with WWW-Authenticate and OAuth metadata.',
         redact: ['none expected'],
       },
@@ -227,31 +253,36 @@ function projectMcpTestTemplate() {
       },
       {
         step: 5,
-        call: 'project_list with Authorization',
-        expected: 'Fails closed before MCP tool processing with HTTP 503 project_handoff_unavailable until project handoff is enabled for the public MCP.',
-        redact: ['project IDs', 'project names unless demo-approved', 'organization IDs', 'owner emails'],
+        call: 'account_status with Authorization',
+        expected: 'Confirms the public MCP account session is active and returns available organizations.',
+        redact: ['emails', 'account IDs', 'organization IDs'],
       },
       {
         step: 6,
-        call: 'project_select',
-        expected: 'Unavailable in this standalone release. A future compatible contract must return an exact selected project mcpUrl before agents connect to a project MCP.',
-        redact: ['private project IDs', 'private slugs', 'tenant identifiers', 'URL tokens'],
+        call: 'project_list with Authorization',
+        expected: 'Returns projects available to the signed-in account.',
+        redact: ['project IDs', 'project names unless demo-approved', 'organization IDs', 'owner emails'],
       },
       {
         step: 7,
-        call: 'project_get_mcp_manifest',
-        expected: 'Unavailable in this standalone release. A future compatible contract must return the exact mcpUrl and transport.',
+        call: 'project_connect with the codex or roo agentic workspace client identifier',
+        expected: 'Idempotently prepares MCP server-side and returns exact clean URLs plus a workspace-only project bind plan. Send the separate bootstrap.consumeUrl as the installer stdin line.',
+        redact: ['private project IDs', 'private slugs', 'tenant identifiers', 'protected bootstrap URL'],
+      },
+      {
+        step: 8,
+        call: 'project_get_mcp_manifest with the codex or roo agentic workspace client identifier',
+        expected: 'Returns exact mcpUrl and manifestUrl values plus workspace project bind argv; omitted client returns a structured no-plan error.',
         redact: ['private project URL if it contains private identifiers'],
       },
     ],
     toolCapabilities: allToolCapabilities(),
+    supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
     projectCreate: {
       implemented: true,
-      dryRunOnly: config.dryRunProjectCreate,
-      effect: config.dryRunProjectCreate ? 'no-op' : 'write',
-      note: config.dryRunProjectCreate
-        ? 'project_create is dry-run only in this public MCP deployment and does not create a real project.'
-        : 'project_create is enabled for authenticated users in this deployment.',
+      dryRunOnly: false,
+      effect: 'write',
+      note: 'project_create writes a real project for the authenticated user.',
     },
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
     claimsToAvoid: [
@@ -287,7 +318,7 @@ ${template.requiredFlow.map(item => `${item.step}. ${item.call}\n   Expected: ${
 ## project_create
 
 - Implemented: ${template.projectCreate.implemented}
-- Dry-run only: ${template.projectCreate.dryRunOnly}
+- Real write: ${!template.projectCreate.dryRunOnly}
 - Effect: ${template.projectCreate.effect}
 - Note: ${template.projectCreate.note}
 
@@ -307,7 +338,7 @@ function smitheryServerCard() {
     $schema: 'https://smithery.ai/schemas/server-card.json',
     schemaVersion: 1,
     name: 'Spala Public MCP',
-    description: 'Discovery, canonical OAuth metadata, and a fail-closed project MCP handoff interface for Spala backend projects.',
+    description: 'Discovery, canonical OAuth metadata, authenticated project management, and project MCP handoff for Spala backend projects.',
     url: publicMcpUrl(),
     transport: 'streamable-http',
     homepage: config.docsUrl,
@@ -318,9 +349,10 @@ function smitheryServerCard() {
       publicTools: 'anonymous',
       projectTools: 'spala_platform_oauth',
       protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-      authorizationServer: platformAuthServerUrl(),
-      note: authServerOnlyNote(),
+      authorizationServerMetadata: authorizationServerMetadataUrl(),
+      authorizationServer: publicAuthorizationServerUrl(),
+      authorizationEndpoint: publicAuthorizationEndpoint(),
+      dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
     },
     capabilities: {
       publicTools: PUBLIC_TOOLS,
@@ -328,9 +360,9 @@ function smitheryServerCard() {
       tools,
     },
     boundaries: {
-      publicMcp: 'Discovery, docs, template/addon lookup, OAuth metadata, and a fail-closed project MCP handoff interface.',
+      publicMcp: 'Discovery, docs, template/addon lookup, OAuth metadata, authenticated project management, and project MCP handoff.',
       projectMcp: 'Build, validate, publish, and operate one selected Spala backend project.',
-      projectMcpResolution: 'Unavailable in this standalone release. A future compatible contract must return an exact mcpUrl; do not derive project MCP URLs from project names, slugs, hosts, or api.spala.ai patterns.',
+      projectMcpResolution: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated handoff; do not derive project MCP URLs from project names, subdomains, or hosts.',
     },
     links: discoveryLinks(),
     sourceRepositoryUrl: 'not_applicable_private_source_not_public',
@@ -379,6 +411,7 @@ function sitemapXml(): string {
 
 function authChallengeResponse(res: Response, id: unknown, message = 'Authentication required'): void {
   setWwwAuthenticate(res);
+  res.setHeader('Cache-Control', 'no-store');
   res.status(401).json({
     jsonrpc: '2.0',
     id,
@@ -390,20 +423,44 @@ function authChallengeResponse(res: Response, id: unknown, message = 'Authentica
   });
 }
 
+function insufficientScopeResponse(res: Response, id: unknown): void {
+  res.setHeader(
+    'WWW-Authenticate',
+    `Bearer error="insufficient_scope", resource_metadata="${protectedResourceMetadataUrl()}", scope="api"`,
+  );
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(403).json({
+    jsonrpc: '2.0',
+    id,
+    error: {
+      code: -32003,
+      message: 'Insufficient OAuth scope',
+      data: {
+        error: 'insufficient_scope',
+        requiredScope: 'api',
+      },
+    },
+  });
+}
+
 function agentMarkdown(): string {
   return `# Spala Public MCP
 
 Spala Public MCP is the public agent entry point for Spala at ${publicMcpUrl()}.
 
-Use it to discover Spala, read onboarding, search docs, inspect templates and addons, and inspect the fail-closed project tool interface.
+Use it to discover Spala, read onboarding, search docs, inspect templates and addons, manage projects, and obtain project MCP handoffs.
 
 ## Boundary
 
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
-- Project lookup, project selection, and project handoff are unavailable in this standalone release and fail closed until project handoff is enabled for the public MCP.
+- Account status, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
-- Do not hardcode, construct, append, or infer project MCP URLs. This standalone release does not return project MCP URLs.
+- Call account_status immediately after OAuth. A revoked account session returns a new OAuth challenge.
+- Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
+- Run project bind plans from the intended workspace. Project MCP must never be installed globally.
+- Run the returned installPlan.argv immediately and send the separate bootstrap.consumeUrl as its single stdin line. The capability is short-lived and one-time; never put it in argv or shell text, and do not inspect, log, store, or reuse it.
+- The agentic installer configures a local credential proxy. Do not start native/manual project OAuth; manual UI OAuth is a separate flow.
 - Canonical agent start URL: ${AGENT_START_URL}
 - Public MCP docs: ${config.docsUrl}
 - Security evaluation: https://spala.ai/security/
@@ -419,34 +476,34 @@ ${AUTHENTICATED_TOOLS.map(tool => `- ${tool}`).join('\n')}
 ## OAuth
 
 Protected resource metadata: ${protectedResourceMetadataUrl()}
-Authorization server metadata: ${canonicalAuthorizationServerMetadataUrl()}
-Authorization server: ${platformAuthServerUrl()}
-Device authorization endpoint: ${platformAuthServerUrl()}/oauth/device_authorization
-
-Project tools require scope api and Authorization: Bearer <access token issued for this MCP resource>.
+Authorization server metadata: ${authorizationServerMetadataUrl()}
+Authorization server: ${publicAuthorizationServerUrl()}
+Browser authorization: ${dashboardAuthorizationUrl()}
+Authenticated tools require scope api and Authorization: Bearer <access token issued for this MCP resource>.
 `;
 }
 
 function llmsText(): string {
   return `# Spala Public MCP
 
-> Public MCP server for Spala discovery, canonical OAuth metadata, and a fail-closed project MCP handoff interface.
+> Public MCP server for Spala discovery, canonical OAuth metadata, authenticated project management, and project MCP handoff.
 
 MCP endpoint: ${publicMcpUrl()}
 Install manifest: ${config.publicBaseUrl}/mcp/install-manifest
 OAuth protected resource metadata: ${protectedResourceMetadataUrl()}
-OAuth authorization server metadata: ${canonicalAuthorizationServerMetadataUrl()}
+OAuth authorization server metadata: ${authorizationServerMetadataUrl()}
 Dashboard: ${config.dashboardUrl}
 Agent start: ${AGENT_START_URL}
 Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
-Standalone-release boundary: project listing, project selection, and project MCP URL handoff are unavailable and fail closed.
+Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
+Call account_status first. project_connect enables project MCP through the control plane and returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
 
-Agent rule: do not hardcode, construct, append, or infer project MCP URLs. This standalone release cannot validate bearer tokens or return project MCP URLs.
+Agent rule: do not hardcode, construct, append, or infer project MCP URLs. Use only exact mcpUrl and manifestUrl values returned by the authenticated project handoff endpoint.
 
 Redacted handoff example:
 ${JSON.stringify(PROJECT_HANDOFF_EXAMPLE, null, 2)}
@@ -479,7 +536,7 @@ function mcpRateLimit(req: Request, res: Response, next: NextFunction): void {
   const key = req.ip || req.socket.remoteAddress || 'unknown';
   let bucket = mcpRateBuckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
-    bucket = { count: 0, resetAt: now + MCP_RATE_LIMIT_WINDOW_MS };
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
     mcpRateBuckets.set(key, bucket);
   }
 
@@ -516,6 +573,44 @@ function mcpRateLimit(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+function oauthRateLimit(req: Request, res: Response, next: NextFunction): void {
+  const now = Date.now();
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  let bucket = oauthRateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    oauthRateBuckets.set(key, bucket);
+  }
+
+  const resetSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1_000));
+  res.setHeader('RateLimit-Limit', String(config.publicOAuthRateLimitMax));
+  res.setHeader('RateLimit-Remaining', String(Math.max(0, config.publicOAuthRateLimitMax - bucket.count - 1)));
+  res.setHeader('RateLimit-Reset', String(resetSeconds));
+
+  if (bucket.count >= config.publicOAuthRateLimitMax) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Retry-After', String(resetSeconds));
+    res.status(429).json({
+      error: 'temporarily_unavailable',
+      error_description: 'The OAuth request rate limit was exceeded.',
+    });
+    return;
+  }
+
+  bucket.count += 1;
+  if (oauthRateBuckets.size > 10_000) {
+    for (const [bucketKey, candidate] of oauthRateBuckets) {
+      if (candidate.resetAt <= now) oauthRateBuckets.delete(bucketKey);
+    }
+    while (oauthRateBuckets.size > 10_000) {
+      const oldestKey = oauthRateBuckets.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      oauthRateBuckets.delete(oldestKey);
+    }
+  }
+  next();
+}
+
 function jsonRpcId(body: unknown): unknown {
   if (body && typeof body === 'object' && !Array.isArray(body) && 'id' in body) {
     const id = (body as { id?: unknown }).id;
@@ -538,14 +633,15 @@ function requestedToolName(body: unknown): string | null {
   return typeof name === 'string' ? name : null;
 }
 
-function isProjectToolCall(body: unknown): boolean {
+function isAuthenticatedToolCall(body: unknown): boolean {
   const toolName = requestedToolName(body);
-  return typeof toolName === 'string' && toolName.startsWith('project_');
+  return typeof toolName === 'string' && AUTHENTICATED_TOOL_NAMES.has(toolName);
 }
 
-function hasBearerCredential(req: Request): boolean {
+function bearerCredential(req: Request): string | undefined {
   const value = req.get('authorization') || '';
-  return value.length <= 8_192 && /^Bearer\s+\S/i.test(value);
+  if (value.length > 8_192 || /[\r\n]/.test(value)) return undefined;
+  return value.match(/^Bearer ([^\s]+)$/i)?.[1];
 }
 
 function isValidJsonRpcRequest(body: unknown): boolean {
@@ -579,17 +675,17 @@ function invalidRequestResponse(res: Response, id: unknown = null, status = 400,
   jsonRpcErrorResponse(res, status, -32600, 'Invalid Request', id, data);
 }
 
-function authValidationUnavailableResponse(res: Response, id: unknown): void {
+function upstreamUnavailableResponse(res: Response, id: unknown): void {
   res.setHeader('Cache-Control', 'no-store');
   res.status(503).json({
     jsonrpc: '2.0',
     id,
     error: {
       code: -32002,
-      message: 'Authentication validation unavailable',
+      message: 'Spala project service unavailable',
       data: {
-        error: 'project_handoff_unavailable',
-        message: 'Project operations are disabled because project handoff is not enabled in this standalone public MCP release.',
+        error: 'upstream_unavailable',
+        message: 'The authenticated project operation is temporarily unavailable.',
       },
     },
   });
@@ -667,7 +763,7 @@ app.get('/robots.txt', (_req, res) => {
     '',
     `Sitemap: ${config.publicBaseUrl}/sitemap.xml`,
     '',
-    '# Spala Public MCP is intended for agent discovery, OAuth metadata, and a fail-closed project tool interface.',
+    '# Spala Public MCP provides agent discovery, OAuth metadata, authenticated project management, and project MCP handoff.',
     '# Public discovery tools are anonymous. Project tools require Spala platform authorization.',
     '',
   ].join('\n'));
@@ -682,7 +778,7 @@ app.get('/', (_req, res) => {
   setDiscoveryCache(res);
   res.json({
     name: 'Spala Public MCP',
-    purpose: 'Public agent front door for Spala discovery, platform auth metadata, and a fail-closed project tool interface.',
+    purpose: 'Public agent front door for Spala discovery, platform auth metadata, authenticated project management, and project MCP handoff.',
     canonicalMcpUrl: publicMcpUrl(),
     maintainer: MAINTAINER,
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
@@ -693,11 +789,11 @@ app.get('/', (_req, res) => {
       mcpJson: `${config.publicBaseUrl}/.well-known/mcp.json`,
       installManifest: `${config.publicBaseUrl}/mcp/install-manifest`,
       oauthProtectedResource: protectedResourceMetadataUrl(),
-      oauthAuthorizationServer: canonicalAuthorizationServerMetadataUrl(),
+      oauthAuthorizationServer: authorizationServerMetadataUrl(),
     },
     auth: {
       type: 'spala_platform_auth',
-      authorizationServer: platformAuthServerUrl(),
+      authorizationServer: publicAuthorizationServerUrl(),
       dashboardUrl: config.dashboardUrl,
       note: 'Public discovery tools are unauthenticated. Project tools require Spala platform/dashboard auth.',
     },
@@ -741,13 +837,15 @@ app.get('/.well-known/agent.json', (_req, res) => {
     maintainer: MAINTAINER,
     oauth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-      authorizationServer: platformAuthServerUrl(),
+      authorizationServerMetadata: authorizationServerMetadataUrl(),
+      authorizationServer: publicAuthorizationServerUrl(),
+      authorizationEndpoint: publicAuthorizationEndpoint(),
+      dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
     },
     boundaries: {
-      publicMcp: 'Discovery, docs, auth metadata, and a fail-closed project tool interface. Project lookup, project selection, and handoff are unavailable in this standalone release.',
+      publicMcp: 'Discovery, docs, auth metadata, authenticated project management, and exact project MCP handoff.',
       projectMcp: 'Backend build, validation, publishing, and operation for one project.',
-      projectMcpResolution: 'Unavailable in this standalone release. A future compatible contract must return an exact mcpUrl; do not derive a URL from project names, slugs, hosts, or api.spala.ai patterns.',
+      projectMcpResolution: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated handoff; do not derive a URL from project names, subdomains, or hosts.',
     },
     publicTools: PUBLIC_TOOLS,
     authenticatedTools: AUTHENTICATED_TOOLS,
@@ -770,16 +868,16 @@ app.get('/.well-known/mcp.json', (_req, res) => {
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     maintainer: MAINTAINER,
     auth: 'spala_platform_auth',
-    authNotes: 'Project tools require verified Spala platform authentication. Token validation is currently unavailable, so bearer credentials fail closed with HTTP 503 before tool processing.',
+    authNotes: 'Project tools use secure server-side delegation. Tokens are never returned, logged, or placed in URLs.',
     docs: `${config.publicBaseUrl}/mcp/install-manifest`,
     agentStartUrl: AGENT_START_URL,
     role: {
-      publicMcp: 'Discovery, docs, template/addon lookup, OAuth metadata, and a fail-closed project tool interface. Token validation, project lookup, project selection, and handoff are unavailable in this standalone release.',
+      publicMcp: 'Discovery, docs, template/addon lookup, OAuth metadata, authenticated project management, and exact project MCP handoff.',
       projectMcp: 'Build, validate, publish, and operate one selected Spala backend project.',
     },
     projectMcpResolution: {
-      rule: 'Use only an exact mcpUrl returned by a future authenticated platform contract. This standalone release does not return project MCP URLs.',
-      forbidden: ['hardcoded project MCP URLs', 'derived project slugs', 'guessed hosts', 'api.spala.ai/{project}/mcp'],
+      rule: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated project mcp-handoff endpoint.',
+      forbidden: ['hardcoded project MCP URLs', 'derived project subdomains', 'guessed hosts'],
     },
     tools: {
       public: PUBLIC_TOOLS,
@@ -830,15 +928,106 @@ for (const path of [
   '/.well-known/oauth-authorization-server/mcp',
   '/mcp/.well-known/oauth-authorization-server',
 ]) {
-  app.get(path, (_req, res) => res.redirect(308, canonicalAuthorizationServerMetadataUrl()));
+  app.get(path, (_req, res) => {
+    setDiscoveryCache(res);
+    res.json(publicOAuthMetadata());
+  });
 }
 
-for (const path of [
-  '/.well-known/openid-configuration',
-  '/.well-known/openid-configuration/mcp',
-]) {
-  app.get(path, (_req, res) => res.redirect(308, canonicalOpenIdMetadataUrl()));
+function oauthInput(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+
+function publicOAuthError(res: Response, error: unknown): void {
+  const oauthError = error instanceof PublicOAuthError
+    ? error
+    : new PublicOAuthError('server_error', 'The OAuth service is temporarily unavailable.', 503);
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(oauthError.status).json({ error: oauthError.error, error_description: oauthError.message });
+}
+
+app.get('/oauth/authorize', (req, res) => {
+  try {
+    const ticket = publicOAuth.createAuthorizationTicket(oauthInput(req.query));
+    const target = new URL(dashboardAuthorizationUrl());
+    target.searchParams.set('request', ticket);
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(302, target.toString());
+  } catch (error) {
+    publicOAuthError(res, error);
+  }
+});
+
+app.post('/oauth/register', (req, res) => {
+  try {
+    const registration = publicOAuth.register(oauthInput(req.body));
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(201).json({
+      client_id: registration.clientId,
+      client_id_issued_at: Math.floor(Date.now() / 1_000),
+      client_id_expires_at: registration.expiresAt,
+      redirect_uris: registration.redirectUris,
+      token_endpoint_auth_method: 'none',
+    });
+  } catch (error) {
+    publicOAuthError(res, error);
+  }
+});
+
+app.post('/oauth/dashboard/approve', async (req, res) => {
+  const dashboardToken = bearerCredential(req);
+  if (!dashboardToken) {
+    publicOAuthError(res, new PublicOAuthError('invalid_token', 'A dashboard sign-in is required.', 401));
+    return;
+  }
+  try {
+    await createSpalaApiClient(config, dashboardToken).getPrincipal();
+    const request = oauthInput(req.body)['request'];
+    if (typeof request !== 'string') throw new PublicOAuthError('invalid_request', 'Invalid authorization request.');
+    const { callbackUrl } = publicOAuth.approve(request, dashboardToken);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ redirectTo: callbackUrl });
+  } catch (error) {
+    if (error instanceof PublicOAuthError) {
+      publicOAuthError(res, error);
+    } else {
+      publicOAuthError(res, new PublicOAuthError('invalid_token', 'The dashboard sign-in is invalid or expired.', 401));
+    }
+  }
+});
+
+app.post('/oauth/token', (req, res) => {
+  const input = oauthInput(req.body);
+  const sendToken = (token: { accessToken: string; refreshToken: string; expiresIn: number }) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      access_token: token.accessToken,
+      refresh_token: token.refreshToken,
+      token_type: 'Bearer',
+      expires_in: token.expiresIn,
+      scope: 'api',
+      resource: publicMcpUrl(),
+    });
+  };
+  try {
+    if (input['grant_type'] === 'authorization_code') {
+      sendToken(publicOAuth.redeem(input));
+      return;
+    }
+    if (input['grant_type'] !== 'refresh_token') throw new PublicOAuthError('unsupported_grant_type', 'Unsupported OAuth grant type.');
+    const dashboardToken = publicOAuth.refreshDashboardToken(input);
+    createSpalaApiClient(config, dashboardToken).getPrincipal()
+      .then(() => sendToken(publicOAuth.rotateRefresh(input)))
+      .catch(error => publicOAuthError(
+        res,
+        error instanceof PublicOAuthError
+          ? error
+          : new PublicOAuthError('invalid_grant', 'The dashboard sign-in is invalid or expired.'),
+      ));
+  } catch (error) {
+    publicOAuthError(res, error);
+  }
+});
 
 app.get('/mcp/install-manifest', (_req, res) => {
   setDiscoveryCache(res);
@@ -853,23 +1042,22 @@ app.get('/mcp/install-manifest', (_req, res) => {
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     maintainer: MAINTAINER,
     auth: 'spala_platform_auth',
-    authNotes: 'Project tools require verified Spala platform auth. Token validation is currently unavailable, so no bearer credential enables a project operation.',
+    authNotes: 'Account and project tools require a public MCP bearer with scope api. Revoked account sessions receive a new OAuth challenge.',
     role: 'public-spala-mcp',
-    upstreamApi: config.spalaApiBaseUrl,
-    upstreamApiNote: 'Control-plane API context only. Do not configure api.spala.ai or api.spala.ai/mcp as the Spala Public MCP server.',
     dashboardUrl: config.dashboardUrl,
     agentStartUrl: AGENT_START_URL,
     links: discoveryLinks(),
     projectMcpResolution: {
-      source: 'Unavailable in this standalone release; requires a future existing generic authenticated Spala platform contract.',
-      rule: 'Use only an exact mcpUrl returned by a future authenticated platform contract.',
-      note: 'Agents must not derive, guess, append /mcp to arbitrary URLs, or hardcode project MCP URLs from project names, slugs, hosts, or api.spala.ai patterns.',
+      source: 'The authenticated project handoff returned by Spala.',
+      rule: 'Call project_connect, execute its workspace-only project bind plan with the exact clean mcpUrl, and send the separate one-time bootstrap.consumeUrl as the installer stdin line.',
+      note: 'Agents must not derive project URLs, expose bearer credentials, retain the protected bootstrap URL, install a project MCP globally, or start project OAuth for the agentic flow.',
     },
     oauth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-      authorizationServer: platformAuthServerUrl(),
-      note: authServerOnlyNote(),
+      authorizationServerMetadata: authorizationServerMetadataUrl(),
+      authorizationServer: publicAuthorizationServerUrl(),
+      authorizationEndpoint: publicAuthorizationEndpoint(),
+      dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
     },
     publicTools: PUBLIC_TOOLS,
     authenticatedTools: AUTHENTICATED_TOOLS,
@@ -877,19 +1065,20 @@ app.get('/mcp/install-manifest', (_req, res) => {
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
     authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     authenticatedToolNotes: {
-      project_list: 'Blocked until project handoff is enabled for the public MCP.',
-      project_select: 'Blocked until project handoff is enabled for the public MCP.',
-      project_get_mcp_manifest: 'Blocked until project handoff is enabled for the public MCP.',
-      project_get_public_context: 'Blocked until project handoff is enabled for the public MCP.',
-      project_create: config.dryRunProjectCreate
-        ? 'Configured as dry-run only, but blocked until the caller can be verified. It never creates a real project.'
-        : 'Creates a project for the authenticated user when project creation is enabled.',
+      account_status: 'First authenticated call. Verifies the active account session and returns available organizations.',
+      project_list: 'Lists projects available to the signed-in account.',
+      project_connect: 'Idempotently enables project MCP through the control plane and returns workspace-only project bind argv with immediate one-time bootstrap consumption and local credential proxy setup.',
+      project_select: 'Compatibility alias for project_connect with the same honest write semantics.',
+      project_get_mcp_manifest: 'Prepares project MCP and returns exact handoff URLs plus workspace-only project bind argv with one-time bootstrap.',
+      project_get_public_context: 'Read-only project and handoff status without a client argument or executable installer argv.',
+      project_create: 'Creates a real project for the signed-in account.',
     },
-    dryRunProjectCreate: config.dryRunProjectCreate,
+    projectCreateWrites: true,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),
     projectMcpTestTemplate: `${config.publicBaseUrl}/.well-known/project-mcp-test.json`,
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
+    supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
     commands: {
       installerNpm: 'npx @spala-ai/mcp-install --public --yes',
       installerPnpm: 'pnpm dlx @spala-ai/mcp-install --public --yes',
@@ -914,7 +1103,7 @@ app.get('/.well-known/project-mcp-test.md', (_req, res) => {
 app.get('/mcp', (_req, res) => {
   res.json({
     name: 'Spala Public MCP',
-    purpose: 'Discovery, OAuth metadata, and a fail-closed project tool interface for Spala.',
+    purpose: 'Discovery, OAuth metadata, and authenticated Spala project discovery and MCP handoff.',
     mcpUrl: publicMcpUrl(),
     usage: 'Use POST with MCP JSON-RPC for protocol requests. This GET response is a human and crawler-friendly endpoint description.',
     maintainer: MAINTAINER,
@@ -922,8 +1111,8 @@ app.get('/mcp', (_req, res) => {
     links: discoveryLinks(),
     oauth: {
       protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: canonicalAuthorizationServerMetadataUrl(),
-      deviceAuthorizationEndpoint: `${platformAuthServerUrl()}/oauth/device_authorization`,
+      authorizationServerMetadata: authorizationServerMetadataUrl(),
+      authorizationEndpoint: publicAuthorizationEndpoint(),
     },
     publicTools: PUBLIC_TOOLS,
     authenticatedTools: AUTHENTICATED_TOOLS,
@@ -951,20 +1140,51 @@ app.post('/mcp', async (req, res) => {
     }
   }
 
-  if (isProjectToolCall(req.body)) {
+  if (isAuthenticatedToolCall(req.body)) {
     if (!hasJsonRpcId(req.body)) {
       res.status(202).end();
       return;
     }
-    if (!hasBearerCredential(req)) {
+    const accessToken = bearerCredential(req);
+    if (!accessToken) {
       authChallengeResponse(res, jsonRpcId(req.body));
       return;
     }
-    authValidationUnavailableResponse(res, jsonRpcId(req.body));
+    let dashboardToken: string;
+    try {
+      dashboardToken = publicOAuth.dashboardToken(accessToken);
+    } catch (error) {
+      authChallengeResponse(res, jsonRpcId(req.body), 'Invalid or expired Spala MCP access token');
+      return;
+    }
+
+    const requestApi = createSpalaApiClient(config, dashboardToken);
+    try {
+      const verifiedPrincipal = await requestApi.getPrincipal();
+      const server = createSpalaPublicMcpServer(config, requestApi, { verifiedPrincipal });
+      let transport: StreamableHTTPServerTransport | null = null;
+      try {
+        transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } finally {
+        await server.close().catch(() => undefined);
+      }
+    } catch (error) {
+      if (!res.headersSent) {
+        if (error instanceof SpalaApiError && error.category === 'authentication') {
+          authChallengeResponse(res, jsonRpcId(req.body), 'Spala account session expired or was revoked. Reauthenticate and retry.');
+        } else if (error instanceof SpalaApiError && error.category === 'insufficient_scope') {
+          insufficientScopeResponse(res, jsonRpcId(req.body));
+        } else {
+          upstreamUnavailableResponse(res, jsonRpcId(req.body));
+        }
+      }
+    }
     return;
   }
 
-  const server = createSpalaPublicMcpServer(config, api);
+  const server = createSpalaPublicMcpServer(config);
   let transport: StreamableHTTPServerTransport | null = null;
   try {
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

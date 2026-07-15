@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 
@@ -16,18 +19,21 @@ async function availablePort(): Promise<number> {
   return address.port;
 }
 
-test('production app.js launcher serves rebuilt dist and enforces MCP rate limits', async () => {
+test('production app.js launcher serves rebuilt dist and enforces MCP and shared OAuth rate limits', async () => {
   const port = await availablePort();
+  const replayStatePath = mkdtempSync(join(tmpdir(), 'mcp-spala-ai-dist-replay-'));
   const child = spawn(process.execPath, ['app.js'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       PORT: String(port),
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      PUBLIC_OAUTH_REPLAY_STATE_PATH: replayStatePath,
       SPALA_API_BASE_URL: 'https://api.spala.ai',
       SPALA_DASHBOARD_URL: 'https://dashboard.spala.ai',
-      DRY_RUN_PROJECT_CREATE: 'true',
+      SPALA_PRICING_URL: 'https://spala.ai/pricing/',
       MCP_RATE_LIMIT_MAX: '2',
+      PUBLIC_OAUTH_RATE_LIMIT_MAX: '2',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -72,10 +78,30 @@ test('production app.js launcher serves rebuilt dist and enforces MCP rate limit
     assert.equal(body.jsonrpc, '2.0');
     assert.equal(body.error.data.error, 'rate_limit_exceeded');
     assert.ok(limited.headers.get('retry-after'));
+
+    const registration = () => fetch(`http://127.0.0.1:${port}/oauth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:3939/callback'] }),
+    });
+    assert.equal((await registration()).status, 201);
+    const authorization = await fetch(`http://127.0.0.1:${port}/oauth/authorize`, { redirect: 'manual' });
+    assert.equal(authorization.status, 400);
+    const oauthLimited = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'grant_type=authorization_code',
+    });
+    assert.equal(oauthLimited.status, 429);
+    const oauthBody = await oauthLimited.json() as { error: string };
+    assert.equal(oauthBody.error, 'temporarily_unavailable');
+    assert.equal(oauthLimited.headers.get('cache-control'), 'no-store');
+    assert.ok(oauthLimited.headers.get('retry-after'));
   } finally {
     if (child.exitCode === null) {
       child.kill('SIGTERM');
       await Promise.race([once(child, 'exit'), new Promise(resolve => setTimeout(resolve, 2_000))]);
     }
+    rmSync(replayStatePath, { recursive: true, force: true });
   }
 });

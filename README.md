@@ -31,13 +31,15 @@ https://mcp.spala.ai/mcp
 
 ### Auth-gated project handoff tools
 
-These tools are advertised so agents understand the intended project flow, but they fail closed in this standalone release until a verified platform/project handoff contract exists.
+These tools require a public MCP bearer with scope `api`. The public MCP validates access and delegates project requests securely server-side; credentials are never shown in tool results or error messages.
 
-- `project_list`: intended to list projects available to an authenticated Spala platform user.
-- `project_create`: dry-run planning preview only in the current public deployment.
-- `project_select`: intended to select a project and return an explicit project MCP URL.
-- `project_get_mcp_manifest`: intended to return the selected project MCP install manifest.
-- `project_get_public_context`: intended to return safe project handoff context without tokens or private source data.
+- `account_status`: verifies that the browser-approved Spala account session is still active and returns the account's organizations. Call this first after OAuth.
+- `project_list`: lists projects available to the signed-in account.
+- `project_create`: creates a real project for the signed-in account.
+- `project_connect`: idempotently prepares or enables the selected project's MCP through the authenticated control plane, then returns exact clean handoff URLs and a workspace-only installer plan.
+- `project_select`: compatibility alias for `project_connect`, with the same idempotent write behavior.
+- `project_get_mcp_manifest`: prepares the selected project's MCP and returns exact MCP and manifest URLs plus a workspace-only installer plan.
+- `project_get_public_context`: read-only project and handoff context without requiring a client or returning installer argv.
 
 ## Role
 
@@ -46,9 +48,9 @@ These tools are advertised so agents understand the intended project flow, but t
 - explain what Spala is;
 - expose machine-readable onboarding;
 - expose docs/templates/addons discovery;
-- publish canonical Spala platform OAuth discovery with least-privilege `api` scope;
-- expose auth-gated project tool definitions as a fail-closed interface;
-- truthfully report that project listing, project selection, and project MCP URL handoff are unavailable in this standalone release.
+- publish public-origin OAuth discovery with least-privilege `api` scope and dashboard browser authorization;
+- securely delegate authenticated project callers server-side;
+- list and create projects and return exact project MCP handoff URLs supplied by that control plane.
 
 It should not directly mutate project backend resources. Project changes belong in the project MCP.
 
@@ -79,19 +81,24 @@ Copy `.env.example` to `.env` when running locally.
 Important variables:
 
 - `PUBLIC_BASE_URL`: public origin for this service, for example `https://mcp.spala.ai`.
-- `SPALA_API_BASE_URL`: upstream Spala API/control plane, for example `https://api.spala.ai`.
+- `SPALA_API_BASE_URL`: internal control-plane origin supplied by the hosted deployment; never expose it in public MCP output or metadata.
+- `PUBLIC_OAUTH_ENCRYPTION_SECRET`: dedicated AES-GCM key material with at least 32 characters and UTF-8 bytes. Required whenever `PUBLIC_BASE_URL` is hosted on HTTPS; never expose this value.
+- `PUBLIC_OAUTH_REPLAY_STATE_PATH`: absolute path to a dedicated persistent OAuth replay-state directory below the filesystem root. Required whenever `PUBLIC_BASE_URL` is hosted on HTTPS. Every service worker must use the same path.
+- `PUBLIC_OAUTH_TICKET_LIFETIME_SECONDS`, `PUBLIC_OAUTH_CODE_LIFETIME_SECONDS`, `PUBLIC_OAUTH_ACCESS_TOKEN_LIFETIME_SECONDS`, and `PUBLIC_OAUTH_REFRESH_TOKEN_LIFETIME_SECONDS`: bounded lifetimes for encrypted OAuth artifacts.
+- `PUBLIC_OAUTH_RATE_LIMIT_MAX`: maximum requests across all OAuth endpoints per client per 60-second window (default `120`).
 - `SPALA_DASHBOARD_URL`: dashboard origin, for example `https://dashboard.spala.ai`.
+- `SPALA_PRICING_URL`: pricing page used for plan and payment recovery actions, for example `https://spala.ai/pricing/`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated exact HTTPS browser origins. Wildcards and credentials are rejected.
-- `FETCH_TIMEOUT_MS`: bounded timeout reserved for an established upstream contract. The blocked project path performs no upstream fetch.
+- `FETCH_TIMEOUT_MS`: bounded timeout for authenticated internal requests.
+- `SPALA_API_RESPONSE_LIMIT_BYTES`: maximum streamed response body size accepted from the control plane (default `1048576`).
 - `MCP_BODY_LIMIT_BYTES`: maximum JSON body size for MCP requests (default `1048576`).
 - `MCP_RATE_LIMIT_MAX`: maximum MCP POST requests per client per 60-second window (default `120`).
-- `DRY_RUN_PROJECT_CREATE`: keep `true` until project creation is safely wired.
 
 ## Authentication
 
-`mcp.spala.ai` should rely on Spala platform/dashboard authentication. Users may sign in with Google OAuth or any other enabled Spala account method.
+`mcp.spala.ai` is the only MCP URL agents configure. Browser authorization starts at the public OAuth endpoint and redirects to `dashboard.spala.ai`, where the human signs in or creates an account.
 
-The public MCP should not invent a separate project identity. For project tools, it should receive or complete the platform auth flow and then call upstream `api.spala.ai` as that authenticated platform user.
+The public MCP does not invent a separate project identity. It handles secure server-side validation and delegation for project tools. The dashboard browser route remains part of public MCP login because the dashboard bearer is held in browser storage; the user may sign in or sign up there, then the MCP client completes OAuth automatically.
 
 The public resource advertises only the `api` scope. Authenticated requests use:
 
@@ -99,7 +106,9 @@ The public resource advertises only the `api` scope. Authenticated requests use:
 Authorization: Bearer <access token issued for this MCP resource>
 ```
 
-Bearer syntax is not authentication. In this standalone release, project handoff is not enabled: project calls without a bearer receive an OAuth `401` challenge, and project calls with a bearer fail closed with `503 project_handoff_unavailable` before MCP tool processing. Tokens are never forwarded, logged, or returned.
+Bearer syntax is not authentication. Access is scoped to `https://mcp.spala.ai/mcp` with `api`. The public OAuth metadata, authorization, token, and registration endpoints are served from `mcp.spala.ai`. Dynamic registration accepts only loopback HTTP callbacks (`localhost`, `127.0.0.1`, or `::1`), preventing automatic dashboard approval from authorizing arbitrary web origins. Authorization creates an encrypted request ticket and redirects to `dashboard.spala.ai/mcp/authorize`; the dashboard submits that ticket and the user's dashboard Bearer credential to `/oauth/dashboard/approve`, which returns `{ "redirectTo": "<client callback>" }`. Authorization codes and refresh tokens are encrypted, short-lived or bounded respectively, and single-use on redemption; refresh tokens rotate. Refresh validates the dashboard credential before issuing replacement tokens and returns `invalid_grant` when that session is no longer valid. Invalid access, including a revoked upstream dashboard session, returns a `401` Bearer challenge so the client can reauthenticate. An invalid scope returns `403 insufficient_scope`, OAuth rate limits return `429`, and temporary failures return a generic `503`. Tokens and dashboard credentials are never logged, cached, persisted, placed in URLs, or returned by MCP tools.
+
+Single-use ticket, authorization-code, and refresh-token claims are stored as hash-only markers under `PUBLIC_OAUTH_REPLAY_STATE_PATH`; token contents and dashboard credentials are not written there. The service requires `0700` on an existing state directory, creates new state and expiration-bucket directories with `0700`, writes markers with `0600`, creates each claim with atomic exclusive file creation, syncs it before issuing replacement credentials, and removes expired buckets during later claims. Pre-provision a dedicated production path or volume below the filesystem root with that mode and ownership by the service account. The path must persist across restarts and deployments. Multiple workers must share a filesystem with atomic cross-process `O_EXCL` behavior and run as the same service account. Hosted configuration refuses to start without an explicit path, and replay-state initialization or runtime I/O failures fail closed instead of falling back to process memory. Local HTTP development defaults to the gitignored `.state/public-oauth-replay` directory when no path is supplied.
 
 ## Client install
 
@@ -109,11 +118,13 @@ codex mcp login spala_public_mcp --scopes api
 gemini mcp add --scope user --transport http spala_public_mcp "https://mcp.spala.ai/mcp"
 ```
 
-## Current project-handoff status
+## Project-handoff contract
 
-The existing platform MCP OAuth token is audience-bound and verified by the selected project MCP. It is not a public project-listing credential. The platform frontend API client uses its own platform/project authentication flow; that credential is not interchangeable with an opaque public-MCP token.
+The public MCP accepts an issued MCP OAuth token for `https://mcp.spala.ai/mcp` with scope `api`. Project listing and creation select a sole organization automatically; when multiple organizations are available, callers must provide one of the returned `organizationId` choices. Access checks remain enforced by Spala.
 
-This standalone service does not forward bearer tokens to guessed `/api/projects` routes and does not embed public MCP code into the platform. Every project tool fails closed with `project_handoff_unavailable` when a bearer is supplied. `project_list`, `project_select`, `project_get_mcp_manifest`, and `project_get_public_context` do not work in this standalone release. `project_create` remains defined as a URL-free dry-run, but cannot execute until project handoff is enabled.
+The upstream origin is configuration-only and never caller-controlled. Responses are parsed from documented fields; the service does not search arbitrary payloads for URLs or credentials.
+
+After public MCP OAuth, call `account_status`. Reuse the project recorded in the current workspace's `.spala/project.json` when it exists. Otherwise call `project_list`, and call `project_create` only when the intended project does not already exist. Then call `project_connect` with the project and either `codex` or `roo`. This calls `POST /api/projects/:id/mcp/prepare` using the already-validated dashboard bearer. The control plane verifies user access, membership, and billing; exchanges internal project builder access; enables MCP; calls the authenticated project agent-instructions endpoint; and returns the exact handoff plus a short-lived one-time protected bootstrap-consumption URL. Public MCP treats that URL as opaque and never fetches or inspects it.
 
 ## Directory listing metadata
 
@@ -127,24 +138,19 @@ The repository does not include platform secrets, registry private keys, build o
 
 ## Handoff
 
-Public MCP does not assume one fixed project MCP URL pattern, and this standalone release does not return project MCP URLs.
+Public MCP does not assume a project MCP URL pattern. It accepts only the complete public HTTPS `mcpUrl` and `manifestUrl` returned by the authenticated project handoff. Project MCP URLs may contain one canonical `scope` query composed only of `builder`, `project`, and `data`; arbitrary queries, credentials, fragments, duplicate scopes, and noncanonical URLs are rejected. The exact accepted string, including `/mcp/` and scope query, is preserved.
 
-If the platform later exposes an existing generic authenticated contract, handoff may consume documented fields including:
+Agentic workspace binding currently supports two client identifiers: `codex` and `roo`. Other applications may connect to the public MCP through their own MCP configuration, but `project_connect` does not return an executable project-binding plan for them. Without `client`, install-capable tools return `client_selection_required` and no executable plan.
 
-- project list data returned after dashboard/platform auth;
-- explicit `mcpUrl` fields when the platform provides them.
-
-Only complete explicit HTTPS MCP URLs are accepted. The service does not append `/mcp` to an access URL or recurse through arbitrary payload fields.
-
-Future valid project MCP handoff shapes can include:
+Successful connection returns an argv with this contract:
 
 ```txt
-https://<project>.spala.ai/mcp
-https://<host>/<project_slug>/mcp
-<explicit mcpUrl returned by the platform>
+pnpm dlx @spala-ai/mcp-install project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client <client> --install-scope workspace --bootstrap-stdin --exact-url --yes --json
 ```
 
-After a future authenticated contract returns an exact project MCP URL, the agent should connect to that project MCP and call:
+Run the argv immediately from the intended project root. Send `bootstrap.consumeUrl` as the command's single stdin line through the agent's process API; never interpolate it into a shell command or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. `--exact-url` preserves the complete clean handoff URL without adding a default scope. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
+
+After the authenticated contract returns an exact project MCP URL, the agent should connect to that project MCP and call:
 
 ```txt
 mcp_get_onboarding
