@@ -479,11 +479,13 @@ test('install manifest exposes machine-readable 0.1.8 installer init and status 
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
 
-  assert.deepEqual(commands.installerNpm, {
+  assert.equal(commands.installerNpm, 'npx @spala-ai/mcp-install init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install init --client <client> --yes --json');
+  assert.deepEqual(commands.installerNpmArgv, {
     init: ['npx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
     status: ['npx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
   });
-  assert.deepEqual(commands.installerPnpm, {
+  assert.deepEqual(commands.installerPnpmArgv, {
     init: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'init', '--client', '<client>', '--yes', '--json'],
     status: ['pnpm', 'dlx', '@spala-ai/mcp-install', 'status', '--client', '<client>', '--json'],
   });
