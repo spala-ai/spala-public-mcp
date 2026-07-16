@@ -62,10 +62,12 @@ app.use('/oauth', oauthRateLimit);
 app.use(express.json({ limit: config.mcpBodyLimitBytes, strict: false }));
 app.use(express.urlencoded({ extended: false, limit: config.mcpBodyLimitBytes }));
 
-const PUBLIC_TOOLS = ['spala_start', 'spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'];
+const PUBLIC_TOOLS = ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'];
 const AUTHENTICATED_TOOLS = [
+  'spala_start',
   'account_status',
   'account_setup',
+  'organization_create',
   'project_list',
   'project_create',
   'project_connect',
@@ -469,13 +471,13 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 ## Boundary
 
 - ${SPALA_BACKEND_INTENT_TEXT}
-- Whenever the user mentions using Spala, call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
+- After OAuth, call authenticated spala_start whenever the user asks to use, install, connect, configure, or build with Spala, before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 - Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
 - Account status/setup, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
-- Call account_status immediately after OAuth without waiting for another user request. If setup is required, STOP: the next assistant response must ask for exactly the missing account fields and then wait. Do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds. Never invent placeholder profile, company, or project names.
+- spala_start absorbs account_status and organization/project discovery. Follow exactly its one nextAction. Call spala_start again only when that action explicitly requests it after a state transition. If setup is required, use companyName when no organization exists. Never invent placeholder profile, company, or project names, and never silently choose an existing project without a valid local binding.
 - Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
 - Run project bind plans from the intended workspace. Project MCP must never be installed globally.
 - Run the returned installPlan.argv immediately and send the separate bootstrap.consumeUrl as its single stdin line. The capability is short-lived and one-time; never put it in argv or shell text, and do not inspect, log, store, or reuse it.
@@ -517,10 +519,10 @@ Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
 Intent boundary: ${SPALA_BACKEND_INTENT_TEXT}
-Hard trigger: whenever the user mentions using Spala, call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
+Hard trigger after OAuth: whenever the user asks to use, install, connect, configure, or build with Spala, call authenticated spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 Client safety: Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
-Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, STOP: the next assistant response must ask one concise terminal question for exactly missingFields and then wait. Do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
+spala_start returns a versioned startup phase, account readiness, safely grouped organization/project discovery, and exactly one nextAction. Follow that action and call spala_start again only when it explicitly requests another state read. With no organization, complete account_setup with companyName; with one organization it is auto-scoped; with multiple organizations do not guess. Never silently choose an existing project without a valid local workspace binding. Billing responses provide only a safe checkout continuation. project_connect reuses the existing dashboard project-entry handoff and enables MCP directly on the exact project backend. It returns a workspace-only project bind plan plus a separate short-lived one-time bootstrap.consumeUrl. Send that capability as the installer's single stdin line; never place it in argv or shell text. The installer uses a local credential proxy; do not run project OAuth for this agentic flow.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
@@ -1088,7 +1090,7 @@ app.get('/mcp/install-manifest', (_req, res) => {
     authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
     authFailureHint: PROJECT_AUTH_FAILURE_HINT,
     authenticatedToolNotes: {
-      account_status: 'First authenticated call. Verifies the session and returns account readiness plus exact missing account fields.',
+      account_status: 'Compatibility account-readiness tool. spala_start is the first protected workflow call and absorbs this status.',
       account_setup: 'Fills missing profile data and creates the first company/workspace organization after the agent asks the human for required values.',
       project_list: 'Lists projects available to the signed-in account.',
       project_connect: 'Idempotently reuses the dashboard project-entry handoff, enables MCP directly on the exact project backend, and returns workspace-only project bind argv with one-time bootstrap consumption.',
@@ -1096,6 +1098,8 @@ app.get('/mcp/install-manifest', (_req, res) => {
       project_get_mcp_manifest: 'Prepares project MCP and returns exact handoff URLs plus workspace-only project bind argv with one-time bootstrap.',
       project_get_public_context: 'Read-only project and handoff status without a client argument or executable installer argv.',
       project_create: 'Creates a real project for the signed-in account.',
+      spala_start: 'Runs versioned authenticated startup with account readiness and safely scoped organization/project discovery.',
+      organization_create: 'Creates an additional organization for the signed-in account, then continue through spala_start.',
     },
     projectCreateWrites: true,
     projectCreateCapability: projectToolCapabilities(config).find(tool => tool.name === 'project_create'),

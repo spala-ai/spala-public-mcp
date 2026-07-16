@@ -218,6 +218,21 @@ const PROJECT_CREATE_JSON_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+const ORGANIZATION_CREATE_JSON_SCHEMA = {
+  type: 'object',
+  description: 'Create an additional Spala organization for the authenticated account.',
+  required: ['name'],
+  properties: {
+    name: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 120,
+      description: 'Human-readable company or workspace name.',
+    },
+  },
+  additionalProperties: false,
+} as const;
+
 const ACCOUNT_SETUP_JSON_SCHEMA = {
   type: 'object',
   description: 'Complete missing Spala account data after OAuth. Supply only real values confirmed by the user or confidently known from the current work context.',
@@ -264,6 +279,7 @@ const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
   account_setup: ACCOUNT_SETUP_JSON_SCHEMA,
   project_list: PROJECT_LIST_JSON_SCHEMA,
   project_create: PROJECT_CREATE_JSON_SCHEMA,
+  organization_create: ORGANIZATION_CREATE_JSON_SCHEMA,
   project_connect: PROJECT_INSTALL_SELECTOR_JSON_SCHEMA,
   project_select: PROJECT_INSTALL_SELECTOR_JSON_SCHEMA,
   project_get_mcp_manifest: PROJECT_INSTALL_SELECTOR_JSON_SCHEMA,
@@ -279,9 +295,9 @@ const READ_ONLY_TOOL_ANNOTATIONS = {
 
 const TOOL_DESCRIPTIONS = {
   spalaStart: [
-    'MANDATORY FIRST CALL whenever the user asks to use, install, connect, configure, or build with Spala, including in an empty workspace.',
-    'Call before reading application files, loading frontend or design skills, searching the web, planning, generating a design, scaffolding, coding, testing, or QA.',
-    'Establishes Spala as the backend provider and returns the blocking setup sequence. Application work cannot begin until account setup and project MCP verification are complete.',
+    'AUTH REQUIRED; READ-ONLY STARTUP. Call after OAuth whenever the user asks to use, install, connect, configure, or build with Spala.',
+    'Returns a versioned startup phase with account readiness, organizations, safely scoped project discovery, and exactly one nextAction.',
+    'When no organization exists, nextAction is account_setup and companyName is required. One organization is auto-scoped; multiple organizations and their projects are returned without guessing a selection.',
   ].join(' '),
   spalaHelp: [
     'Use after spala_start when an agent, directory reviewer, or MCP client needs a human-readable overview of Spala.',
@@ -290,7 +306,7 @@ const TOOL_DESCRIPTIONS = {
     'Returns Markdown guidance only; no authentication or project mutation.',
   ].join(' '),
   onboarding: [
-    'Required structured onboarding call after spala_start for fresh agents connected to mcp.spala.ai.',
+    'Optional compatibility onboarding for fresh agents connected to mcp.spala.ai; spala_start is the protected workflow entry point.',
     'Returns JSON with product positioning, OAuth metadata, supported installer client identifiers, authenticated project-handoff status, safe workflow order, and canonical links.',
     'Use before any project lookup or backend build attempt.',
   ].join(' '),
@@ -323,6 +339,10 @@ const TOOL_DESCRIPTIONS = {
     'Fill missing first name and last name, and create the first company/workspace organization when none exists.',
     'Use real values supplied by the human or confidently known from explicit context. Never create placeholder account or company names.',
     'After success, ask for or confidently derive the project name, then call project_list before project_create to avoid duplicates.',
+  ].join(' '),
+  organizationCreate: [
+    'AUTH REQUIRED; WRITES A NEW SPALA ORGANIZATION FOR THE SIGNED-IN ACCOUNT.',
+    'Use for an additional company/workspace after account setup. Never create placeholder names.',
   ].join(' '),
   projectList: [
     'AUTH REQUIRED. List projects in an authoritative organization returned for the authenticated Spala user.',
@@ -384,7 +404,7 @@ function advertiseDirectoryQualityMetadata(server: McpServer): void {
       if (schema) {
         tool.inputSchema = schema;
       }
-      if (tool.name && ['spala_start', 'spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'].includes(tool.name)) {
+      if (tool.name && ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'].includes(tool.name)) {
         tool.annotations = READ_ONLY_TOOL_ANNOTATIONS;
       }
     }
@@ -393,7 +413,6 @@ function advertiseDirectoryQualityMetadata(server: McpServer): void {
 }
 
 export const PUBLIC_TOOL_CAPABILITIES = [
-  { name: 'spala_start', requiresAuth: false, effect: 'read', purpose: 'Mandatory first call whenever the user mentions using Spala. Establishes the backend-provider choice and blocks all application work until account setup and project MCP verification complete.' },
   { name: 'spala_help', requiresAuth: false, effect: 'read', purpose: 'Explain what Spala is, what the public MCP does, and where agents should start before authentication.' },
   { name: 'spala_get_onboarding', requiresAuth: false, effect: 'read', purpose: 'Return first-call onboarding for agents, including the public MCP role, project MCP role, auth metadata, enabled authenticated handoff, and required first project-MCP calls.' },
   { name: 'spala_get_tool_map', requiresAuth: false, effect: 'read', purpose: 'Return machine-readable public MCP vs project MCP routing, auth-gated tool names, OAuth metadata URLs, and exact-URL handoff rules.' },
@@ -404,6 +423,14 @@ export const PUBLIC_TOOL_CAPABILITIES = [
 
 export function projectToolCapabilities(config: AppConfig) {
   return [
+    {
+      name: 'spala_start',
+      requiresAuth: true,
+      available: true,
+      effect: 'read',
+      authFailureHint: 'Missing, expired, or revoked bearer: HTTP 401 OAuth challenge; temporary service failure: HTTP 503.',
+      purpose: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
+    },
     {
       name: 'account_status',
       requiresAuth: true,
@@ -419,6 +446,14 @@ export function projectToolCapabilities(config: AppConfig) {
       effect: 'write',
       authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
       purpose: 'Complete missing account profile data and create the first company/workspace organization without sending the user to the dashboard.',
+    },
+    {
+      name: 'organization_create',
+      requiresAuth: true,
+      available: true,
+      effect: 'write',
+      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      purpose: 'Create an additional organization for the authenticated Spala platform user.',
     },
     {
       name: 'project_list',
@@ -487,6 +522,7 @@ function json(value: unknown, isError = false): ToolResult {
 }
 
 type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
+export const PUBLIC_MCP_STARTUP_VERSION = 1;
 const accountSetupLocks = new Map<string, Promise<void>>();
 const ACCOUNT_SETUP_BLOCKED_ACTIONS = [
   'inspect application source',
@@ -518,6 +554,52 @@ function accountSetupGate(missingFields: AccountSetupField[]) {
     },
     next: 'STOP. Ask the human one concise terminal question for exactly the missing account fields now, then wait and call account_setup with the real answers. Do not inspect source files or continue planning, design generation, scaffolding, coding, testing, or QA.',
   };
+}
+
+type StartupProjectDiscovery = {
+  organization: SpalaPrincipal['organizations'][number];
+  projects: SpalaProject[];
+};
+
+async function discoverStartupProjects(api: SpalaApiClient, principal: SpalaPrincipal): Promise<StartupProjectDiscovery[]> {
+  return Promise.all(principal.organizations.map(async organization => ({
+    organization,
+    projects: (await api.listProjects({ organizationId: organization.id })).projects,
+  })));
+}
+
+function startupBillingError(error: unknown, config: AppConfig): ToolResult | undefined {
+  if (!(error instanceof SpalaApiError)) return undefined;
+  const billing = error.category === 'payment_required' || error.category === 'plan_restricted';
+  if (!billing) return undefined;
+  return json({
+    schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
+    phase: 'billing_required',
+    error: error.code || error.category,
+    message: 'Billing is required to continue project discovery. Continue through the safe Spala checkout flow, then retry spala_start.',
+    nextAction: {
+      type: 'continue_checkout',
+      ...(error.checkoutUrl ? { checkoutUrl: error.checkoutUrl } : {}),
+      pricingUrl: config.pricingUrl,
+      dashboardUrl: config.dashboardUrl,
+    },
+  }, true);
+}
+
+function startupFailure(error: unknown): ToolResult {
+  const apiError = error instanceof SpalaApiError ? error : undefined;
+  return json({
+    schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
+    phase: 'startup_failed',
+    error: apiError?.code || apiError?.category || 'spala_start_failed',
+    message: 'Spala startup could not complete. Retry spala_start after the temporary service failure clears.',
+    ...(apiError?.status ? { status: apiError.status } : {}),
+    nextAction: {
+      tool: 'spala_start',
+      reason: 'Retry the authenticated versioned startup flow.',
+      ...(apiError?.category === 'organization_selection_required' ? { organizationChoices: apiError.organizationChoices } : {}),
+    },
+  }, true);
 }
 
 async function withAccountSetupLock<T>(subject: string, operation: () => Promise<T>): Promise<T> {
@@ -762,12 +844,12 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
   }, {
     instructions: [
       'This is the public Spala MCP for mcp.spala.ai.',
-      'HARD TRIGGER: whenever the user asks to use, install, connect, configure, or build with Spala, call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
+      'HARD TRIGGER AFTER OAUTH: whenever the user asks to use, install, connect, configure, or build with Spala, call authenticated spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
-      'Call account_status immediately after OAuth without waiting for another user request. If it reports missing account data, STOP. The next assistant response must ask only for those fields and then wait; do not inspect source files or continue application planning, design generation, scaffolding, coding, testing, or QA until account_setup succeeds.',
-      'After account setup, ask for or confidently derive a real project name, then reuse the project bound to the current workspace or create one only when needed.',
+      'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
+      'After account setup, follow the single nextAction. Automatically reuse only a valid project binding from the current workspace; otherwise present existing projects or ask for a new project name. Never silently choose an existing project.',
       SPALA_BACKEND_INTENT_TEXT,
       'Agents must not construct, append, or infer project MCP URLs.',
       'Do not mutate project backend internals here. Use the returned project MCP for backend changes.',
@@ -795,31 +877,17 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     `Docs: ${config.docsUrl}`,
   ].join('\n')));
 
-  server.tool('spala_start', TOOL_DESCRIPTIONS.spalaStart, {}, async () => json({
-    triggered: true,
-    backendProvider: 'Spala',
-    intentBoundary: SPALA_BACKEND_INTENT,
-    setupGate: {
-      state: 'blocked_until_project_mcp_ready',
-      requiredNextTool: 'account_status',
-      requiredSequence: ['account_status', 'account_setup when required', 'project_list or project_create', 'project_connect', 'verify project MCP'],
-      prohibitedUntilResolved: ACCOUNT_SETUP_BLOCKED_ACTIONS,
-    },
-    next: 'Call account_status now. Codex public init owns initial browser OAuth; if authorization later expires, run exactly one installer login command. Do not run parallel logins, manually open the URL, inspect client credential stores, or hand-roll MCP calls. Do not inspect application files, load frontend/design skills, search for implementation guidance, plan, generate designs, scaffold, code, test, or run QA until account setup and project MCP verification are complete.',
-  }));
-
   server.tool('spala_get_onboarding', TOOL_DESCRIPTIONS.onboarding, {}, async () => json({
     product: 'Spala',
     publicMcpRole: 'Agent discovery, public docs/templates/addons lookup, OAuth metadata, authenticated project management, and exact project MCP handoff.',
     projectMcpRole: 'Build and operate one Spala backend project.',
     intentBoundary: SPALA_BACKEND_INTENT,
     workflow: [
-      'Call spala_get_tool_map.',
-      'Search docs/templates/addons if needed.',
-      'Authenticate through Spala MCP OAuth with api scope, then call account_status immediately without waiting for another user request, source files, planning, or coding.',
-      'If account_status reports setup required, ask one concise terminal question for exactly its missingFields and call account_setup. Do not use placeholder personal, company, or workspace names.',
-      'After account setup is ready, ask for or confidently derive the project name from the explicit user request.',
-      'If .spala/project.json exists in the current workspace, verify and reuse that project. Otherwise call project_list and create a project only when no intended project exists.',
+      'Use spala_get_tool_map or search docs/templates/addons only when broader compatibility or discovery detail is needed.',
+      'Authenticate through Spala MCP OAuth with api scope, then call spala_start as the first protected tool without waiting for another user request, source files, planning, or coding.',
+      'Follow only the returned nextAction. Call spala_start again only when that action explicitly asks for it after a state transition such as account or organization creation.',
+      'If setup is required, ask one concise terminal question for exactly the missing real values and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
+      'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
       'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares agent instructions directly on that exact project backend.',
       'Run installPlan.argv immediately as a direct process from the intended project root with tty:true and shell:false. Wait for the running process, then use the process stdin tool to send bootstrap.consumeUrl plus a newline; never place it in shell text or argv.',
@@ -827,7 +895,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'Follow the installer JSON reload instruction for the selected client.',
       'If the user asked only to install, connect, configure, or set up Spala, stop after verifying the project MCP connection. Do not write application code or mutate project resources.',
       'Only continue when the user separately requested implementation, and only after account setup and project MCP verification are complete. Keep all backend work in Spala project MCP; do not scaffold a competing local backend.',
-      'On project MCP call mcp_get_onboarding, mcp_get_tool_map, mcp_list_skills, mcp_get_skill({ name: "spala-developer" }), and project_get_builder_context.',
+      'On the verified project MCP call spala_start, follow its mandatory inspections, and load only its focused skill when needed. Legacy onboarding and tool-map calls remain optional compatibility tools.',
     ],
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
     urls: {
@@ -854,8 +922,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     publicMcp: {
       host: 'mcp.spala.ai',
       tools: {
-        discovery: ['spala_start', 'spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'],
-        account: ['account_status', 'account_setup'],
+        discovery: ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'],
+        startup: ['spala_start'],
+        account: ['account_status', 'account_setup', 'organization_create'],
         projectHandoff: ['project_list', 'project_create', 'project_connect', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context'],
       },
       toolCapabilities: [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)],
@@ -905,7 +974,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     projectMcp: {
       host: 'resolved Spala project runtime',
       role: 'Project-scoped backend builder MCP.',
-      firstCalls: ['mcp_get_onboarding', 'mcp_get_tool_map', 'mcp_list_skills', 'mcp_get_skill({ name: "spala-developer" })', 'project_get_builder_context'],
+      firstCalls: ['spala_start', 'mandatory inspections returned by spala_start', 'focused mcp_get_skill only when needed'],
       handoffExample: {
         projectId: 'proj_xxx',
         name: 'Example Project',
@@ -929,6 +998,88 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     query: z.string().default(''),
     limit: z.number().int().min(1).max(50).default(20),
   }, async ({ query, limit }) => json({ query, addons: searchCatalog(addonCatalog, query, limit) }));
+
+  server.registerTool('spala_start', {
+    description: TOOL_DESCRIPTIONS.spalaStart,
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    _meta: projectAuthMetadata(config),
+  }, async () => {
+    const auth = requireVerifiedPrincipal(ctx, api, 'spala_start');
+    if (typeof auth !== 'string') return auth;
+    const principal = ctx.verifiedPrincipal!;
+    const missingFields = missingAccountSetupFields(principal);
+    if (missingFields.length > 0) {
+      return json({
+        schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
+        phase: 'account_setup_required',
+        authenticated: true,
+        backendProvider: 'Spala',
+        user: principal.user,
+        accountSetup: { state: 'required', missingFields },
+        organizations: principal.organizations,
+        projects: [],
+        nextAction: {
+          tool: 'account_setup',
+          requiredFields: missingFields,
+          arguments: {},
+        },
+      });
+    }
+
+    try {
+      const discovered = await discoverStartupProjects(api!, principal);
+      const projects = discovered.flatMap(entry => entry.projects);
+      const oneOrganization = principal.organizations.length === 1;
+      const hasProjects = projects.length > 0;
+      const phase = hasProjects
+        ? 'project_choice_required'
+        : oneOrganization
+          ? 'project_name_required'
+          : 'organization_choice_required';
+      const nextAction = hasProjects
+        ? {
+            type: 'ask_user_project_choice',
+            choices: projects.map(project => ({
+              projectId: project.id,
+              name: project.name,
+              organizationId: project.organizationId,
+              status: project.status,
+            })),
+            allowCreateProject: true,
+            allowCreateOrganization: true,
+            afterSelectionTool: 'project_connect',
+            rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
+          }
+        : oneOrganization
+          ? {
+              type: 'ask_user_project_name',
+              organizationId: principal.organizations[0]!.id,
+              createTool: 'project_create',
+              allowCreateOrganization: true,
+            }
+          : {
+              type: 'ask_user_organization_choice',
+              choices: principal.organizations,
+              allowCreateOrganization: true,
+              then: 'Ask for the new project name and call project_create with the selected organizationId.',
+            };
+      return json({
+        schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
+        phase,
+        authenticated: true,
+        backendProvider: 'Spala',
+        user: principal.user,
+        accountSetup: { state: 'ready', missingFields: [] },
+        selectedOrganizationId: oneOrganization ? principal.organizations[0]!.id : undefined,
+        organizations: discovered.map(entry => ({ ...entry.organization, projects: entry.projects })),
+        projects,
+        nextAction,
+      });
+    } catch (error) {
+      return startupBillingError(error, config) || startupFailure(error);
+    }
+  });
 
   server.registerTool('account_status', {
     description: TOOL_DESCRIPTIONS.accountStatus,
@@ -993,10 +1144,40 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         organizationCreated: setup.organizationCreated,
         user: setup.principal.user,
         organization: setup.organization,
-        next: 'Ask for or confidently derive the real project name, call project_list to avoid duplicates, then call project_create only when needed.',
+        nextAction: {
+          type: 'call_tool',
+          tool: 'spala_start',
+          reason: 'Continue the versioned startup flow with the completed account and organization state.',
+        },
       });
     } catch (error) {
       return safeProjectError(error, 'account_setup_failed', config);
+    }
+  });
+
+  server.registerTool('organization_create', {
+    description: TOOL_DESCRIPTIONS.organizationCreate,
+    inputSchema: {
+      name: z.string().trim().min(1).max(120),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    _meta: projectAuthMetadata(config),
+  }, async ({ name }) => {
+    const auth = requireVerifiedPrincipal(ctx, api, 'organization_create');
+    if (typeof auth !== 'string') return auth;
+    try {
+      const organization = await api!.createOrganization({ name });
+      ctx.verifiedPrincipal = {
+        ...ctx.verifiedPrincipal!,
+        organizations: [...ctx.verifiedPrincipal!.organizations, organization],
+      };
+      return json({
+        organization,
+        created: true,
+        nextAction: { tool: 'spala_start', reason: 'Rediscover organizations and projects with the new organization safely scoped.' },
+      });
+    } catch (error) {
+      return safeProjectError(error, 'organization_create_failed', config);
     }
   });
 
@@ -1193,7 +1374,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {
           ...resolved.handoff,
-          firstCalls: ['mcp_get_onboarding', 'mcp_get_tool_map', 'mcp_list_skills', 'mcp_get_skill({ name: "spala-developer" })', 'project_get_builder_context'],
+          firstCalls: ['spala_start', 'mandatory inspections returned by spala_start', 'focused mcp_get_skill only when needed'],
         },
       });
     } catch (error) {

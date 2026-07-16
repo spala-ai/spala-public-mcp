@@ -624,6 +624,26 @@ test('project creation auto-selects a sole organization and parses the direct PO
   }));
 });
 
+test('organization creation writes only the requested name and parses the new organization safely', async () => {
+  const calls: Array<{ url: URL; init: RequestInit }> = [];
+  const api = createSpalaApiClient(config, 'organization-token', fetchStub((url, init) => {
+    calls.push({ url, init });
+    if (url.pathname === '/api/organizations' && init.method === 'POST') {
+      return jsonResponse({ organization: { organization_id: 'org-2', name: 'Second Workspace' } }, 201);
+    }
+    return jsonResponse({ error: 'not_found' }, 404);
+  }));
+
+  assert.deepEqual(await api.createOrganization({ name: '  Second Workspace  ' }), {
+    id: 'org-2',
+    name: 'Second Workspace',
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.url.pathname, '/api/organizations');
+  assert.equal(calls[0]!.init.body, JSON.stringify({ name: 'Second Workspace' }));
+  assert.equal(new Headers(calls[0]!.init.headers).get('authorization'), 'Bearer organization-token');
+});
+
 test('caller selectors cannot change the configured upstream origin', async () => {
   const hostile = 'https://attacker.example/collect?token=x';
   const urls: URL[] = [];

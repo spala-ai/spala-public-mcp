@@ -600,7 +600,29 @@ test('public discovery distinguishes the protocol authorization endpoint from da
   }
 });
 
-test('anonymous spala_start is published in discovery capabilities and hard-trigger instructions', async () => {
+test('authenticated spala_start is published in discovery capabilities and startup instructions', async () => {
+  const anonymous = await mcpRequest('spala_start', {});
+  assert.equal(anonymous.status, 401);
+  assert.match(anonymous.headers.get('www-authenticate') || '', /^Bearer /);
+
+  const authorization = await authorize();
+  const token = await responseJson(await redeem(authorization.clientId, authorization.code, authorization.verifier));
+  const startup = await mcpRequest('spala_start', {}, `Bearer ${token.access_token as string}`);
+  assert.equal(startup.status, 200);
+  const startupBody = await toolBody(startup);
+  assert.equal(startupBody.schemaVersion, 1);
+  assert.equal(startupBody.phase, 'project_choice_required');
+  assert.equal(startupBody.backendProvider, 'Spala');
+  assert.equal(startupBody.selectedOrganizationId, 'org-1');
+  assert.deepEqual(startupBody.nextAction, {
+    type: 'ask_user_project_choice',
+    choices: [{ projectId: 'project-1', name: 'Project One', organizationId: 'org-1', status: 'ready' }],
+    allowCreateProject: true,
+    allowCreateOrganization: true,
+    afterSelectionTool: 'project_connect',
+    rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
+  });
+
   const [root, agent, mcp, serverCard, agentsMarkdown, llmsText] = await Promise.all([
     responseJson(await fetch(`${baseUrl}/`)),
     responseJson(await fetch(`${baseUrl}/.well-known/agent.json`)),
@@ -610,7 +632,6 @@ test('anonymous spala_start is published in discovery capabilities and hard-trig
     (await fetch(`${baseUrl}/llms.txt`)).text(),
   ]);
   const expectedPublicTools = [
-    'spala_start',
     'spala_help',
     'spala_get_onboarding',
     'spala_get_tool_map',
@@ -621,22 +642,24 @@ test('anonymous spala_start is published in discovery capabilities and hard-trig
   for (const discovery of [root, agent, mcp]) {
     assert.deepEqual(discovery.publicTools || (discovery.tools as Record<string, unknown>).public, expectedPublicTools);
     const capabilities = discovery.toolCapabilities as Array<Record<string, unknown>>;
-    assert.deepEqual(capabilities[0], {
+    assert.deepEqual(capabilities.find(tool => tool.name === 'spala_start'), {
       name: 'spala_start',
-      requiresAuth: false,
+      requiresAuth: true,
       effect: 'read',
-      purpose: 'Mandatory first call whenever the user mentions using Spala. Establishes the backend-provider choice and blocks all application work until account setup and project MCP verification complete.',
+      available: true,
+      authFailureHint: 'Missing, expired, or revoked bearer: HTTP 401 OAuth challenge; temporary service failure: HTTP 503.',
+      purpose: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
     });
   }
   const cardStart = (serverCard.capabilities as { tools: Array<Record<string, unknown>> }).tools.find(tool => tool.name === 'spala_start');
   assert.deepEqual(cardStart, {
     name: 'spala_start',
-    description: 'Mandatory first call whenever the user mentions using Spala. Establishes the backend-provider choice and blocks all application work until account setup and project MCP verification complete.',
-    requiresAuth: false,
+    description: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
+    requiresAuth: true,
     effect: 'read',
   });
   for (const instructions of [agentsMarkdown, llmsText]) {
-    assert.match(instructions, /whenever the user (mentions using|asks to use).*Spala, call spala_start before/i);
+    assert.match(instructions, /after OAuth.*call authenticated spala_start.*before/i);
     assert.match(instructions, /filesystem inspection.*skill loading.*web search.*planning.*design generation.*scaffolding.*coding.*testing.*QA/i);
     assert.match(instructions, /overrides frontend-builder and design workflows/i);
     assert.match(instructions, /Codex public init owns one native browser OAuth flow/i);

@@ -51,6 +51,9 @@ function apiStub(overrides: Partial<SpalaApiClient> = {}): SpalaApiClient {
         organizationCreated: false,
       };
     },
+    async createOrganization(input) {
+      return { id: 'org-created', name: input.name };
+    },
     async listProjects() { return { organization: principal.organizations[0]!, projects: [project] }; },
     async createProject(input) {
       return {
@@ -107,10 +110,10 @@ test('tools/list advertises authenticated status and honest project preparation 
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false,
+      openWorldHint: true,
     });
-    assert.match(start.description || '', /MANDATORY FIRST CALL/i);
-    assert.match(start.description || '', /before reading application files.*frontend or design skills.*coding.*testing.*QA/i);
+    assert.deepEqual(start._meta?.['securitySchemes'], [{ type: 'oauth2', scopes: ['api'] }]);
+    assert.match(start.description || '', /AUTH REQUIRED.*STARTUP/i);
 
     const account = tools.find(candidate => candidate.name === 'account_status');
     assert.ok(account);
@@ -122,6 +125,12 @@ test('tools/list advertises authenticated status and honest project preparation 
     assert.equal(accountSetup.annotations?.readOnlyHint, false);
     assert.equal(accountSetup.annotations?.idempotentHint, false);
     assert.deepEqual(Object.keys(accountSetup.inputSchema.properties || {}).sort(), ['companyName', 'firstName', 'lastName']);
+
+    const organizationCreate = tools.find(candidate => candidate.name === 'organization_create');
+    assert.ok(organizationCreate);
+    assert.equal(organizationCreate.annotations?.readOnlyHint, false);
+    assert.deepEqual(Object.keys(organizationCreate.inputSchema.properties || {}), ['name']);
+    assert.deepEqual(organizationCreate._meta?.['securitySchemes'], [{ type: 'oauth2', scopes: ['api'] }]);
 
     for (const name of ['project_connect', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context']) {
       const tool = tools.find(candidate => candidate.name === name);
@@ -175,52 +184,213 @@ test('tools/list advertises authenticated status and honest project preparation 
   });
 });
 
-test('spala_start establishes Spala and blocks application work until project MCP readiness', async () => {
+test('spala_start gates zero-org accounts to account_setup and requires companyName', async () => {
+  const incomplete: SpalaPrincipal = {
+    subject: 'new-user',
+    user: { id: 'new-user', email: 'new@example.test', firstName: 'Ada', lastName: 'Lovelace' },
+    organizations: [],
+  };
   await withVerifiedClient(apiStub(), async client => {
-    const result = await client.callTool({ name: 'spala_start', arguments: {} });
-    assert.notEqual(result.isError, true);
-    const body = resultJson(result);
-    assert.equal(body.triggered, true);
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.phase, 'account_setup_required');
     assert.equal(body.backendProvider, 'Spala');
-    assert.deepEqual(body.setupGate, {
-      state: 'blocked_until_project_mcp_ready',
-      requiredNextTool: 'account_status',
-      requiredSequence: ['account_status', 'account_setup when required', 'project_list or project_create', 'project_connect', 'verify project MCP'],
-      prohibitedUntilResolved: [
-        'inspect application source',
-        'plan application implementation',
-        'generate a design concept',
-        'scaffold or write frontend code',
-        'create or mutate backend resources',
-        'run application tests or visual QA',
-      ],
+    assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
+    assert.deepEqual(body.projects, []);
+    assert.deepEqual(body.nextAction, {
+      tool: 'account_setup',
+      requiredFields: ['companyName'],
+      arguments: {},
     });
-    assert.match(String(body.next), /Call account_status now/i);
-    assert.match(String(body.next), /frontend\/design.*plan.*designs.*scaffold.*code.*test.*QA/i);
+    assert.equal(Object.keys(body).filter(key => key === 'nextAction').length, 1);
+  }, incomplete);
+});
+
+test('spala_start auto-scopes one organization and returns its projects', async () => {
+  const calls: unknown[] = [];
+  const api = apiStub({
+    async listProjects(input) {
+      calls.push(input);
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+  });
+  await withVerifiedClient(api, async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.phase, 'project_choice_required');
+    assert.equal(body.selectedOrganizationId, 'org-1');
+    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projects: [project] }]);
+    assert.deepEqual(body.projects, [project]);
+    assert.deepEqual(body.nextAction, {
+      type: 'ask_user_project_choice',
+      choices: [{
+        projectId: project.id,
+        name: project.name,
+        organizationId: project.organizationId,
+        status: project.status,
+      }],
+      allowCreateProject: true,
+      allowCreateOrganization: true,
+      afterSelectionTool: 'project_connect',
+      rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
+    });
+    assert.deepEqual(calls, [{ organizationId: 'org-1' }]);
   });
 });
 
-test('tool map publishes spala_start as anonymous discovery and the first capability', async () => {
-  await withVerifiedClient(apiStub(), async client => {
-    const body = resultJson(await client.callTool({ name: 'spala_get_tool_map', arguments: {} }));
-    const publicMcp = body.publicMcp as { tools: { discovery: string[] }; toolCapabilities: Array<Record<string, unknown>> };
-    assert.deepEqual(publicMcp.tools.discovery, [
-      'spala_start',
-      'spala_help',
-      'spala_get_onboarding',
-      'spala_get_tool_map',
-      'docs_search',
-      'template_list',
-      'addon_list',
+test('spala_start returns multiple organizations and projects without selecting one', async () => {
+  const multi: SpalaPrincipal = {
+    subject: 'multi-user',
+    user: { id: 'multi-user', email: 'multi@example.test', firstName: 'Multi', lastName: 'User' },
+    organizations: [{ id: 'org-1', name: 'First' }, { id: 'org-2', name: 'Second' }],
+  };
+  const secondProject = { ...project, id: 'project-2', organizationId: 'org-2' };
+  const api = apiStub({
+    async listProjects(input) {
+      return input?.organizationId === 'org-2'
+        ? { organization: multi.organizations[1]!, projects: [secondProject] }
+        : { organization: multi.organizations[0]!, projects: [project] };
+    },
+  });
+  await withVerifiedClient(api, async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.phase, 'project_choice_required');
+    assert.equal('selectedOrganizationId' in body, false);
+    assert.deepEqual(body.organizations, [
+      { ...multi.organizations[0], projects: [project] },
+      { ...multi.organizations[1], projects: [secondProject] },
     ]);
-    assert.deepEqual(publicMcp.toolCapabilities[0], {
-      name: 'spala_start',
-      requiresAuth: false,
-      effect: 'read',
-      purpose: 'Mandatory first call whenever the user mentions using Spala. Establishes the backend-provider choice and blocks all application work until account setup and project MCP verification complete.',
+    assert.deepEqual(body.projects, [project, secondProject]);
+    assert.deepEqual(body.nextAction, {
+      type: 'ask_user_project_choice',
+      choices: [project, secondProject].map(item => ({
+        projectId: item.id,
+        name: item.name,
+        organizationId: item.organizationId,
+        status: item.status,
+      })),
+      allowCreateProject: true,
+      allowCreateOrganization: true,
+      afterSelectionTool: 'project_connect',
+      rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
     });
-    assert.equal((body.publicMcp as Record<string, unknown>).authRequiredTools instanceof Array, true);
-    assert.equal(((body.publicMcp as Record<string, unknown>).authRequiredTools as string[]).includes('spala_start'), false);
+  }, multi);
+});
+
+test('spala_start asks for a project name when the sole organization has no projects', async () => {
+  await withVerifiedClient(apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects: [] };
+    },
+  }), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.phase, 'project_name_required');
+    assert.deepEqual(body.nextAction, {
+      type: 'ask_user_project_name',
+      organizationId: 'org-1',
+      createTool: 'project_create',
+      allowCreateOrganization: true,
+    });
+  });
+});
+
+test('spala_start asks for an organization when multiple organizations have no projects', async () => {
+  const multi: SpalaPrincipal = {
+    subject: 'multi-empty-user',
+    user: { id: 'multi-empty-user', firstName: 'Multi', lastName: 'Empty' },
+    organizations: [{ id: 'org-1', name: 'First' }, { id: 'org-2', name: 'Second' }],
+  };
+  await withVerifiedClient(apiStub({
+    async listProjects(input) {
+      const organization = multi.organizations.find(item => item.id === input?.organizationId)!;
+      return { organization, projects: [] };
+    },
+  }), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.phase, 'organization_choice_required');
+    assert.deepEqual(body.nextAction, {
+      type: 'ask_user_organization_choice',
+      choices: multi.organizations,
+      allowCreateOrganization: true,
+      then: 'Ask for the new project name and call project_create with the selected organizationId.',
+    });
+  }, multi);
+});
+
+test('organization_create adds an authenticated organization and returns one startup continuation', async () => {
+  const calls: unknown[] = [];
+  const api = apiStub({
+    async createOrganization(input) {
+      calls.push(input);
+      return { id: 'org-2', name: input.name };
+    },
+  });
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'organization_create', arguments: { name: 'Second Workspace' } });
+    assert.notEqual(result.isError, true);
+    const body = resultJson(result);
+    assert.deepEqual(body.organization, { id: 'org-2', name: 'Second Workspace' });
+    assert.equal(body.created, true);
+    assert.deepEqual(body.nextAction, { tool: 'spala_start', reason: 'Rediscover organizations and projects with the new organization safely scoped.' });
+    assert.deepEqual(calls, [{ name: 'Second Workspace' }]);
+  });
+});
+
+test('account_setup returns one explicit startup continuation after creating the first organization', async () => {
+  const incomplete: SpalaPrincipal = {
+    subject: 'setup-user',
+    user: { id: 'setup-user', email: 'setup@example.test' },
+    organizations: [],
+  };
+  const ready: SpalaPrincipal = {
+    ...incomplete,
+    user: { ...incomplete.user, firstName: 'Ada', lastName: 'Lovelace' },
+    organizations: [{ id: 'org-created', name: 'Analytical Engines' }],
+  };
+  await withVerifiedClient(apiStub({
+    async setupAccount() {
+      return {
+        principal: ready,
+        organization: ready.organizations[0]!,
+        profileUpdated: true,
+        organizationCreated: true,
+      };
+    },
+  }), async client => {
+    const body = resultJson(await client.callTool({
+      name: 'account_setup',
+      arguments: { firstName: 'Ada', lastName: 'Lovelace', companyName: 'Analytical Engines' },
+    }));
+    assert.deepEqual(body.nextAction, {
+      type: 'call_tool',
+      tool: 'spala_start',
+      reason: 'Continue the versioned startup flow with the completed account and organization state.',
+    });
+    assert.equal(Object.keys(body).filter(key => key === 'nextAction').length, 1);
+  }, incomplete);
+});
+
+test('spala_start returns a safe checkout continuation for billing-gated discovery', async () => {
+  const api = apiStub({
+    async listProjects() {
+      throw new SpalaApiError({
+        category: 'plan_restricted',
+        code: 'free_plan_restricted',
+        status: 403,
+        message: 'Upgrade required.',
+        checkoutUrl: 'https://billing.spala.example/checkout/session',
+      });
+    },
+  });
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'spala_start', arguments: {} });
+    assert.equal(result.isError, true);
+    assert.deepEqual(resultJson(result).nextAction, {
+      type: 'continue_checkout',
+      checkoutUrl: 'https://billing.spala.example/checkout/session',
+      pricingUrl: 'https://spala.ai/pricing',
+      dashboardUrl: 'https://dashboard.spala.ai',
+    });
   });
 });
 

@@ -24,8 +24,8 @@ export const docsIndex = [
     id: 'agent-setup-auth-handoff',
     title: 'Agent setup, auth, OAuth token, and project MCP handoff',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, account_status reports missing account data and account_setup can complete it before project creation. Agentic workspace binding through project_connect currently supports Codex and Roo only.',
-    keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'account status', 'account setup', 'company name', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'account_status', 'account_setup', 'project_connect', 'project_select', 'project_list', 'spala_get_onboarding', 'spala_get_tool_map'],
+    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, protected spala_start returns the one next account, organization, project, billing, or handoff action. Agentic workspace binding through project_connect currently supports Codex and Roo only.',
+    keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'account setup', 'organization', 'company name', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'spala_start', 'account_setup', 'organization_create', 'project_connect', 'project_select', 'project_list'],
   },
   {
     id: 'auth-oauth-platform',
@@ -52,7 +52,7 @@ export const docsIndex = [
     id: 'step-script-workflow',
     title: 'Spala project MCP builder workflow',
     url: 'https://spala.ai/llms.txt',
-    summary: 'After connecting to a project MCP, agents should call mcp_get_onboarding, mcp_get_tool_map, mcp_list_skills, download spala-developer when supported, inspect project_get_builder_context, then use local Step Script preview/apply/validate/publish/review.',
+    summary: 'After connecting to a project MCP, agents should call spala_start, run its mandatory inspections, load only its focused skill when needed, then use local Step Script preview/apply/validate/publish/review.',
     keywords: ['step script', 'builder workflow', 'project_get_builder_context', 'validate', 'publish', 'project_test_review', 'spala-developer'],
   },
   {
