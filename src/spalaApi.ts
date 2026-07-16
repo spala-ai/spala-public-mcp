@@ -63,9 +63,14 @@ export type SetupAccountResult = {
   organizationCreated: boolean;
 };
 
+export type CreateOrganizationInput = {
+  name: string;
+};
+
 export type SpalaApiClient = {
   getPrincipal(): Promise<SpalaPrincipal>;
   setupAccount(input: SetupAccountInput): Promise<SetupAccountResult>;
+  createOrganization(input: CreateOrganizationInput): Promise<SpalaOrganization>;
   listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
@@ -746,16 +751,7 @@ export function createSpalaApiClient(
       let organization: SpalaOrganization | undefined = principal.organizations[0];
       let organizationCreated = false;
       if (!organization) {
-        const payload = await requestJson('POST', '/api/organizations', {
-          body: { name: companyName },
-        });
-        organization = parseCreatedOrganization(payload);
-        if (!organization) {
-          throw new SpalaApiError({
-            category: 'invalid_upstream_response',
-            message: 'The Spala control plane returned an invalid created organization.',
-          });
-        }
+        organization = await this.createOrganization({ name: companyName! });
         organizationCreated = true;
       }
 
@@ -766,6 +762,27 @@ export function createSpalaApiClient(
       };
       principalPromise = Promise.resolve(updatedPrincipal);
       return { principal: updatedPrincipal, organization, profileUpdated, organizationCreated };
+    },
+
+    async createOrganization(input) {
+      const name = input.name.trim();
+      if (!name || name.length > 120) {
+        throw new SpalaApiError({
+          category: 'request_failed',
+          code: 'organization_name_invalid',
+          message: 'Organization names must be between 1 and 120 characters.',
+        });
+      }
+      const payload = await requestJson('POST', '/api/organizations', { body: { name } });
+      const organization = parseCreatedOrganization(payload);
+      if (!organization) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          message: 'The Spala control plane returned an invalid created organization.',
+        });
+      }
+      principalPromise = undefined;
+      return organization;
     },
 
     async listProjects(input = {}) {
