@@ -20,7 +20,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
 ] as const;
-export const PROJECT_INSTALLER_VERSION = '0.1.12';
+export const PROJECT_INSTALLER_VERSION = '0.1.13';
 export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
 
 export const PROJECT_INSTALL_EXECUTION = {
