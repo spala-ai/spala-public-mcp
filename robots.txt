@@ -3,5 +3,5 @@ Allow: /
 
 Sitemap: https://mcp.spala.ai/sitemap.xml
 
-# Spala Public MCP is intended for agent discovery, OAuth metadata, and a fail-closed project tool interface.
-# Public discovery tools are anonymous. Project tools require Spala platform authorization, but project lookup, project selection, and handoff are unavailable in this standalone release.
+# Spala Public MCP is intended for agent discovery, OAuth metadata, and a verified project handoff interface.
+# Public discovery tools are anonymous. Project lookup, project selection, and handoff require Spala platform authorization.
