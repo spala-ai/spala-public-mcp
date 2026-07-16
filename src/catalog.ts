@@ -66,8 +66,8 @@ export const docsIndex = [
     id: 'pricing',
     title: 'Spala pricing',
     url: 'https://spala.ai/pricing.md',
-    summary: 'Current public pricing context lists Free Backend Review, Starter Launch from $990/year, and Managed Build custom scope. Agents should verify against the live pricing page before final commercial advice.',
-    keywords: ['pricing', 'plans', 'free backend review', 'starter launch', 'managed build', '990'],
+    summary: 'Current public pricing context routes developers to the live self-serve dashboard and pricing page. Agents should verify account-specific plan, checkout, and billing state before final commercial advice.',
+    keywords: ['pricing', 'plans', 'self serve', 'dashboard', 'checkout', 'billing'],
   },
   {
     id: 'security-evaluation',
