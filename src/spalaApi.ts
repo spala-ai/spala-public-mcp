@@ -591,6 +591,7 @@ export function createSpalaApiClient(
     options: { authorization?: boolean; sensitiveTokens?: string[] } = {},
   ): Promise<unknown> => {
     const url = new URL(`${projectUrl}${pathname}`);
+    const projectOrigin = new URL(projectUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
     try {
@@ -599,6 +600,12 @@ export function createSpalaApiClient(
         headers: {
           ...(options.authorization === false ? {} : { authorization: `Bearer ${projectAccessToken}` }),
           ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+          // Hosted projects can be reached through a custom domain while the upstream
+          // runtime is mounted on a legacy shared origin. Preserve the control-plane-
+          // verified public origin so one-time bootstrap URLs are minted for the same
+          // backend identity that project_connect validates and the installer consumes.
+          'x-forwarded-proto': projectOrigin.protocol.slice(0, -1),
+          'x-forwarded-host': projectOrigin.host,
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,

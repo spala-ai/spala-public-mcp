@@ -484,6 +484,40 @@ test('project access handoff accepts top-level and nested URL aliases', async ()
   }
 });
 
+test('project preparation preserves the verified public project origin on backend calls', async () => {
+  const projectToken = 'temporary-forwarded-origin-token';
+  const builderToken = 'builder-forwarded-origin-token';
+  const projectCalls: Array<{ url: URL; init: RequestInit }> = [];
+  const projectUrl = 'https://property-listings.example.spala.ai';
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from(projectUrl).toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === projectUrl) {
+      projectCalls.push({ url, init });
+      if (url.pathname === '/api/__internal/builder-auth/external') return jsonResponse({ token: builderToken });
+      if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
+      if (url.pathname === '/mcp/agent-instructions') {
+        return jsonResponse({ consumeUrl: `${projectUrl}/mcp/agent-instructions/session/consume` }, 201);
+      }
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await api.prepareProjectMcp('project-1', 'codex');
+
+  assert.equal(projectCalls.length, 3);
+  for (const call of projectCalls) {
+    const headers = new Headers(call.init.headers);
+    assert.equal(headers.get('x-forwarded-proto'), 'https');
+    assert.equal(headers.get('x-forwarded-host'), 'property-listings.example.spala.ai');
+  }
+});
+
 test('project access handoff rejects conflicting URL aliases', async () => {
   const projectToken = 'project-entry-token';
   const projectUrl = 'https://project.example';
