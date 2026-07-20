@@ -365,7 +365,7 @@ test('project backend failures receive stage-specific fallback codes without exp
         if (url.pathname === stage) throw new Error(`backend network failure ${controlToken} ${projectToken}`);
         if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
         if (url.pathname === '/mcp/agent-instructions') {
-          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
+          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
         }
       }
       return jsonResponse({ error: 'unexpected_request' }, 500);
@@ -472,7 +472,7 @@ test('project access handoff accepts top-level and nested URL aliases', async ()
         projectCalls.push(url);
         if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
         if (url.pathname === '/mcp/agent-instructions') {
-          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/session/consume' }, 201);
+          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
         }
       }
       return jsonResponse({ error: 'unexpected_request' }, 500);
@@ -592,6 +592,64 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
     });
     assert.equal(calls.some(url => url.pathname === '/api/projects/project-1/mcp/prepare'), false);
   }
+});
+
+test('project preparation canonicalizes a legacy hosted bootstrap path onto the verified project backend', async () => {
+  const projectToken = 'temporary-legacy-bootstrap-token';
+  const builderToken = 'builder-legacy-bootstrap-token';
+  const projectUrl = 'https://property-listings.example.spala.ai';
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from(projectUrl).toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({
+        consumeUrl: 'https://example.spala.ai/property-listings/mcp/agent-instructions/mcp_agent_legacy/consume',
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    'https://property-listings.example.spala.ai/mcp/agent-instructions/mcp_agent_legacy/consume',
+  );
+});
+
+test('project preparation rejects a bootstrap capability from an unrelated public host', async () => {
+  const projectToken = 'temporary-unrelated-bootstrap-token';
+  const builderToken = 'builder-unrelated-bootstrap-token';
+  const projectUrl = 'https://property-listings.example.spala.ai';
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from(projectUrl).toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({
+        consumeUrl: 'https://attacker.example/mcp/agent-instructions/mcp_agent_stolen/consume',
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.code, 'invalid_project_bootstrap_material');
+    return true;
+  });
 });
 
 test('project creation auto-selects a sole organization and parses the direct POST response', async () => {
