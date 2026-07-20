@@ -495,9 +495,19 @@ function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): strin
   const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
   if (!consumeUrl) return undefined;
   const parsed = new URL(consumeUrl);
-  const expectedPrefix = `${projectUrl}/mcp/agent-instructions/`;
-  if (!consumeUrl.startsWith(expectedPrefix) || !parsed.pathname.endsWith('/consume')) return undefined;
-  return consumeUrl;
+  const expectedProject = new URL(projectUrl);
+  const isSpalaHosted = (hostname: string): boolean => (
+    hostname === 'spala.ai' || hostname.endsWith('.spala.ai')
+  );
+  if (parsed.origin !== expectedProject.origin && !isSpalaHosted(parsed.hostname)) return undefined;
+
+  // Hosted projects can expose the same backend through a custom domain and a
+  // legacy shared-runtime path. The session id is the capability; consume it
+  // through the control-plane-verified project backend instead of trusting the
+  // presentation origin/path returned by that legacy route.
+  const match = parsed.pathname.match(/\/mcp\/agent-instructions\/(mcp_agent_[A-Za-z0-9_-]{1,256})\/consume$/);
+  if (!match) return undefined;
+  return `${projectUrl}/mcp/agent-instructions/${match[1]}/consume`;
 }
 
 function rethrowProjectStage(error: unknown, code: string): never {
