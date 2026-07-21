@@ -963,6 +963,9 @@ export function createSpalaApiClient(
       ) {
         console.warn('[project_connect] Invalid project bootstrap material', {
           projectId: id,
+          instructionSessionFields: instructionSession && typeof instructionSession === 'object' && !Array.isArray(instructionSession)
+            ? Object.keys(instructionSession as Record<string, unknown>).sort()
+            : [],
           consumeUrl: bootstrapReason,
           consumeUrlDiagnostic: 'diagnostic' in bootstrapResult ? bootstrapResult.diagnostic : undefined,
           containsProjectAccessToken: Boolean(bootstrapConsumeUrl?.includes(access.token)),
