@@ -489,25 +489,31 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
   return { projectUrl, token };
 }
 
-function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): string | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+type AgentInstructionBootstrapParseResult =
+  | { consumeUrl: string }
+  | { reason: 'invalid_shape' | 'invalid_url' | 'untrusted_origin' | 'invalid_session_path' };
+
+function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): AgentInstructionBootstrapParseResult {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { reason: 'invalid_shape' };
   const consumeUrlValue = stringField(raw as Record<string, unknown>, 'consumeUrl', 4_096);
   const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
-  if (!consumeUrl) return undefined;
+  if (!consumeUrl) return { reason: 'invalid_url' };
   const parsed = new URL(consumeUrl);
   const expectedProject = new URL(projectUrl);
   const isSpalaHosted = (hostname: string): boolean => (
     hostname === 'spala.ai' || hostname.endsWith('.spala.ai')
   );
-  if (parsed.origin !== expectedProject.origin && !isSpalaHosted(parsed.hostname)) return undefined;
+  if (parsed.origin !== expectedProject.origin && !isSpalaHosted(parsed.hostname)) {
+    return { reason: 'untrusted_origin' };
+  }
 
   // Hosted projects can expose the same backend through a custom domain and a
   // legacy shared-runtime path. The session id is the capability; consume it
   // through the control-plane-verified project backend instead of trusting the
   // presentation origin/path returned by that legacy route.
   const match = parsed.pathname.match(/\/mcp\/agent-instructions\/(mcp_agent_[A-Za-z0-9_-]{1,256})\/consume$/);
-  if (!match) return undefined;
-  return `${projectUrl}/mcp/agent-instructions/${match[1]}/consume`;
+  if (!match) return { reason: 'invalid_session_path' };
+  return { consumeUrl: `${projectUrl}/mcp/agent-instructions/${match[1]}/consume` };
 }
 
 function rethrowProjectStage(error: unknown, code: string): never {
@@ -914,7 +920,9 @@ export function createSpalaApiClient(
       } catch (error) {
         rethrowProjectStage(error, 'project_agent_instruction_failed');
       }
-      const bootstrapConsumeUrl = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
+      const bootstrapResult = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
+      const bootstrapConsumeUrl = 'consumeUrl' in bootstrapResult ? bootstrapResult.consumeUrl : undefined;
+      const bootstrapReason = 'reason' in bootstrapResult ? bootstrapResult.reason : 'valid';
       const mcpUrl = parseProjectMcpUrl(`${access.projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
       const manifestUrl = parsePublicHttpsUrl(
         `${access.projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata`,
@@ -927,6 +935,14 @@ export function createSpalaApiClient(
         || !mcpUrl
         || !manifestUrl
       ) {
+        console.warn('[project_connect] Invalid project bootstrap material', {
+          projectId: id,
+          consumeUrl: bootstrapReason,
+          containsProjectAccessToken: Boolean(bootstrapConsumeUrl?.includes(access.token)),
+          containsControlPlaneToken: Boolean(bootstrapConsumeUrl?.includes(controlPlaneAccessToken)),
+          mcpUrl: mcpUrl ? 'valid' : 'invalid',
+          manifestUrl: manifestUrl ? 'valid' : 'invalid',
+        });
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
           code: 'invalid_project_bootstrap_material',
