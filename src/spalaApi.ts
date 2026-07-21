@@ -491,13 +491,39 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
 
 type AgentInstructionBootstrapParseResult =
   | { consumeUrl: string }
-  | { reason: 'invalid_shape' | 'invalid_url' | 'untrusted_origin' | 'invalid_session_path' };
+  | {
+      reason: 'invalid_shape' | 'invalid_url' | 'untrusted_origin' | 'invalid_session_path';
+      diagnostic?: Record<string, string | number | boolean>;
+    };
+
+function bootstrapUrlDiagnostic(value: unknown): Record<string, string | number | boolean> {
+  if (typeof value !== 'string') return { fieldType: typeof value, fieldPresent: value !== undefined };
+  const diagnostic: Record<string, string | number | boolean> = {
+    fieldType: 'string',
+    length: value.length,
+    trimmed: value === value.trim(),
+  };
+  try {
+    const url = new URL(value);
+    diagnostic.protocol = url.protocol;
+    diagnostic.hasCredentials = Boolean(url.username || url.password);
+    diagnostic.hasQuery = Boolean(url.search);
+    diagnostic.hasFragment = Boolean(url.hash);
+    diagnostic.canonical = url.toString() === value;
+    diagnostic.forbiddenHostname = isForbiddenHostname(url.hostname);
+    diagnostic.doubleSlashPath = url.pathname.includes('//');
+    diagnostic.encodedSlash = /%2f|%5c/i.test(url.pathname);
+  } catch {
+    diagnostic.parseable = false;
+  }
+  return diagnostic;
+}
 
 function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): AgentInstructionBootstrapParseResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { reason: 'invalid_shape' };
   const consumeUrlValue = stringField(raw as Record<string, unknown>, 'consumeUrl', 4_096);
   const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
-  if (!consumeUrl) return { reason: 'invalid_url' };
+  if (!consumeUrl) return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
   const parsed = new URL(consumeUrl);
   const expectedProject = new URL(projectUrl);
   const isSpalaHosted = (hostname: string): boolean => (
@@ -938,6 +964,7 @@ export function createSpalaApiClient(
         console.warn('[project_connect] Invalid project bootstrap material', {
           projectId: id,
           consumeUrl: bootstrapReason,
+          consumeUrlDiagnostic: 'diagnostic' in bootstrapResult ? bootstrapResult.diagnostic : undefined,
           containsProjectAccessToken: Boolean(bootstrapConsumeUrl?.includes(access.token)),
           containsControlPlaneToken: Boolean(bootstrapConsumeUrl?.includes(controlPlaneAccessToken)),
           mcpUrl: mcpUrl ? 'valid' : 'invalid',
