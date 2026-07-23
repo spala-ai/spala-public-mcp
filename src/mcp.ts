@@ -286,6 +286,25 @@ const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
   project_get_public_context: PROJECT_SELECTOR_JSON_SCHEMA,
 };
 
+const TOOL_TITLES: Record<string, string> = {
+  spala_help: 'Learn About Spala',
+  spala_get_onboarding: 'Get Spala Onboarding',
+  spala_get_tool_map: 'Get Spala Tool Map',
+  docs_search: 'Search Spala Documentation',
+  template_list: 'List Spala Templates',
+  addon_list: 'List Spala Addons',
+  spala_start: 'Start Spala',
+  account_status: 'Check Spala Account',
+  account_setup: 'Complete Spala Account Setup',
+  organization_create: 'Create Spala Organization',
+  project_list: 'List Spala Projects',
+  project_create: 'Create Spala Project',
+  project_connect: 'Connect Spala Project',
+  project_select: 'Select Spala Project',
+  project_get_mcp_manifest: 'Get Project MCP Manifest',
+  project_get_public_context: 'Get Project Public Context',
+};
+
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -398,9 +417,15 @@ function advertiseDirectoryQualityMetadata(server: McpServer): void {
   if (!original) return;
 
   internals.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
-    const result = await original(request, extra) as { tools?: Array<{ name?: string; inputSchema?: unknown; annotations?: unknown }> };
+    const result = await original(request, extra) as {
+      tools?: Array<{ name?: string; title?: string; inputSchema?: unknown; annotations?: unknown }>;
+    };
     for (const tool of result.tools || []) {
       const schema = tool.name ? TOOL_INPUT_SCHEMAS[tool.name] : undefined;
+      const title = tool.name ? TOOL_TITLES[tool.name] : undefined;
+      if (title) {
+        tool.title = title;
+      }
       if (schema) {
         tool.inputSchema = schema;
       }
@@ -840,7 +865,7 @@ async function prepareHandoff(
 export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClient, ctx: RequestContext = {}): McpServer {
   const server = new McpServer({
     name: 'Spala Public MCP',
-    version: '0.1.0',
+    version: '0.1.1',
   }, {
     instructions: [
       'This is the public Spala MCP for mcp.spala.ai.',

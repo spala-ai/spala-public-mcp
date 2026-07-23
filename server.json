@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "ai.spala/public-mcp",
   "title": "Spala Public MCP",
-  "description": "Discovery, OAuth metadata, authenticated project operations, and exact project MCP handoff for Spala backend projects.",
-  "version": "1.0.0",
+  "description": "Discovery, OAuth, project operations, and exact project MCP handoff for Spala backend projects.",
+  "version": "1.0.1",
   "websiteUrl": "https://spala.ai/mcp-profile/",
   "icons": [
     {
