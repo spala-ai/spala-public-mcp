@@ -3,8 +3,13 @@
   "name": "ai.spala/public-mcp",
   "title": "Spala Public MCP",
   "description": "Discovery, OAuth, project operations, and exact project MCP handoff for Spala backend projects.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "websiteUrl": "https://spala.ai/mcp-profile/",
+  "repository": {
+    "url": "https://github.com/spala-ai/spala-public-mcp",
+    "source": "github",
+    "id": "1297760292"
+  },
   "icons": [
     {
       "src": "https://spala.ai/brand/icon-square-1024.png",

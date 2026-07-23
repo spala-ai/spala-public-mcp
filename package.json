@@ -2,6 +2,14 @@
   "name": "mcp-spala-ai",
   "version": "0.1.1",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spala-ai/spala-public-mcp.git"
+  },
+  "homepage": "https://github.com/spala-ai/spala-public-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/spala-ai/spala-public-mcp/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
