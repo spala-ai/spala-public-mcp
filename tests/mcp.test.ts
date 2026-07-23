@@ -98,6 +98,32 @@ function resultJson(result: Awaited<ReturnType<Client['callTool']>>): Record<str
 test('tools/list advertises authenticated status and honest project preparation mutations', async () => {
   await withVerifiedClient(apiStub(), async client => {
     const { tools } = await client.listTools();
+    const expectedTitles = {
+      spala_help: 'Learn About Spala',
+      spala_get_onboarding: 'Get Spala Onboarding',
+      spala_get_tool_map: 'Get Spala Tool Map',
+      docs_search: 'Search Spala Documentation',
+      template_list: 'List Spala Templates',
+      addon_list: 'List Spala Addons',
+      spala_start: 'Start Spala',
+      account_status: 'Check Spala Account',
+      account_setup: 'Complete Spala Account Setup',
+      organization_create: 'Create Spala Organization',
+      project_list: 'List Spala Projects',
+      project_create: 'Create Spala Project',
+      project_connect: 'Connect Spala Project',
+      project_select: 'Select Spala Project',
+      project_get_mcp_manifest: 'Get Project MCP Manifest',
+      project_get_public_context: 'Get Project Public Context',
+    } as const;
+    assert.equal(tools.length, 16);
+    for (const [name, title] of Object.entries(expectedTitles)) {
+      const tool = tools.find(candidate => candidate.name === name);
+      assert.ok(tool, name);
+      assert.equal(tool.title, title);
+      assert.ok(tool.description?.trim(), `${name} description`);
+      assert.ok(tool.annotations, `${name} annotations`);
+    }
     const start = tools.find(candidate => candidate.name === 'spala_start');
     assert.ok(start);
     assert.deepEqual(start.inputSchema, {

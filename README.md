@@ -26,6 +26,8 @@ https://mcp.spala.ai/mcp
 
 ## Tools
 
+The server exposes 16 tools. Every tool publishes a display title, description, input schema, and behavioral annotations through `tools/list`.
+
 ### Public discovery tools
 
 - `spala_help`: explains what Spala is, what the public MCP does, and where agents should start.
@@ -42,6 +44,7 @@ These tools require a public MCP bearer with scope `api`. The public MCP validat
 - `spala_start`: protected startup gate. Call this first after OAuth whenever the user asks to use, install, connect, configure, or build with Spala. It returns the one next account, organization, project, billing, or handoff action.
 - `account_status`: compatibility readiness tool. `spala_start` absorbs this status for the normal agent workflow.
 - `account_setup`: fills missing first/last name and creates the first company/workspace organization from real values supplied by the user or explicit context.
+- `organization_create`: creates an additional company/workspace organization for the signed-in account.
 - `project_list`: lists projects available to the signed-in account.
 - `project_create`: creates a real project for the signed-in account.
 - `project_connect`: reuses the dashboard's authenticated project-entry handoff, enables MCP directly on the selected project backend, then returns exact clean handoff URLs and a workspace-only installer plan.
