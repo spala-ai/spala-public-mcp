@@ -92,7 +92,9 @@ function resultText(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 function resultJson(result: Awaited<ReturnType<Client['callTool']>>): Record<string, unknown> {
-  return JSON.parse(resultText(result)) as Record<string, unknown>;
+  const parsed = JSON.parse(resultText(result)) as Record<string, unknown>;
+  assert.deepEqual(result.structuredContent, parsed);
+  return parsed;
 }
 
 test('tools/list advertises authenticated status and honest project preparation mutations', async () => {
@@ -123,6 +125,8 @@ test('tools/list advertises authenticated status and honest project preparation 
       assert.equal(tool.title, title);
       assert.ok(tool.description?.trim(), `${name} description`);
       assert.ok(tool.annotations, `${name} annotations`);
+      assert.equal(tool.outputSchema?.type, 'object', `${name} output schema`);
+      assert.ok(tool.outputSchema?.description, `${name} output description`);
     }
     const start = tools.find(candidate => candidate.name === 'spala_start');
     assert.ok(start);

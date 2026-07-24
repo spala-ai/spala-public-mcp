@@ -662,7 +662,9 @@ test('authenticated spala_start is published in discovery capabilities and start
     });
   }
   const cardStart = (serverCard.tools as Array<Record<string, unknown>>).find(tool => tool.name === 'spala_start');
-  assert.deepEqual(cardStart, {
+  assert.ok(cardStart);
+  const { outputSchema, ...cardStartWithoutOutput } = cardStart;
+  assert.deepEqual(cardStartWithoutOutput, {
     name: 'spala_start',
     title: 'Start Spala',
     description: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
@@ -679,6 +681,17 @@ test('authenticated spala_start is published in discovery capabilities and start
       openWorldHint: true,
     },
   });
+  assert.deepEqual((outputSchema as Record<string, unknown>).required, [
+    'schemaVersion',
+    'phase',
+    'authenticated',
+    'backendProvider',
+    'user',
+    'accountSetup',
+    'organizations',
+    'projects',
+    'nextAction',
+  ]);
   for (const instructions of [agentsMarkdown, llmsText]) {
     assert.match(instructions, /after OAuth.*call authenticated spala_start.*before/i);
     assert.match(instructions, /filesystem inspection.*skill loading.*web search.*planning.*design generation.*scaffolding.*coding.*testing.*QA/i);
