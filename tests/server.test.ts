@@ -598,6 +598,12 @@ test('public discovery distinguishes the protocol authorization endpoint from da
     assert.equal(auth.authorizationEndpoint, 'https://mcp.spala.ai/oauth/authorize');
     assert.equal(auth.dashboardAuthorizationUrl, 'https://dashboard.spala.ai/mcp/authorize');
   }
+  assert.deepEqual(serverCard.maintainer, {
+    name: 'Spala AI',
+    contact: 'paul@spala.ai',
+    website: 'https://spala.ai/',
+  });
+  assert.equal(serverCard.sourceRepositoryUrl, 'https://github.com/spala-ai/spala-public-mcp');
 });
 
 test('authenticated spala_start is published in discovery capabilities and startup instructions', async () => {
