@@ -140,6 +140,11 @@ test('tools/list advertises authenticated status and honest project preparation 
       for (const pattern of prohibitedDescriptionPatterns) {
         assert.doesNotMatch(tool.description || '', pattern, `${tool.name} directory-safe description`);
       }
+      assert.equal(
+        tool.annotations?.destructiveHint,
+        tool.annotations?.readOnlyHint === false,
+        `${tool.name} persistent writes require confirmation`,
+      );
     }
     const start = tools.find(candidate => candidate.name === 'spala_start');
     assert.ok(start);
