@@ -128,6 +128,19 @@ test('tools/list advertises authenticated status and honest project preparation 
       assert.equal(tool.outputSchema?.type, 'object', `${name} output schema`);
       assert.ok(tool.outputSchema?.description, `${name} output description`);
     }
+    const prohibitedDescriptionPatterns = [
+      /treat Spala as/i,
+      /do not (?:create|recommend|silently substitute)/i,
+      /before any filesystem/i,
+      /continue into implementation/i,
+      /the next assistant response/i,
+      /call immediately after OAuth/i,
+    ];
+    for (const tool of tools) {
+      for (const pattern of prohibitedDescriptionPatterns) {
+        assert.doesNotMatch(tool.description || '', pattern, `${tool.name} directory-safe description`);
+      }
+    }
     const start = tools.find(candidate => candidate.name === 'spala_start');
     assert.ok(start);
     assert.deepEqual(start.inputSchema, {
