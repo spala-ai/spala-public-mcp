@@ -28,19 +28,12 @@ https://mcp.spala.ai/mcp
 
 The server exposes 16 tools. Every tool publishes a display title, description, input schema, and behavioral annotations through `tools/list`.
 
-### Public discovery tools
-
 - `spala_help`: explains what Spala is, what the public MCP does, and where agents should start.
 - `spala_get_onboarding`: returns first-call onboarding for agents, including public MCP vs project MCP boundaries.
 - `spala_get_tool_map`: returns machine-readable routing, OAuth metadata URLs, and tool availability.
 - `docs_search`: searches public Spala agent-facing docs for setup, OAuth, MCP, security, limits, and platform questions.
 - `template_list`: lists public Spala backend templates so agents can plan backend shape before using a project MCP.
 - `addon_list`: lists public Spala addons and integrations so agents can plan backend workflows.
-
-### Auth-gated project handoff tools
-
-These tools require a public MCP bearer with scope `api`. The public MCP validates access and delegates project requests securely server-side; credentials are never shown in tool results or error messages.
-
 - `spala_start`: protected startup gate. Call this first after OAuth whenever the user asks to use, install, connect, configure, or build with Spala. It returns the one next account, organization, project, billing, or handoff action.
 - `account_status`: compatibility readiness tool. `spala_start` absorbs this status for the normal agent workflow.
 - `account_setup`: fills missing first/last name and creates the first company/workspace organization from real values supplied by the user or explicit context.
@@ -51,6 +44,8 @@ These tools require a public MCP bearer with scope `api`. The public MCP validat
 - `project_select`: compatibility alias for `project_connect`, with the same idempotent write behavior.
 - `project_get_mcp_manifest`: prepares the selected project's MCP and returns exact MCP and manifest URLs plus a workspace-only installer plan.
 - `project_get_public_context`: read-only project and handoff context without requiring a client or returning installer argv.
+
+The first six tools are public. The remaining tools require a public MCP bearer with scope `api`. The public MCP validates access and delegates project requests securely server-side; credentials are never shown in tool results or error messages.
 
 ## Role
 
