@@ -1,0 +1,404 @@
+{
+  "info": {
+    "_postman_id": "e195749f-8468-4ec2-b673-8ae84ac6b51c",
+    "name": "Spala Public MCP",
+    "description": "Discover Spala, inspect its public MCP contract, and reach a first successful tool call without credentials.\n\nSpala is a hosted backend builder for AI-built applications. This public MCP is the discovery, OAuth, project-selection, and exact project-MCP handoff layer. Backend construction and operation happen through the selected project's separate MCP.\n\nStart with **First successful call**, then explore the public discovery tools. The authenticated request is intentionally isolated and uses an empty secret variable. Never hardcode or publish a bearer token, dashboard credential, project bootstrap URL, or inferred project MCP URL.\n\nDocumentation: https://docs.spala.ai/agents/mcp/\nCanonical source: https://github.com/spala-ai/spala-public-mcp",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://mcp.spala.ai",
+      "type": "string"
+    },
+    {
+      "key": "mcpProtocolVersion",
+      "value": "2025-06-18",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "First successful call",
+      "description": "Run these requests in order. They require no Spala account and prove discovery, protocol initialization, tool discovery, and a real public tool result.",
+      "item": [
+        {
+          "name": "1. Check service health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Confirms that the public MCP service is reachable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Service is healthy', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.ok).to.eql(true);",
+                  "  pm.expect(body.service).to.eql('mcp-spala-ai');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Initialize MCP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"{{mcpProtocolVersion}}\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"Spala Postman Quickstart\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Initializes the streamable HTTP MCP endpoint. The response is an SSE message containing the negotiated protocol and server instructions."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('MCP initializes successfully', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const line = pm.response.text().split(/\\r?\\n/).find((entry) => entry.startsWith('data: '));",
+                  "  pm.expect(line, 'SSE data line').to.be.a('string');",
+                  "  const message = JSON.parse(line.slice(6));",
+                  "  pm.expect(message.result.protocolVersion).to.eql(pm.collectionVariables.get('mcpProtocolVersion'));",
+                  "  pm.expect(message.result.serverInfo.name).to.eql('Spala Public MCP');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. List all tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\",\n  \"params\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Returns the complete public MCP tool catalog. Six tools are usable without authentication; project and account operations require OAuth."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('All 16 tools publish output contracts', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const line = pm.response.text().split(/\\r?\\n/).find((entry) => entry.startsWith('data: '));",
+                  "  const message = JSON.parse(line.slice(6));",
+                  "  pm.expect(message.result.tools).to.have.length(16);",
+                  "  message.result.tools.forEach((tool) => pm.expect(tool.outputSchema, tool.name).to.be.an('object'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. Learn about Spala",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"spala_help\",\n    \"arguments\": {\n      \"topic\": \"overview\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Calls a real public tool and returns both human-readable MCP content and matching structured output."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Public tool returns structured content', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const line = pm.response.text().split(/\\r?\\n/).find((entry) => entry.startsWith('data: '));",
+                  "  const message = JSON.parse(line.slice(6));",
+                  "  pm.expect(message.result.isError).not.to.eql(true);",
+                  "  pm.expect(message.result.content[0].text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(message.result.structuredContent.markdown).to.eql(message.result.content[0].text);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public discovery",
+      "description": "Public, read-only resources and tools. These requests do not require an account or bearer token.",
+      "item": [
+        {
+          "name": "Get install manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mcp/install-manifest",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp", "install-manifest"]
+            },
+            "description": "Machine-readable public MCP role, tool map, OAuth URLs, and supported client installation guidance."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Manifest describes the public MCP', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.mcpUrl).to.eql(pm.collectionVariables.get('baseUrl') + '/mcp');",
+                  "  pm.expect(body.role).to.eql('public-spala-mcp');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get OAuth protected-resource metadata",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/.well-known/oauth-protected-resource/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": [".well-known", "oauth-protected-resource", "mcp"]
+            },
+            "description": "Discovers the OAuth authorization server for the public MCP resource."
+          }
+        },
+        {
+          "name": "Get OAuth authorization-server metadata",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/.well-known/oauth-authorization-server/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": [".well-known", "oauth-authorization-server", "mcp"]
+            },
+            "description": "Discovers authorization, token, registration, response-type, grant-type, and PKCE support."
+          }
+        },
+        {
+          "name": "Get MCP server card",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/.well-known/mcp/server-card.json",
+              "host": ["{{baseUrl}}"],
+              "path": [".well-known", "mcp", "server-card.json"]
+            },
+            "description": "Static registry card with metadata and all 16 tool input/output contracts."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Server card exposes all tool contracts', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.tools).to.have.length(16);",
+                  "  body.tools.forEach((tool) => pm.expect(tool.outputSchema, tool.name).to.be.an('object'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get agent onboarding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 10,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"spala_get_onboarding\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Explains the public MCP/project MCP boundary and safe first-use flow."
+          }
+        },
+        {
+          "name": "Get machine-readable tool map",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 11,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"spala_get_tool_map\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Returns public/protected tool routing and OAuth discovery URLs."
+          }
+        },
+        {
+          "name": "Search documentation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 12,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"docs_search\",\n    \"arguments\": {\n      \"query\": \"OAuth project MCP handoff\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Searches curated public Spala documentation."
+          }
+        },
+        {
+          "name": "List backend templates",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 13,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"template_list\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Lists public backend templates available for planning."
+          }
+        },
+        {
+          "name": "List addons",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 14,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"addon_list\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Lists public addons and integrations available for planning."
+          }
+        }
+      ]
+    },
+    {
+      "name": "After OAuth",
+      "description": "Protected account and project operations. Use a valid OAuth access token issued for https://mcp.spala.ai/mcp with scope api. Keep the environment variable private and never publish its current value.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{oauthAccessToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Start authenticated Spala flow",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Accept", "value": "application/json, text/event-stream"},
+              {"key": "MCP-Protocol-Version", "value": "{{mcpProtocolVersion}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 20,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"spala_start\",\n    \"arguments\": {\n      \"workPhase\": \"setup\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": ["{{baseUrl}}"],
+              "path": ["mcp"]
+            },
+            "description": "Required first protected call after OAuth. It returns the single next account, organization, project, billing, or handoff action. Use an MCP client for the normal OAuth flow; this request exists as an inspectable contract example."
+          }
+        }
+      ]
+    }
+  ]
+}
