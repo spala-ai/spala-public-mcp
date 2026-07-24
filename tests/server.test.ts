@@ -592,18 +592,22 @@ test('public discovery distinguishes the protocol authorization endpoint from da
   ]);
   for (const auth of [
     agent.oauth as Record<string, unknown>,
-    serverCard.authentication as Record<string, unknown>,
     handoffTest.auth as Record<string, unknown>,
   ]) {
     assert.equal(auth.authorizationEndpoint, 'https://mcp.spala.ai/oauth/authorize');
     assert.equal(auth.dashboardAuthorizationUrl, 'https://dashboard.spala.ai/mcp/authorize');
   }
-  assert.deepEqual(serverCard.maintainer, {
-    name: 'Spala AI',
-    contact: 'paul@spala.ai',
-    website: 'https://spala.ai/',
+  assert.deepEqual(serverCard.serverInfo, {
+    name: 'Spala Public MCP',
+    version: '0.1.1',
   });
-  assert.equal(serverCard.sourceRepositoryUrl, 'https://github.com/spala-ai/spala-public-mcp');
+  assert.deepEqual(serverCard.authentication, {
+    required: true,
+    schemes: ['oauth2'],
+  });
+  assert.equal((serverCard.tools as Array<Record<string, unknown>>).length, 16);
+  assert.deepEqual(serverCard.resources, []);
+  assert.deepEqual(serverCard.prompts, []);
 });
 
 test('authenticated spala_start is published in discovery capabilities and startup instructions', async () => {
@@ -657,12 +661,23 @@ test('authenticated spala_start is published in discovery capabilities and start
       purpose: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
     });
   }
-  const cardStart = (serverCard.capabilities as { tools: Array<Record<string, unknown>> }).tools.find(tool => tool.name === 'spala_start');
+  const cardStart = (serverCard.tools as Array<Record<string, unknown>>).find(tool => tool.name === 'spala_start');
   assert.deepEqual(cardStart, {
     name: 'spala_start',
+    title: 'Start Spala',
     description: 'Run versioned authenticated startup, verify account readiness, auto-scope one organization, and safely discover organizations and projects.',
-    requiresAuth: true,
-    effect: 'read',
+    inputSchema: {
+      type: 'object',
+      description: 'No arguments. Call this tool with an empty object.',
+      properties: {},
+      additionalProperties: false,
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   });
   for (const instructions of [agentsMarkdown, llmsText]) {
     assert.match(instructions, /after OAuth.*call authenticated spala_start.*before/i);
