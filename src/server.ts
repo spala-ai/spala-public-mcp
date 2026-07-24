@@ -205,6 +205,8 @@ function discoveryLinks() {
     publicMcp: publicMcpUrl(),
     mcpProfile: config.docsUrl,
     npmInstaller: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
+    postmanWorkspace: 'https://www.postman.com/paul-8c16afeb-1705125/spala-public-mcp/overview',
+    postmanDocumentation: 'https://documenter.getpostman.com/view/54332390/2sBY4QtKjd',
     installManifest: `${config.publicBaseUrl}/mcp/install-manifest`,
     oauthProtectedResource: protectedResourceMetadataUrl(),
     oauthAuthorizationServer: authorizationServerMetadataUrl(),
