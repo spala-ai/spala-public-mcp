@@ -81,9 +81,10 @@ const ACCEPTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18'] as const;
 const AGENT_START_URL = 'https://spala.ai/agents.md';
 const MAINTAINER = {
   name: 'Spala AI',
-  contact: 'vitali@spala.ai',
+  contact: 'paul@spala.ai',
   website: 'https://spala.ai/',
 };
+const SOURCE_REPOSITORY_URL = 'https://github.com/spala-ai/spala-public-mcp';
 
 const GLAMA_CONNECTOR_VERIFICATION = {
   $schema: 'https://glama.ai/mcp/schemas/connector.json',
@@ -383,7 +384,7 @@ function smitheryServerCard() {
       projectMcpResolution: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated handoff; do not derive project MCP URLs from project names, subdomains, or hosts.',
     },
     links: discoveryLinks(),
-    sourceRepositoryUrl: 'not_applicable_private_source_not_public',
+    sourceRepositoryUrl: SOURCE_REPOSITORY_URL,
     publicSafety: {
       containsSecrets: false,
       containsPrivateProjectData: false,
