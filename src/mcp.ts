@@ -9,6 +9,7 @@ import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProj
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
@@ -286,6 +287,175 @@ const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
   project_get_public_context: PROJECT_SELECTOR_JSON_SCHEMA,
 };
 
+const outputObject = (
+  description: string,
+  properties: Record<string, unknown>,
+  required: string[] = [],
+) => ({
+  type: 'object',
+  description,
+  properties,
+  ...(required.length > 0 ? { required } : {}),
+  additionalProperties: true,
+});
+
+const STRING_OUTPUT = { type: 'string' } as const;
+const BOOLEAN_OUTPUT = { type: 'boolean' } as const;
+const OBJECT_OUTPUT = { type: 'object', additionalProperties: true } as const;
+const ARRAY_OUTPUT = { type: 'array', items: OBJECT_OUTPUT } as const;
+
+const PROJECT_CONNECTION_OUTPUT = outputObject(
+  'Prepared project MCP connection and workspace-only installer handoff.',
+  {
+    project: OBJECT_OUTPUT,
+    handoff: OBJECT_OUTPUT,
+    mcpUrl: { type: 'string', format: 'uri' },
+    serverName: STRING_OUTPUT,
+    transport: STRING_OUTPUT,
+    preparedByProjectBackend: BOOLEAN_OUTPUT,
+    bootstrapPreparedByProjectBackend: BOOLEAN_OUTPUT,
+    workspaceOnly: BOOLEAN_OUTPUT,
+    installPlan: OBJECT_OUTPUT,
+    bootstrap: OBJECT_OUTPUT,
+    nextSteps: { type: 'array', items: STRING_OUTPUT },
+    intentBoundary: OBJECT_OUTPUT,
+    rule: STRING_OUTPUT,
+  },
+  ['project', 'handoff', 'mcpUrl', 'serverName', 'transport', 'installPlan', 'bootstrap'],
+);
+
+const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
+  spala_help: outputObject(
+    'Human-readable Spala overview and public/project MCP boundary.',
+    { markdown: STRING_OUTPUT },
+    ['markdown'],
+  ),
+  spala_get_onboarding: outputObject(
+    'Anonymous compatibility onboarding and canonical Spala workflow links.',
+    {
+      product: STRING_OUTPUT,
+      publicMcpRole: STRING_OUTPUT,
+      projectMcpRole: STRING_OUTPUT,
+      intentBoundary: OBJECT_OUTPUT,
+      workflow: { type: 'array', items: STRING_OUTPUT },
+      supportedInstallerClients: { type: 'array', items: STRING_OUTPUT },
+      urls: OBJECT_OUTPUT,
+      handoffExample: OBJECT_OUTPUT,
+    },
+    ['product', 'publicMcpRole', 'projectMcpRole', 'workflow', 'urls'],
+  ),
+  spala_get_tool_map: outputObject(
+    'Machine-readable routing map for the public MCP and project MCP.',
+    { publicMcp: OBJECT_OUTPUT, projectMcp: OBJECT_OUTPUT },
+    ['publicMcp', 'projectMcp'],
+  ),
+  docs_search: outputObject(
+    'Ranked public documentation search results.',
+    { query: STRING_OUTPUT, results: ARRAY_OUTPUT },
+    ['query', 'results'],
+  ),
+  template_list: outputObject(
+    'Public Spala backend templates matching the optional query.',
+    { query: STRING_OUTPUT, templates: ARRAY_OUTPUT },
+    ['query', 'templates'],
+  ),
+  addon_list: outputObject(
+    'Public Spala addons and integrations matching the optional query.',
+    { query: STRING_OUTPUT, addons: ARRAY_OUTPUT },
+    ['query', 'addons'],
+  ),
+  spala_start: outputObject(
+    'Authenticated startup state with account readiness, project discovery, and one next action.',
+    {
+      schemaVersion: { type: 'integer' },
+      phase: STRING_OUTPUT,
+      authenticated: BOOLEAN_OUTPUT,
+      backendProvider: STRING_OUTPUT,
+      user: OBJECT_OUTPUT,
+      accountSetup: OBJECT_OUTPUT,
+      selectedOrganizationId: STRING_OUTPUT,
+      organizations: ARRAY_OUTPUT,
+      projects: ARRAY_OUTPUT,
+      nextAction: OBJECT_OUTPUT,
+    },
+    ['schemaVersion', 'phase', 'authenticated', 'backendProvider', 'user', 'accountSetup', 'organizations', 'projects', 'nextAction'],
+  ),
+  account_status: outputObject(
+    'Authenticated Spala account readiness and organization state.',
+    {
+      authenticated: BOOLEAN_OUTPUT,
+      tokenStatus: STRING_OUTPUT,
+      subject: STRING_OUTPUT,
+      user: OBJECT_OUTPUT,
+      organizations: ARRAY_OUTPUT,
+      accountSetup: OBJECT_OUTPUT,
+      next: STRING_OUTPUT,
+    },
+    ['authenticated', 'tokenStatus', 'subject', 'user', 'organizations', 'accountSetup'],
+  ),
+  account_setup: outputObject(
+    'Completed account setup and the next protected startup action.',
+    {
+      accountSetup: STRING_OUTPUT,
+      profileUpdated: BOOLEAN_OUTPUT,
+      organizationCreated: BOOLEAN_OUTPUT,
+      user: OBJECT_OUTPUT,
+      organization: OBJECT_OUTPUT,
+      nextAction: OBJECT_OUTPUT,
+    },
+    ['accountSetup', 'profileUpdated', 'organizationCreated', 'user', 'organization', 'nextAction'],
+  ),
+  organization_create: outputObject(
+    'New Spala organization and the next startup action.',
+    { organization: OBJECT_OUTPUT, created: BOOLEAN_OUTPUT, nextAction: OBJECT_OUTPUT },
+    ['organization', 'created', 'nextAction'],
+  ),
+  project_list: outputObject(
+    'Projects in one authoritative organization available to the authenticated user.',
+    { organization: OBJECT_OUTPUT, projects: ARRAY_OUTPUT },
+    ['organization', 'projects'],
+  ),
+  project_create: outputObject(
+    'New Spala project and provisioning guidance for project MCP handoff.',
+    {
+      organization: OBJECT_OUTPUT,
+      project: OBJECT_OUTPUT,
+      created: BOOLEAN_OUTPUT,
+      mcpUrlResolved: BOOLEAN_OUTPUT,
+      provisioning: OBJECT_OUTPUT,
+      next: STRING_OUTPUT,
+    },
+    ['organization', 'project', 'created', 'mcpUrlResolved', 'provisioning', 'next'],
+  ),
+  project_connect: PROJECT_CONNECTION_OUTPUT,
+  project_select: PROJECT_CONNECTION_OUTPUT,
+  project_get_mcp_manifest: outputObject(
+    'Prepared project MCP manifest, exact URLs, and workspace-only installer handoff.',
+    {
+      schemaVersion: { type: 'integer' },
+      name: STRING_OUTPUT,
+      project: OBJECT_OUTPUT,
+      handoff: OBJECT_OUTPUT,
+      mcpUrl: { type: 'string', format: 'uri' },
+      manifestUrl: { type: 'string', format: 'uri' },
+      serverName: STRING_OUTPUT,
+      transport: STRING_OUTPUT,
+      auth: STRING_OUTPUT,
+      installPlan: OBJECT_OUTPUT,
+      bootstrap: OBJECT_OUTPUT,
+      nextSteps: { type: 'array', items: STRING_OUTPUT },
+      intentBoundary: OBJECT_OUTPUT,
+      rule: STRING_OUTPUT,
+    },
+    ['schemaVersion', 'name', 'project', 'handoff', 'mcpUrl', 'manifestUrl', 'serverName', 'transport', 'installPlan', 'bootstrap'],
+  ),
+  project_get_public_context: outputObject(
+    'Safe documented project handoff context without credentials or executable installer arguments.',
+    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT },
+    ['project', 'intentBoundary', 'handoff'],
+  ),
+};
+
 const TOOL_TITLES: Record<string, string> = {
   spala_help: 'Learn About Spala',
   spala_get_onboarding: 'Get Spala Onboarding',
@@ -311,6 +481,7 @@ export function directoryToolDefinitions(config: AppConfig) {
     title: TOOL_TITLES[tool.name],
     description: tool.purpose,
     inputSchema: TOOL_INPUT_SCHEMAS[tool.name],
+    outputSchema: TOOL_OUTPUT_SCHEMAS[tool.name],
     annotations: {
       readOnlyHint: tool.effect === 'read',
       destructiveHint: false,
@@ -433,16 +604,20 @@ function advertiseDirectoryQualityMetadata(server: McpServer): void {
 
   internals.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
     const result = await original(request, extra) as {
-      tools?: Array<{ name?: string; title?: string; inputSchema?: unknown; annotations?: unknown }>;
+      tools?: Array<{ name?: string; title?: string; inputSchema?: unknown; outputSchema?: unknown; annotations?: unknown }>;
     };
     for (const tool of result.tools || []) {
       const schema = tool.name ? TOOL_INPUT_SCHEMAS[tool.name] : undefined;
+      const outputSchema = tool.name ? TOOL_OUTPUT_SCHEMAS[tool.name] : undefined;
       const title = tool.name ? TOOL_TITLES[tool.name] : undefined;
       if (title) {
         tool.title = title;
       }
       if (schema) {
         tool.inputSchema = schema;
+      }
+      if (outputSchema) {
+        tool.outputSchema = outputSchema;
       }
       if (tool.name && ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'].includes(tool.name)) {
         tool.annotations = READ_ONLY_TOOL_ANNOTATIONS;
@@ -554,11 +729,24 @@ export function projectToolCapabilities(config: AppConfig) {
 }
 
 function text(value: string, isError = false): ToolResult {
-  return { content: [{ type: 'text', text: value }], isError };
+  return {
+    content: [{ type: 'text', text: value }],
+    structuredContent: { markdown: value },
+    isError,
+  };
 }
 
 function json(value: unknown, isError = false): ToolResult {
-  return text(JSON.stringify(value, null, 2), isError);
+  const serialized = JSON.stringify(value, null, 2);
+  const normalized = JSON.parse(serialized) as unknown;
+  const structuredContent = normalized && typeof normalized === 'object' && !Array.isArray(normalized)
+    ? normalized as Record<string, unknown>
+    : { value: normalized };
+  return {
+    content: [{ type: 'text', text: serialized }],
+    structuredContent,
+    isError,
+  };
 }
 
 type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
