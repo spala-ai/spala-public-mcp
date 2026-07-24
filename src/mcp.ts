@@ -484,7 +484,7 @@ export function directoryToolDefinitions(config: AppConfig) {
     outputSchema: TOOL_OUTPUT_SCHEMAS[tool.name],
     annotations: {
       readOnlyHint: tool.effect === 'read',
-      destructiveHint: false,
+      destructiveHint: tool.effect === 'write',
       idempotentHint: tool.effect === 'read' || ('idempotent' in tool && tool.idempotent === true),
       openWorldHint: tool.requiresAuth,
     },
@@ -1334,7 +1334,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       lastName: z.string().trim().min(1).max(120).optional(),
       companyName: z.string().trim().min(1).max(120).optional(),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async (input) => {
     const auth = requireVerifiedPrincipal(ctx, api, 'account_setup');
@@ -1378,7 +1378,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     inputSchema: {
       name: z.string().trim().min(1).max(120),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async ({ name }) => {
     const auth = requireVerifiedPrincipal(ctx, api, 'organization_create');
@@ -1422,7 +1422,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       name: z.string().trim().min(1).max(120),
       organizationId: z.string().trim().min(1).max(256).optional(),
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async (input) => {
     const auth = requireVerifiedPrincipal(ctx, api, 'project_create');
@@ -1504,21 +1504,21 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
   server.registerTool('project_connect', {
     description: TOOL_DESCRIPTIONS.projectConnect,
     inputSchema: PROJECT_INSTALL_SELECTOR_SCHEMA,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async (input) => connectProject(input, 'project_connect'));
 
   server.registerTool('project_select', {
     description: TOOL_DESCRIPTIONS.projectSelect,
     inputSchema: PROJECT_INSTALL_SELECTOR_SCHEMA,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async (input) => connectProject(input, 'project_select'));
 
   server.registerTool('project_get_mcp_manifest', {
     description: TOOL_DESCRIPTIONS.projectManifest,
     inputSchema: PROJECT_INSTALL_SELECTOR_SCHEMA,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     _meta: projectAuthMetadata(config),
   }, async (input) => {
     const selector = parseProjectSelector(input);
