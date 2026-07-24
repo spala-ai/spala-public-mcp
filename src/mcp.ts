@@ -305,6 +305,21 @@ const TOOL_TITLES: Record<string, string> = {
   project_get_public_context: 'Get Project Public Context',
 };
 
+export function directoryToolDefinitions(config: AppConfig) {
+  return [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)].map(tool => ({
+    name: tool.name,
+    title: TOOL_TITLES[tool.name],
+    description: tool.purpose,
+    inputSchema: TOOL_INPUT_SCHEMAS[tool.name],
+    annotations: {
+      readOnlyHint: tool.effect === 'read',
+      destructiveHint: false,
+      idempotentHint: tool.effect === 'read' || ('idempotent' in tool && tool.idempotent === true),
+      openWorldHint: tool.requiresAuth,
+    },
+  }));
+}
+
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   destructiveHint: false,

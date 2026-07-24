@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import {
   createSpalaPublicMcpServer,
+  directoryToolDefinitions,
   projectToolCapabilities,
   PROJECT_INSTALLER_SPEC,
   PROJECT_INSTALLER_VERSION,
@@ -84,7 +85,6 @@ const MAINTAINER = {
   contact: 'paul@spala.ai',
   website: 'https://spala.ai/',
 };
-const SOURCE_REPOSITORY_URL = 'https://github.com/spala-ai/spala-public-mcp';
 
 const GLAMA_CONNECTOR_VERIFICATION = {
   $schema: 'https://glama.ai/mcp/schemas/connector.json',
@@ -346,52 +346,18 @@ Machine-readable JSON: ${config.publicBaseUrl}/.well-known/project-mcp-test.json
 }
 
 function smitheryServerCard() {
-  const tools = allToolCapabilities().map(tool => ({
-    name: tool.name,
-    description: tool.purpose,
-    requiresAuth: tool.requiresAuth,
-    effect: tool.effect,
-  }));
-
   return {
-    $schema: 'https://smithery.ai/schemas/server-card.json',
-    schemaVersion: 1,
-    name: 'Spala Public MCP',
-    description: 'Discovery, canonical OAuth metadata, authenticated project management, and project MCP handoff for Spala backend projects.',
-    url: publicMcpUrl(),
-    transport: 'streamable-http',
-    homepage: config.docsUrl,
-    documentation: config.docsUrl,
-    protocolCompatibility: PROTOCOL_COMPATIBILITY,
-    maintainer: MAINTAINER,
+    serverInfo: {
+      name: 'Spala Public MCP',
+      version: '0.1.1',
+    },
     authentication: {
-      publicTools: 'anonymous',
-      projectTools: 'spala_platform_oauth',
-      protectedResourceMetadata: protectedResourceMetadataUrl(),
-      authorizationServerMetadata: authorizationServerMetadataUrl(),
-      authorizationServer: publicAuthorizationServerUrl(),
-      authorizationEndpoint: publicAuthorizationEndpoint(),
-      dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
+      required: true,
+      schemes: ['oauth2'],
     },
-    capabilities: {
-      publicTools: PUBLIC_TOOLS,
-      authenticatedTools: AUTHENTICATED_TOOLS,
-      tools,
-    },
-    boundaries: {
-      publicMcp: 'Discovery, docs, template/addon lookup, OAuth metadata, authenticated project management, and project MCP handoff.',
-      projectMcp: 'Build, validate, publish, and operate one selected Spala backend project.',
-      projectMcpResolution: 'Use only exact mcpUrl and manifestUrl values returned by the authenticated handoff; do not derive project MCP URLs from project names, subdomains, or hosts.',
-    },
-    links: discoveryLinks(),
-    sourceRepositoryUrl: SOURCE_REPOSITORY_URL,
-    publicSafety: {
-      containsSecrets: false,
-      containsPrivateProjectData: false,
-      containsSourceCode: false,
-      containsCustomerData: false,
-    },
-    projectHandoffStatus: PROJECT_HANDOFF_STATUS,
+    tools: directoryToolDefinitions(config),
+    resources: [],
+    prompts: [],
   };
 }
 
