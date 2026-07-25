@@ -132,6 +132,46 @@ test('project and handoff parsers accept only documented fields', () => {
   assert.equal(parseProjectHandoff({ ...handoff, manifestUrl: 'http://runtime.example/manifest.json' }), undefined);
 });
 
+test('project handoff rejects unresolved template placeholders in every URL component', () => {
+  const handoff = {
+    projectId: 'project-1',
+    projectName: 'One',
+    status: 'ready',
+    projectUrl: 'https://project.example',
+    mcpEnabled: true,
+    mcpUrl: 'https://project.example/mcp',
+    manifestUrl: 'https://project.example/mcp/install-manifest',
+  };
+
+  for (const projectUrl of [
+    'https://api.spala.ai/{{project}}',
+    'https://api.spala.ai/%7B%7Bproject%7D%7D',
+    'https://api.spala.ai/%25%37%42%25%37%42project%25%37%44%25%37%44',
+    'https://{{project}}.spala.ai',
+    'https://%7B%7Bproject%7D%7D.spala.ai',
+  ]) {
+    assert.equal(parseProjectHandoff({ ...handoff, projectUrl }), undefined);
+  }
+  for (const mcpUrl of [
+    'https://api.spala.ai/{{project}}/mcp',
+    'https://api.spala.ai/%7B%7Bproject%7D%7D/mcp',
+    'https://api.spala.ai/%25%37%42%25%37%42project%25%37%44%25%37%44/mcp',
+    'https://{{project}}.spala.ai/mcp',
+    'https://%7B%7Bproject%7D%7D.spala.ai/mcp',
+  ]) {
+    assert.equal(parseProjectHandoff({ ...handoff, mcpUrl }), undefined);
+  }
+  for (const manifestUrl of [
+    'https://api.spala.ai/{{project}}/mcp/install-manifest',
+    'https://api.spala.ai/%7B%7Bproject%7D%7D/mcp/install-manifest',
+    'https://api.spala.ai/%25%37%42%25%37%42project%25%37%44%25%37%44/mcp/install-manifest',
+    'https://{{project}}.spala.ai/mcp/install-manifest',
+    'https://%7B%7Bproject%7D%7D.spala.ai/mcp/install-manifest',
+  ]) {
+    assert.equal(parseProjectHandoff({ ...handoff, manifestUrl }), undefined);
+  }
+});
+
 test('authenticated client reuses dashboard project access and prepares MCP directly on the project backend', async () => {
   const token = 'opaque-valid-token';
   const projectToken = 'temporary-project-token';
@@ -218,7 +258,7 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
   assert.equal(prepared.projectId, 'project-1');
   assert.equal(prepared.mcpEnabled, true);
-  assert.equal(prepared.mcpUrl, 'https://one.example/mcp?scope=builder%2Cproject%2Cdata');
+  assert.equal(prepared.mcpUrl, 'https://one.example/mcp');
   assert.equal(prepared.bootstrapConsumeUrl, 'https://one.example/mcp/agent-instructions/mcp_agent_test/consume');
 
   assert.equal(calls.filter(call => call.url.pathname === '/api/me').length, 1);
@@ -262,6 +302,171 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
     assert.doesNotMatch(String(call.init.body || ''), new RegExp(`${projectToken}|${builderToken}`));
   }
   assert.doesNotMatch(JSON.stringify(prepared), /opaque-valid-token|temporary-project-token|builder-project-token/);
+});
+
+test('project preparation preserves authoritative handoff URLs instead of deriving them from projectUrl', async () => {
+  const projectToken = 'temporary-authoritative-url-token';
+  const builderToken = 'builder-authoritative-url-token';
+  const projectUrl = 'https://project.example';
+  const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject%2Cdata';
+  const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject%2Cdata';
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'One',
+        status: 'ready',
+        projectUrl,
+        mcpEnabled: true,
+        mcpUrl: authoritativeMcpUrl,
+        manifestUrl: authoritativeManifestUrl,
+      });
+    }
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from(projectUrl).toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({
+        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_authoritative/consume`,
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+
+  assert.equal(prepared.mcpUrl, authoritativeMcpUrl);
+  assert.equal(prepared.manifestUrl, authoritativeManifestUrl);
+});
+
+test('project preparation refreshes the authoritative handoff after enabling MCP', async () => {
+  const projectToken = 'temporary-refresh-url-token';
+  const builderToken = 'builder-refresh-url-token';
+  const projectUrl = 'https://project.example';
+  const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp';
+  const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest';
+  let handoffReads = 0;
+  let mcpEnabled = false;
+  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
+    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+      handoffReads += 1;
+      return !mcpEnabled
+        ? jsonResponse({
+            projectId: 'project-1',
+            projectName: 'One',
+            status: 'ready',
+            projectUrl,
+            mcpEnabled: false,
+          })
+        : jsonResponse({
+            projectId: 'project-1',
+            projectName: 'One',
+            status: 'ready',
+            projectUrl,
+            mcpEnabled: true,
+            mcpUrl: authoritativeMcpUrl,
+            manifestUrl: authoritativeManifestUrl,
+          });
+    }
+    if (url.pathname === '/api/projects/project-1/access-url') {
+      const encodedUrl = Buffer.from(projectUrl).toString('base64');
+      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      mcpEnabled = true;
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({
+        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_refresh/consume`,
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+
+  assert.equal(handoffReads, 2);
+  assert.equal(mcpEnabled, true);
+  assert.equal(prepared.mcpUrl, authoritativeMcpUrl);
+  assert.equal(prepared.manifestUrl, authoritativeManifestUrl);
+});
+
+test('project preparation rejects authoritative handoff URLs containing credentials', async () => {
+  const controlToken = 'control=authoritative-url-secret';
+  const projectToken = 'temporary?authoritative-url-secret';
+  const builderToken = 'builder=authoritative-url-secret';
+  const projectUrl = 'https://project.example';
+
+  for (const leakedToken of [controlToken, projectToken, builderToken]) {
+    for (const leakedField of ['mcpUrl', 'manifestUrl', 'projectName', 'status'] as const) {
+      let handoffReads = 0;
+      const warnings: unknown[][] = [];
+      const originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => warnings.push(args);
+      try {
+        const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+          if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+            handoffReads += 1;
+            const handoff = projectMcpHandoff(projectUrl);
+            if (handoffReads > 1) {
+              if (leakedField === 'mcpUrl') {
+                handoff[leakedField] = `https://shared-runtime.example/${encodeURIComponent(leakedToken)}/mcp`;
+              } else if (leakedField === 'manifestUrl') {
+                handoff[leakedField] = `https://shared-runtime.example/${encodeURIComponent(leakedToken)}/mcp/install-manifest`;
+              } else {
+                handoff[leakedField] = `prefix%zz${encodeURIComponent(leakedToken)}`;
+              }
+            }
+            return jsonResponse(handoff);
+          }
+          if (url.pathname === '/api/projects/project-1/access-url') {
+            const encodedUrl = Buffer.from(projectUrl).toString('base64');
+            return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+          }
+          if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+            return jsonResponse({ token: builderToken });
+          }
+          if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+            return jsonResponse({ success: true });
+          }
+          if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+            return jsonResponse({
+              consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_sensitive/consume`,
+            }, 201);
+          }
+          return jsonResponse({ error: 'unexpected_request' }, 500);
+        }));
+
+        await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+          assert.ok(error instanceof SpalaApiError);
+          assert.equal(error.code, 'invalid_project_bootstrap_material', `${leakedField}:${leakedToken}`);
+          for (const token of [controlToken, projectToken, builderToken]) {
+            assert.equal(error.message.includes(token), false);
+            assert.equal(error.message.includes(encodeURIComponent(token)), false);
+          }
+          return true;
+        });
+        const warningText = JSON.stringify(warnings);
+        for (const token of [controlToken, projectToken, builderToken]) {
+          assert.equal(warningText.includes(token), false);
+          assert.equal(warningText.includes(encodeURIComponent(token)), false);
+        }
+      } finally {
+        console.warn = originalWarn;
+      }
+    }
+  }
 });
 
 test('project access handoff must resolve to the exact project backend before using its token', async () => {
