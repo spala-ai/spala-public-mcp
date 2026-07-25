@@ -321,7 +321,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const connected = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
-  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp?scope=builder%2Cproject%2Cdata');
+  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata');
   assert.equal(connectedBody.workspaceOnly, true);
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);

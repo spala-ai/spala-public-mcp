@@ -124,6 +124,42 @@ function stringField(record: Record<string, unknown>, key: string, maximum = 256
   return trimmed && trimmed.length <= maximum ? trimmed : undefined;
 }
 
+function decodedVariants(value: string): string[] {
+  const variants = [value];
+  for (let depth = 0; depth < 4; depth += 1) {
+    const current = variants[variants.length - 1]!;
+    const decoded = current.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try {
+        return decodeURIComponent(encoded);
+      } catch {
+        return encoded.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
+          String.fromCharCode(Number.parseInt(hex, 16))
+        );
+      }
+    });
+    if (decoded === current) break;
+    variants.push(decoded);
+  }
+  return variants;
+}
+
+function containsSensitiveToken(value: string, sensitiveTokens: readonly string[]): boolean {
+  const valueVariants = decodedVariants(value);
+  return sensitiveTokens.some(token => {
+    if (!token) return false;
+    const tokenVariants = decodedVariants(token);
+    return valueVariants.some(candidate =>
+      tokenVariants.some(tokenVariant => tokenVariant && candidate.includes(tokenVariant))
+    );
+  });
+}
+
+function containsTemplatePlaceholder(value: string): boolean {
+  return decodedVariants(value).some(candidate =>
+    /[{}]/.test(candidate) || /%(?:25)*7[bd]/i.test(candidate)
+  );
+}
+
 function ipv4Octets(value: string): number[] | undefined {
   const parts = value.split('.');
   if (parts.length !== 4) return undefined;
@@ -195,6 +231,7 @@ function parsePublicHttpsUrl(value: unknown, options: { allowProjectScope?: bool
   if (typeof value !== 'string' || !value || value !== value.trim() || value.length > 2_048) return undefined;
   const raw = value;
   if (/\/(?:\.{1,2}|%2e(?:%2e)?)(?:\/|$)/i.test(raw)) return undefined;
+  if (containsTemplatePlaceholder(raw)) return undefined;
 
   let url: URL;
   try {
@@ -332,9 +369,8 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   const nestedRecord = nested && typeof nested === 'object' && !Array.isArray(nested)
     ? nested as Record<string, unknown>
     : undefined;
-  const containsSensitiveToken = (value: string): boolean => sensitiveTokens.some(token => token && value.includes(token));
   const rawCode = typeof nested === 'string' ? nested : nestedRecord?.['code'] ?? record['code'];
-  const code = typeof rawCode === 'string' && !containsSensitiveToken(rawCode)
+  const code = typeof rawCode === 'string' && !containsSensitiveToken(rawCode, sensitiveTokens)
     ? normalizedCode(rawCode)
     : undefined;
   const rawMessage = (nestedRecord ? stringField(nestedRecord, 'message', 1_000) : undefined)
@@ -343,7 +379,7 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
     ? sensitiveTokens.reduce((value, token) => token ? value.split(token).join('[redacted]') : value, rawMessage)
     : undefined;
   const rawCheckoutUrl = nestedRecord?.['checkoutUrl'] ?? nestedRecord?.['checkout_url'] ?? record['checkoutUrl'] ?? record['checkout_url'];
-  const checkoutUrl = typeof rawCheckoutUrl === 'string' && !containsSensitiveToken(rawCheckoutUrl)
+  const checkoutUrl = typeof rawCheckoutUrl === 'string' && !containsSensitiveToken(rawCheckoutUrl, sensitiveTokens)
     ? parsePublicHttpsUrl(rawCheckoutUrl)
     : undefined;
   return { code, message, checkoutUrl };
@@ -737,10 +773,14 @@ export function createSpalaApiClient(
     return id;
   };
 
-  const verifiedProjectHandoff = (payload: unknown, expectedProjectId: string): ProjectMcpHandoff => {
+  const verifiedProjectHandoff = (
+    payload: unknown,
+    expectedProjectId: string,
+    sensitiveTokens: readonly string[] = [controlPlaneAccessToken],
+  ): ProjectMcpHandoff => {
     const handoff = parseProjectHandoff(payload);
     const containsAccessToken = handoff && Object.values(handoff).some(value =>
-      typeof value === 'string' && value.includes(controlPlaneAccessToken)
+      typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
     );
     if (!handoff || handoff.projectId !== expectedProjectId || containsAccessToken) {
       throw new SpalaApiError({
@@ -882,7 +922,11 @@ export function createSpalaApiClient(
 
       const accessPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/access-url`);
       const access = parseProjectAccess(accessPayload, projectHandoff.projectUrl);
-      if (!access || access.token.includes(controlPlaneAccessToken)) {
+      if (
+        !access
+        || access.token.includes(controlPlaneAccessToken)
+        || containsSensitiveToken(projectHandoff.projectUrl, [access.token, controlPlaneAccessToken])
+      ) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
           code: 'invalid_project_access_handoff',
@@ -949,15 +993,41 @@ export function createSpalaApiClient(
       const bootstrapResult = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
       const bootstrapConsumeUrl = 'consumeUrl' in bootstrapResult ? bootstrapResult.consumeUrl : undefined;
       const bootstrapReason = 'reason' in bootstrapResult ? bootstrapResult.reason : 'valid';
-      const mcpUrl = parseProjectMcpUrl(`${access.projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
-      const manifestUrl = parsePublicHttpsUrl(
-        `${access.projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata`,
-        { allowProjectScope: true, requireCanonical: true },
+
+      // Enabling MCP can change the authoritative handoff. Re-read it and use
+      // its exact URLs instead of deriving transport paths from projectUrl.
+      // Shared runtimes and custom domains are not required to expose MCP at
+      // `${projectUrl}/mcp`.
+      let preparedHandoff: ProjectMcpHandoff;
+      try {
+        const preparedPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+        // Token-bearing bootstrap fields are diagnosed below without logging
+        // their values, so parse the refreshed handoff before the unified
+        // bootstrap-material gate applies all known credentials.
+        preparedHandoff = verifiedProjectHandoff(preparedPayload, id, []);
+      } catch (error) {
+        rethrowProjectStage(error, 'invalid_project_mcp_handoff');
+      }
+      const preparedProjectUrl = parseProjectBaseUrl(preparedHandoff.projectUrl);
+      const mcpUrl = preparedHandoff.mcpUrl;
+      const manifestUrl = preparedHandoff.manifestUrl;
+      const sensitiveTokens = [access.token, builderToken, controlPlaneAccessToken];
+      const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
+        typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
       );
+      const consumeUrlContainsToken = bootstrapConsumeUrl
+        ? containsSensitiveToken(bootstrapConsumeUrl, sensitiveTokens)
+        : false;
+      const mcpUrlContainsToken = mcpUrl ? containsSensitiveToken(mcpUrl, sensitiveTokens) : false;
+      const manifestUrlContainsToken = manifestUrl ? containsSensitiveToken(manifestUrl, sensitiveTokens) : false;
       if (
         !bootstrapConsumeUrl
-        || bootstrapConsumeUrl.includes(access.token)
-        || bootstrapConsumeUrl.includes(controlPlaneAccessToken)
+        || handoffMetadataContainsToken
+        || consumeUrlContainsToken
+        || mcpUrlContainsToken
+        || manifestUrlContainsToken
+        || preparedProjectUrl !== access.projectUrl
+        || !preparedHandoff.mcpEnabled
         || !mcpUrl
         || !manifestUrl
       ) {
@@ -968,8 +1038,12 @@ export function createSpalaApiClient(
             : [],
           consumeUrl: bootstrapReason,
           consumeUrlDiagnostic: 'diagnostic' in bootstrapResult ? bootstrapResult.diagnostic : undefined,
-          containsProjectAccessToken: Boolean(bootstrapConsumeUrl?.includes(access.token)),
-          containsControlPlaneToken: Boolean(bootstrapConsumeUrl?.includes(controlPlaneAccessToken)),
+          handoffMetadataContainsToken,
+          consumeUrlContainsToken,
+          mcpUrlContainsToken,
+          manifestUrlContainsToken,
+          projectUrl: preparedProjectUrl === access.projectUrl ? 'valid' : 'mismatch',
+          mcpEnabled: preparedHandoff.mcpEnabled,
           mcpUrl: mcpUrl ? 'valid' : 'invalid',
           manifestUrl: manifestUrl ? 'valid' : 'invalid',
         });
@@ -981,11 +1055,11 @@ export function createSpalaApiClient(
       }
 
       return {
-        projectId: projectHandoff.projectId,
-        projectName: projectHandoff.projectName,
-        status: projectHandoff.status,
+        projectId: preparedHandoff.projectId,
+        projectName: preparedHandoff.projectName,
+        status: preparedHandoff.status,
         projectUrl: access.projectUrl,
-        mcpEnabled: true,
+        mcpEnabled: preparedHandoff.mcpEnabled,
         mcpUrl,
         manifestUrl,
         bootstrapConsumeUrl,
