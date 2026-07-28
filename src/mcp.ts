@@ -6,6 +6,7 @@ import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catal
 import type { AppConfig } from './config.js';
 import { SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
+import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -649,7 +650,7 @@ export function projectToolCapabilities(config: AppConfig) {
       requiresAuth: true,
       available: true,
       effect: 'write',
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Complete missing account profile data and create the first company/workspace organization without sending the user to the dashboard.',
     },
     {
@@ -657,7 +658,7 @@ export function projectToolCapabilities(config: AppConfig) {
       requiresAuth: true,
       available: true,
       effect: 'write',
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Create an additional organization for the authenticated Spala platform user.',
     },
     {
@@ -665,7 +666,7 @@ export function projectToolCapabilities(config: AppConfig) {
       requiresAuth: true,
       available: true,
       effect: 'read',
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'List projects available to the authenticated Spala platform user. Use this after OAuth; anonymous public MCP calls cannot list projects.',
     },
     {
@@ -674,7 +675,7 @@ export function projectToolCapabilities(config: AppConfig) {
       implemented: true,
       available: true,
       effect: 'write',
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Create a real Spala project through the authenticated platform API.',
     },
     {
@@ -694,7 +695,7 @@ export function projectToolCapabilities(config: AppConfig) {
       effect: 'write',
       idempotent: true,
       workspaceOnly: true,
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Compatibility alias for project_connect. Prepares project MCP and returns an exact workspace-only binding plan.',
     },
     {
@@ -704,7 +705,7 @@ export function projectToolCapabilities(config: AppConfig) {
       effect: 'write',
       idempotent: true,
       workspaceOnly: true,
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Prepare project MCP and return exact mcpUrl and manifestUrl values plus workspace-only project bind argv.',
     },
     {
@@ -712,7 +713,7 @@ export function projectToolCapabilities(config: AppConfig) {
       requiresAuth: true,
       available: true,
       effect: 'read',
-      authFailureHint: 'Missing or invalid bearer: HTTP 401; missing api scope: HTTP 403; temporary service failure: HTTP 503.',
+      authFailureHint: `Missing or invalid bearer: HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope: HTTP 403; temporary service failure: HTTP 503.`,
       purpose: 'Return safe documented project handoff context without exposing tokens, private source code, or unrelated customer data.',
     },
   ];
@@ -839,13 +840,13 @@ function requireVerifiedPrincipal(ctx: RequestContext, api: SpalaApiClient | und
   return json({
     error: 'authentication_required',
     tool,
-    message: 'Authenticate with a Spala MCP OAuth token with api scope before using account or project tools.',
+    message: `Authenticate with a Spala MCP OAuth token with ${PUBLIC_MCP_SCOPE} scope before using account or project tools.`,
   }, true);
 }
 
 function projectAuthMetadata(config: AppConfig): Record<string, unknown> {
   return {
-    securitySchemes: [{ type: 'oauth2', scopes: ['api'] }],
+    securitySchemes: [{ type: 'oauth2', scopes: [PUBLIC_MCP_SCOPE] }],
     'spala.ai/auth': {
       required: true,
       tokenValidation: 'Secure server-side validation and request-scoped delegation.',
@@ -854,9 +855,9 @@ function projectAuthMetadata(config: AppConfig): Record<string, unknown> {
       invalidBearerBehavior: 'HTTP 401 with WWW-Authenticate OAuth challenge',
       insufficientScopeBehavior: 'HTTP 403 with WWW-Authenticate insufficient_scope challenge',
       upstreamUnavailableBehavior: 'HTTP 503 with a generic error',
-      protectedResourceMetadata: `${config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`,
-      authorizationServerMetadata: `${config.publicBaseUrl}/.well-known/oauth-authorization-server/mcp`,
-      authorizationEndpoint: `${config.publicBaseUrl}/oauth/authorize`,
+      protectedResourceMetadata: `${new URL(PUBLIC_MCP_RESOURCE).origin}/.well-known/oauth-protected-resource/mcp`,
+      authorizationServerMetadata: `${new URL(PUBLIC_MCP_RESOURCE).origin}/.well-known/oauth-authorization-server`,
+      authorizationEndpoint: `${new URL(PUBLIC_MCP_RESOURCE).origin}/oauth/authorize`,
       dashboardAuthorizationUrl: `${config.dashboardUrl}/mcp/authorize`,
     },
   };
@@ -904,8 +905,8 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
     if (error.category === 'authentication') {
       action = {
         type: 'reauthenticate_public_mcp',
-        authorizationEndpoint: `${config.publicBaseUrl}/oauth/authorize`,
-        requiredScope: 'api',
+        authorizationEndpoint: `${new URL(PUBLIC_MCP_RESOURCE).origin}/oauth/authorize`,
+        requiredScope: PUBLIC_MCP_SCOPE,
       };
     } else if (accountSetupRequired) {
       action = { type: 'complete_account_setup', statusTool: 'account_status', setupTool: 'account_setup' };
@@ -1084,7 +1085,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     SPALA_BACKEND_INTENT_TEXT,
     '',
     'Use this public MCP to discover Spala, list templates/addons/docs, manage authenticated projects, and obtain exact project MCP handoffs.',
-      'Public tools are anonymous. Account and project tools require an api-scoped Spala MCP OAuth bearer and use secure server-side delegation.',
+      `Public tools are anonymous. Account and project tools require a ${PUBLIC_MCP_SCOPE}-scoped Spala MCP OAuth bearer and use secure server-side delegation.`,
     '',
     'Use the project MCP for backend changes: models, endpoints, auth, logic, validation, publish, and review.',
     '',
@@ -1102,7 +1103,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     intentBoundary: SPALA_BACKEND_INTENT,
     workflow: [
       'Use spala_get_tool_map or search docs/templates/addons only when broader compatibility or discovery detail is needed.',
-      'Authenticate through Spala MCP OAuth with api scope, then call spala_start as the first protected tool without waiting for another user request, source files, planning, or coding.',
+      `Authenticate through Spala MCP OAuth with ${PUBLIC_MCP_SCOPE} scope, then call spala_start as the first protected tool without waiting for another user request, source files, planning, or coding.`,
       'Follow only the returned nextAction. Call spala_start again only when that action explicitly asks for it after a state transition such as account or organization creation.',
       'If setup is required, ask one concise terminal question for exactly the missing real values and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
       'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',
@@ -1147,7 +1148,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       },
       toolCapabilities: [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)],
       authRequiredTools: projectToolCapabilities(config).map(tool => tool.name),
-      authFailureHint: 'Missing or invalid bearer returns HTTP 401; missing api scope returns HTTP 403; temporary service failures return HTTP 503.',
+      authFailureHint: `Missing or invalid bearer returns HTTP 401; missing ${PUBLIC_MCP_SCOPE} scope returns HTTP 403; temporary service failures return HTTP 503.`,
       projectHandoffStatus: {
         available: true,
         code: 'enabled',
@@ -1182,11 +1183,11 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       projectCreate: 'Creates a real Spala project through the authenticated platform API.',
       oauth: {
         protectedResourceMetadata: `${config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`,
-        authorizationServerMetadata: `${config.publicBaseUrl}/.well-known/oauth-authorization-server/mcp`,
+        authorizationServerMetadata: `${config.publicBaseUrl}/.well-known/oauth-authorization-server`,
         authorizationEndpoint: `${config.publicBaseUrl}/oauth/authorize`,
         dashboardAuthorizationUrl: `${config.dashboardUrl}/mcp/authorize`,
         tokenEndpoint: `${config.publicBaseUrl}/oauth/token`,
-        scope: 'api',
+        scope: PUBLIC_MCP_SCOPE,
       },
     },
     projectMcp: {

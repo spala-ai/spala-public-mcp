@@ -8,16 +8,16 @@ export type AppConfig = {
   publicOAuthReplayStatePath: string;
   publicOAuthTicketLifetimeSeconds: number;
   publicOAuthCodeLifetimeSeconds: number;
-  publicOAuthAccessTokenLifetimeSeconds: number;
-  publicOAuthRefreshTokenLifetimeSeconds: number;
   publicOAuthClientLifetimeSeconds: number;
   publicOAuthRateLimitMax: number;
+  publicOAuthBodyLimitBytes: number;
+  publicMcpPlatformServiceSecret: string;
+  publicMcpPlatformTimeoutMs: number;
+  publicMcpPlatformResponseLimitBytes: number;
   dashboardUrl: string;
   pricingUrl: string;
   docsUrl: string;
   corsAllowedOrigins: readonly string[];
-  fetchTimeoutMs: number;
-  spalaApiResponseLimitBytes: number;
   mcpBodyLimitBytes: number;
   mcpRateLimitMax: number;
 };
@@ -93,6 +93,16 @@ function absoluteUrl(
   return options.originOnly ? url.origin : url.toString().replace(/\/+$/, '');
 }
 
+function requiredOriginUrl(
+  env: Environment,
+  name: string,
+  options: { allowHttpLocalhost?: boolean } = {},
+): string {
+  const value = env[name]?.trim();
+  if (!value) configError(name, 'is required');
+  return absoluteUrl(env, name, value, { originOnly: true, ...options });
+}
+
 function corsOrigins(env: Environment): readonly string[] {
   const raw = env['CORS_ALLOWED_ORIGINS']?.trim();
   if (!raw) return [];
@@ -120,13 +130,22 @@ function corsOrigins(env: Environment): readonly string[] {
   }))];
 }
 
-function oauthEncryptionSecret(env: Environment, required: boolean): string {
+function oauthEncryptionSecret(env: Environment): string {
   const value = env['PUBLIC_OAUTH_ENCRYPTION_SECRET'] || '';
-  if (!value && required) configError('PUBLIC_OAUTH_ENCRYPTION_SECRET', 'is required for a hosted public MCP service');
-  if (!value) return '';
+  if (!value) configError('PUBLIC_OAUTH_ENCRYPTION_SECRET', 'is required');
   const byteLength = Buffer.byteLength(value, 'utf8');
   if (value.length < 32 || byteLength < 32 || byteLength > 4_096 || /[\0\r\n]/.test(value)) {
     configError('PUBLIC_OAUTH_ENCRYPTION_SECRET', 'must contain at least 32 characters and between 32 and 4096 UTF-8 bytes without control line breaks');
+  }
+  return value;
+}
+
+function platformServiceSecret(env: Environment): string {
+  const value = env['PUBLIC_MCP_PLATFORM_SERVICE_SECRET'] || '';
+  if (!value) configError('PUBLIC_MCP_PLATFORM_SERVICE_SECRET', 'is required');
+  const byteLength = Buffer.byteLength(value, 'utf8');
+  if (value.length < 32 || byteLength < 32 || byteLength > 4_096 || /\s/.test(value)) {
+    configError('PUBLIC_MCP_PLATFORM_SERVICE_SECRET', 'must contain at least 32 characters and between 32 and 4096 UTF-8 bytes without whitespace');
   }
   return value;
 }
@@ -152,8 +171,8 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     originOnly: true,
     allowHttpLocalhost: true,
   });
-  const spalaApiBaseUrl = absoluteUrl(env, 'SPALA_API_BASE_URL', 'https://api.spala.ai', {
-    originOnly: true,
+  const spalaApiBaseUrl = requiredOriginUrl(env, 'SPALA_API_BASE_URL', {
+    allowHttpLocalhost: true,
   });
   const hostedPublicService = new URL(publicBaseUrl).protocol === 'https:';
 
@@ -161,14 +180,16 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     port: listenTargetEnv(env, 'PORT', 4100, 1, 65_535),
     publicBaseUrl,
     spalaApiBaseUrl,
-    publicOAuthEncryptionSecret: oauthEncryptionSecret(env, hostedPublicService),
+    publicOAuthEncryptionSecret: oauthEncryptionSecret(env),
     publicOAuthReplayStatePath: oauthReplayStatePath(env, hostedPublicService),
     publicOAuthTicketLifetimeSeconds: integerEnv(env, 'PUBLIC_OAUTH_TICKET_LIFETIME_SECONDS', 300, 30, 900),
     publicOAuthCodeLifetimeSeconds: integerEnv(env, 'PUBLIC_OAUTH_CODE_LIFETIME_SECONDS', 60, 15, 300),
-    publicOAuthAccessTokenLifetimeSeconds: integerEnv(env, 'PUBLIC_OAUTH_ACCESS_TOKEN_LIFETIME_SECONDS', 900, 60, 3_600),
-    publicOAuthRefreshTokenLifetimeSeconds: integerEnv(env, 'PUBLIC_OAUTH_REFRESH_TOKEN_LIFETIME_SECONDS', 2_592_000, 3_600, 7_776_000),
     publicOAuthClientLifetimeSeconds: integerEnv(env, 'PUBLIC_OAUTH_CLIENT_LIFETIME_SECONDS', 2_592_000, 3_600, 31_536_000),
     publicOAuthRateLimitMax: integerEnv(env, 'PUBLIC_OAUTH_RATE_LIMIT_MAX', 120, 1, 10_000),
+    publicOAuthBodyLimitBytes: integerEnv(env, 'PUBLIC_OAUTH_BODY_LIMIT_BYTES', 32_768, 4_096, 1_048_576),
+    publicMcpPlatformServiceSecret: platformServiceSecret(env),
+    publicMcpPlatformTimeoutMs: integerEnv(env, 'PUBLIC_MCP_PLATFORM_TIMEOUT_MS', 8_000, 100, 60_000),
+    publicMcpPlatformResponseLimitBytes: integerEnv(env, 'PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES', 1_048_576, 1_024, 10_485_760),
     dashboardUrl: absoluteUrl(env, 'SPALA_DASHBOARD_URL', 'https://dashboard.spala.ai', {
       originOnly: true,
       allowHttpLocalhost: true,
@@ -180,8 +201,6 @@ export function loadConfig(env: Environment = process.env): AppConfig {
       allowHttpLocalhost: true,
     }),
     corsAllowedOrigins: corsOrigins(env),
-    fetchTimeoutMs: integerEnv(env, 'FETCH_TIMEOUT_MS', 8_000, 100, 60_000),
-    spalaApiResponseLimitBytes: integerEnv(env, 'SPALA_API_RESPONSE_LIMIT_BYTES', 1_048_576, 1_024, 10_485_760),
     mcpBodyLimitBytes: integerEnv(env, 'MCP_BODY_LIMIT_BYTES', 1_048_576, 16_384, 10_485_760),
     mcpRateLimitMax: integerEnv(env, 'MCP_RATE_LIMIT_MAX', 120, 1, 10_000),
   };

@@ -10,6 +10,7 @@ const config = loadConfig({
   PUBLIC_BASE_URL: 'https://mcp.spala.ai',
   SPALA_API_BASE_URL: 'https://api.spala.ai',
   PUBLIC_OAUTH_ENCRYPTION_SECRET: 'test-public-oauth-encryption-secret-32-bytes',
+  PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'test-public-mcp-platform-service-secret-32-bytes',
   PUBLIC_OAUTH_REPLAY_STATE_PATH: '/tmp/mcp-spala-ai-mcp-test-replay',
   SPALA_DASHBOARD_URL: 'https://dashboard.spala.ai',
   SPALA_PRICING_URL: 'https://spala.ai/pricing/',
@@ -215,7 +216,7 @@ test('tools/list advertises authenticated status and honest project preparation 
         insufficientScopeBehavior: 'HTTP 403 with WWW-Authenticate insufficient_scope challenge',
         upstreamUnavailableBehavior: 'HTTP 503 with a generic error',
         protectedResourceMetadata: 'https://mcp.spala.ai/.well-known/oauth-protected-resource/mcp',
-        authorizationServerMetadata: 'https://mcp.spala.ai/.well-known/oauth-authorization-server/mcp',
+        authorizationServerMetadata: 'https://mcp.spala.ai/.well-known/oauth-authorization-server',
         authorizationEndpoint: 'https://mcp.spala.ai/oauth/authorize',
         dashboardAuthorizationUrl: 'https://dashboard.spala.ai/mcp/authorize',
       });

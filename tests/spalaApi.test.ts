@@ -2,17 +2,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadConfig } from '../src/config.js';
 import {
-  createSpalaApiClient,
+  createSpalaApiClient as createDelegatedSpalaApiClient,
   parseProjectHandoff,
   parseProjectMcpUrl,
   parseProjectRecord,
   SpalaApiError,
 } from '../src/spalaApi.js';
+import { publicMcpPlatformContract } from './fixtures/publicMcpPlatformContract.js';
+
+function createSpalaApiClient(
+  configValue: Parameters<typeof createDelegatedSpalaApiClient>[0],
+  platformAccessToken: string,
+  fetchImpl: Parameters<typeof createDelegatedSpalaApiClient>[2],
+) {
+  return createDelegatedSpalaApiClient(configValue, {
+    platformAccessToken,
+    clientHash: 'a'.repeat(64),
+  }, fetchImpl);
+}
 
 const config = loadConfig({
   PUBLIC_BASE_URL: 'https://mcp.spala.ai',
   SPALA_API_BASE_URL: 'https://control.spala.example',
   PUBLIC_OAUTH_ENCRYPTION_SECRET: 'test-public-oauth-encryption-secret-32-bytes',
+  PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'test-public-mcp-platform-service-secret-32-bytes',
   PUBLIC_OAUTH_REPLAY_STATE_PATH: '/tmp/mcp-spala-ai-api-test-replay',
   SPALA_DASHBOARD_URL: 'https://dashboard.spala.ai',
   SPALA_PRICING_URL: 'https://spala.ai/pricing/',
@@ -43,6 +56,13 @@ function projectMcpHandoff(projectUrl = 'https://project.example'): Record<strin
     mcpEnabled: true,
     mcpUrl: `${projectUrl}/mcp`,
     manifestUrl: `${projectUrl}/mcp/install-manifest`,
+  };
+}
+
+function projectAccessUrl(projectUrl: string, token: string): Record<string, unknown> {
+  const encodedProjectUrl = Buffer.from(projectUrl).toString('base64');
+  return {
+    url: `https://app.spala.ai/?url=${encodeURIComponent(encodedProjectUrl)}&auth_token=${token}`,
   };
 }
 
@@ -132,6 +152,54 @@ test('project and handoff parsers accept only documented fields', () => {
   assert.equal(parseProjectHandoff({ ...handoff, manifestUrl: 'http://runtime.example/manifest.json' }), undefined);
 });
 
+test('platform operation fixture matches principal, project, handoff, and access-url contracts', async () => {
+  const fixture = publicMcpPlatformContract;
+  assert.deepEqual(Object.keys(fixture.principal), fixture.responseFields.principal);
+  assert.deepEqual(Object.keys(fixture.projects.projects[0]), fixture.responseFields.project);
+  assert.deepEqual(Object.keys(fixture.handoff), fixture.responseFields.handoff);
+  assert.deepEqual(Object.keys(fixture.accessUrl), fixture.responseFields.accessUrl);
+
+  const api = createSpalaApiClient(config, 'contract-public-access-token', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
+      return jsonResponse(fixture.principal);
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      return jsonResponse(fixture.projects);
+    }
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      return jsonResponse(fixture.handoff);
+    }
+    if (url.pathname.endsWith('/access-url')) {
+      return jsonResponse(fixture.accessUrl);
+    }
+    if (url.origin === fixture.projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: fixture.builderToken });
+    }
+    if (url.origin === fixture.projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === fixture.projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({
+        consumeUrl: `${fixture.projectUrl}/mcp/agent-instructions/mcp_agent_contract/consume`,
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const principal = await api.getPrincipal();
+  assert.equal(principal.subject, fixture.principal.user.id);
+  const projects = await api.listProjects({ organizationId: fixture.principal.organizations[0].id });
+  assert.equal(projects.projects[0]?.id, fixture.projects.projects[0].id);
+  const handoff = await api.getProjectHandoff(fixture.handoff.projectId);
+  assert.deepEqual(handoff, fixture.handoff);
+  const prepared = await api.prepareProjectMcp(fixture.handoff.projectId, 'codex');
+  assert.equal(prepared.bootstrapConsumeUrl, `${fixture.projectUrl}/mcp/agent-instructions/mcp_agent_contract/consume`);
+  assert.doesNotMatch(
+    JSON.stringify([principal, projects, handoff, prepared]),
+    new RegExp(fixture.projectAccessToken),
+  );
+});
+
 test('project handoff rejects unresolved template placeholders in every URL component', () => {
   const handoff = {
     projectId: 'project-1',
@@ -179,19 +247,19 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, token, fetchStub((url, init) => {
     calls.push({ url, init });
-    if (url.pathname === '/api/me') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({
         user: { id: 'user-1', email: 'user@example.test' },
         organizations: [{ id: 'org-1', name: 'First' }, { id: 'org-2', name: 'Second' }],
       });
     }
-    if (url.pathname === '/api/projects' && init.method === 'GET') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
       return jsonResponse({ projects: [{ id: 'project-1', project_name: 'One', status: 'ready', subdomain: 'one' }] });
     }
-    if (url.pathname === '/api/projects' && init.method === 'POST') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'POST') {
       return jsonResponse({ project: { id: 'project-2', project_name: 'Created', status: 'creating', subdomain: 'created' } }, 201);
     }
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse({
         projectId: 'project-1',
         projectName: 'One',
@@ -202,9 +270,8 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
         manifestUrl: 'https://one.example/mcp/install-manifest',
       });
     }
-    if (url.pathname === '/api/projects/project-1/access-url' && init.method === 'GET') {
-      const encodedUrl = Buffer.from('https://one.example').toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url' && init.method === 'GET') {
+      return jsonResponse(projectAccessUrl('https://one.example', projectToken));
     }
     if (url.origin === 'https://one.example' && url.pathname === '/api/__internal/builder-auth/external' && init.method === 'POST') {
       return jsonResponse({ token: builderToken });
@@ -261,11 +328,11 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
   assert.equal(prepared.mcpUrl, 'https://one.example/mcp');
   assert.equal(prepared.bootstrapConsumeUrl, 'https://one.example/mcp/agent-instructions/mcp_agent_test/consume');
 
-  assert.equal(calls.filter(call => call.url.pathname === '/api/me').length, 1);
-  assert.equal(calls.find(call => call.init.method === 'GET' && call.url.pathname === '/api/projects')?.url.search, '?organizationId=org-1');
-  const createCall = calls.find(call => call.init.method === 'POST' && call.url.pathname === '/api/projects');
+  assert.equal(calls.filter(call => call.url.pathname === '/api/__internal/public-mcp/v1/principal').length, 1);
+  assert.equal(calls.find(call => call.init.method === 'GET' && call.url.pathname === '/api/__internal/public-mcp/v1/projects')?.url.search, '?organizationId=org-1');
+  const createCall = calls.find(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/public-mcp/v1/projects');
   assert.equal(createCall?.init.body, JSON.stringify({ project_name: 'Created', organization_id: 'org-2' }));
-  assert.equal(calls.some(call => call.url.pathname === '/api/projects/project-1/mcp/prepare'), false);
+  assert.equal(calls.some(call => call.url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp/prepare'), false);
   const controlCalls = calls.filter(call => call.url.origin === 'https://control.spala.example');
   const projectCalls = calls.filter(call => call.url.origin === 'https://one.example');
   for (const call of controlCalls) {
@@ -274,8 +341,9 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
     assert.doesNotMatch(call.url.toString(), /opaque-valid-token/);
     const headers = new Headers(call.init.headers);
     assert.equal(headers.get('authorization'), `Bearer ${token}`);
+    assert.equal(headers.get('x-spala-public-mcp-service-secret'), config.publicMcpPlatformServiceSecret);
     assert.equal(headers.get('content-type'), call.init.method === 'POST' ? 'application/json' : null);
-    assert.equal([...headers.keys()].length, call.init.method === 'POST' ? 2 : 1);
+    assert.equal([...headers.keys()].length, call.init.method === 'POST' ? 3 : 2);
     assert.doesNotMatch(String(call.init.body || ''), /opaque-valid-token/);
   }
   assert.deepEqual(projectCalls.map(call => `${call.init.method} ${call.url.pathname}`), [
@@ -285,6 +353,7 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
   ]);
   const exchangeCall = projectCalls[0]!;
   assert.equal(new Headers(exchangeCall.init.headers).get('authorization'), null);
+  assert.equal(new Headers(exchangeCall.init.headers).get('x-spala-public-mcp-service-secret'), null);
   assert.equal(exchangeCall.init.body, JSON.stringify({ token: projectToken }));
   assert.doesNotMatch(String(exchangeCall.init.body), /opaque-valid-token/);
   assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), true);
@@ -310,8 +379,8 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
   const projectUrl = 'https://project.example';
   const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject%2Cdata';
   const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject%2Cdata';
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse({
         projectId: 'project-1',
         projectName: 'One',
@@ -322,9 +391,8 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
         manifestUrl: authoritativeManifestUrl,
       });
     }
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from(projectUrl).toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -354,8 +422,8 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest';
   let handoffReads = 0;
   let mcpEnabled = false;
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       handoffReads += 1;
       return !mcpEnabled
         ? jsonResponse({
@@ -375,9 +443,8 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
             manifestUrl: authoritativeManifestUrl,
           });
     }
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from(projectUrl).toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -416,7 +483,7 @@ test('project preparation rejects authoritative handoff URLs containing credenti
       console.warn = (...args: unknown[]) => warnings.push(args);
       try {
         const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
-          if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+          if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
             handoffReads += 1;
             const handoff = projectMcpHandoff(projectUrl);
             if (handoffReads > 1) {
@@ -430,9 +497,8 @@ test('project preparation rejects authoritative handoff URLs containing credenti
             }
             return jsonResponse(handoff);
           }
-          if (url.pathname === '/api/projects/project-1/access-url') {
-            const encodedUrl = Buffer.from(projectUrl).toString('base64');
-            return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+          if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+            return jsonResponse(projectAccessUrl(projectUrl, projectToken));
           }
           if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
             return jsonResponse({ token: builderToken });
@@ -471,14 +537,13 @@ test('project preparation rejects authoritative handoff URLs containing credenti
 
 test('project access handoff must resolve to the exact project backend before using its token', async () => {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     calls.push({ url, init });
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse(projectMcpHandoff());
     }
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from('https://other-project.example').toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=temporary-project-secret` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl('https://other-project.example', 'temporary-project-secret'));
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
@@ -487,12 +552,12 @@ test('project access handoff must resolve to the exact project backend before us
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'invalid_upstream_response');
     assert.equal(error.code, 'invalid_project_access_handoff');
-    assert.doesNotMatch(error.message, /dashboard-secret|temporary-project-secret/);
+    assert.doesNotMatch(error.message, /opaque-public-mcp-access|temporary-project-secret/);
     return true;
   });
   assert.deepEqual(calls.map(call => `${call.init.method} ${call.url.origin}${call.url.pathname}`), [
-    'GET https://control.spala.example/api/projects/project-1/mcp-handoff',
-    'GET https://control.spala.example/api/projects/project-1/access-url',
+    'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
+    'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/access-url',
   ]);
   assert.equal(calls.some(call => call.url.origin === 'https://other-project.example'), false);
 });
@@ -507,7 +572,7 @@ test('project preparation rejects invalid and conflicting MCP handoffs before re
     const calls: URL[] = [];
     const api = createSpalaApiClient(config, 'control-plane-handoff-secret', fetchStub((url) => {
       calls.push(url);
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(handoffPayload);
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') return jsonResponse(handoffPayload);
       return jsonResponse({ error: 'access-url must not be requested' }, 500);
     }));
 
@@ -518,7 +583,7 @@ test('project preparation rejects invalid and conflicting MCP handoffs before re
       assert.doesNotMatch(error.message, /control-plane-handoff-secret/);
       return true;
     });
-    assert.deepEqual(calls.map(url => url.pathname), ['/api/projects/project-1/mcp-handoff']);
+    assert.deepEqual(calls.map(url => url.pathname), ['/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff']);
   }
 });
 
@@ -526,11 +591,13 @@ test('project preparation assigns a stable code to invalid access handoffs witho
   const controlToken = 'control-plane-access-handoff-secret';
   const projectToken = 'temporary-access-handoff-secret';
   const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse(projectMcpHandoff());
     }
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      return jsonResponse({ url: `https://app.spala.ai/?url=not-base64&auth_token=${projectToken}` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse({
+        url: `https://app.spala.ai/?url=not-base64&auth_token=${projectToken}`,
+      });
     }
     return jsonResponse({ error: controlToken }, 500);
   }));
@@ -555,12 +622,11 @@ test('project backend failures receive stage-specific fallback codes without exp
   ] as const) {
     const projectCalls: string[] = [];
     const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
         return jsonResponse(projectMcpHandoff());
       }
-      if (url.pathname === '/api/projects/project-1/access-url') {
-        const encodedUrl = Buffer.from('https://project.example').toString('base64');
-        return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+        return jsonResponse(projectAccessUrl('https://project.example', projectToken));
       }
       if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
         return jsonResponse({ token: builderToken });
@@ -593,12 +659,11 @@ test('project token exchange rejects missing or unchanged builder tokens with a 
   const temporaryToken = 'temporary-exchange-secret';
   for (const exchangeResponse of [{}, { token: temporaryToken }]) {
     const calls: Array<{ url: URL; init: RequestInit }> = [];
-    const api = createSpalaApiClient(config, 'dashboard-exchange-secret', fetchStub((url, init) => {
+    const api = createSpalaApiClient(config, 'opaque-public-mcp-exchange', fetchStub((url, init) => {
       calls.push({ url, init });
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff());
-      if (url.pathname === '/api/projects/project-1/access-url') {
-        const encodedUrl = Buffer.from('https://project.example').toString('base64');
-        return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${temporaryToken}` });
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff());
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+        return jsonResponse(projectAccessUrl('https://project.example', temporaryToken));
       }
       if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
         return jsonResponse(exchangeResponse);
@@ -610,7 +675,7 @@ test('project token exchange rejects missing or unchanged builder tokens with a 
       assert.ok(error instanceof SpalaApiError);
       assert.equal(error.category, 'invalid_upstream_response');
       assert.equal(error.code, 'project_token_exchange_failed');
-      assert.doesNotMatch(error.message, /dashboard-exchange-secret|temporary-exchange-secret/);
+      assert.doesNotMatch(error.message, /opaque-public-mcp-exchange|temporary-exchange-secret/);
       return true;
     });
     const exchangeCall = calls.at(-1)!;
@@ -624,11 +689,10 @@ test('agent instructions 404 preserves not-found category and status with a stab
   const projectToken = 'temporary-agent-instruction-404-secret';
   const builderToken = 'builder-agent-instruction-404-secret';
   const projectCalls: string[] = [];
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff());
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from('https://project.example').toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff());
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl('https://project.example', projectToken));
     }
     if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -655,88 +719,73 @@ test('agent instructions 404 preserves not-found category and status with a stab
   assert.deepEqual(projectCalls, ['/api/__internal/project/config', '/mcp/agent-instructions']);
 });
 
-test('project access handoff accepts top-level and nested URL aliases', async () => {
+test('project runtime access accepts the platform access-url response field', async () => {
   const projectToken = 'temporary-alias-token';
   const builderToken = 'builder-alias-token';
-  const encodedUrl = Buffer.from('https://project.example').toString('base64');
-  const accessPayloads = [
-    { url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` },
-    { accessUrl: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` },
-    { data: { url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` } },
-  ];
-
-  for (const accessPayload of accessPayloads) {
-    const projectCalls: URL[] = [];
-    const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') {
-        return jsonResponse(projectMcpHandoff());
+  const projectCalls: URL[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff());
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl('https://project.example', projectToken));
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === 'https://project.example') {
+      projectCalls.push(url);
+      if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
+      if (url.pathname === '/mcp/agent-instructions') {
+        return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
       }
-      if (url.pathname === '/api/projects/project-1/access-url') return jsonResponse(accessPayload);
-      if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') return jsonResponse({ token: builderToken });
-      if (url.origin === 'https://project.example') {
-        projectCalls.push(url);
-        if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
-        if (url.pathname === '/mcp/agent-instructions') {
-          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
-        }
-      }
-      return jsonResponse({ error: 'unexpected_request' }, 500);
-    }));
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
 
-    const prepared = await api.prepareProjectMcp('project-1', 'codex');
-    assert.equal(prepared.projectId, 'project-1');
-    assert.deepEqual(projectCalls.map(url => url.pathname), ['/api/__internal/project/config', '/mcp/agent-instructions']);
-  }
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(prepared.projectId, 'project-1');
+  assert.deepEqual(projectCalls.map(url => url.pathname), ['/api/__internal/project/config', '/mcp/agent-instructions']);
+  assert.doesNotMatch(JSON.stringify(prepared), new RegExp(projectToken));
 });
 
-test('project access handoff rejects conflicting URL aliases', async () => {
+test('project runtime access rejects invented typed credential fields', async () => {
   const projectToken = 'project-entry-token';
-  const projectUrl = 'https://project.example';
-  const encodedProjectUrl = Buffer.from(projectUrl).toString('base64');
-  const encodedOtherUrl = Buffer.from('https://other-project.example').toString('base64');
-  const accessPayloads = [
-    {
-      url: `https://app.spala.ai/?url=${encodeURIComponent(encodedProjectUrl)}&auth_token=${projectToken}`,
-      accessUrl: `https://app.spala.ai/?url=${encodeURIComponent(encodedOtherUrl)}&auth_token=${projectToken}`,
-    },
-    {
-      url: `https://app.spala.ai/?url=${encodeURIComponent(encodedProjectUrl)}&auth_token=${projectToken}`,
-      data: { url: `https://app.spala.ai/?url=${encodeURIComponent(encodedOtherUrl)}&auth_token=${projectToken}` },
-    },
-  ];
+  const projectCalls: URL[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff());
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse({
+        projectUrl: 'https://project.example',
+        projectAccessToken: projectToken,
+      });
+    }
+    if (url.origin === 'https://project.example') projectCalls.push(url);
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
 
-  for (const accessPayload of accessPayloads) {
-    const projectCalls: URL[] = [];
-    const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') {
-        return jsonResponse(projectMcpHandoff());
-      }
-      if (url.pathname === '/api/projects/project-1/access-url') return jsonResponse(accessPayload);
-      if (url.origin === 'https://project.example') projectCalls.push(url);
-      return jsonResponse({ error: 'unexpected_request' }, 500);
-    }));
-
-    await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
-      assert.ok(error instanceof SpalaApiError);
-      assert.equal(error.category, 'invalid_upstream_response');
-      return true;
-    });
-    assert.equal(projectCalls.length, 0);
-  }
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'invalid_upstream_response');
+    assert.doesNotMatch(error.message, new RegExp(projectToken));
+    return true;
+  });
+  assert.equal(projectCalls.length, 0);
 });
 
 test('project admin config failure stops before agent instructions and redacts the temporary token', async () => {
   const projectToken = 'temporary-project-error-secret';
   const builderToken = 'builder-project-error-secret';
   const calls: Array<{ url: URL; init: RequestInit }> = [];
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     calls.push({ url, init });
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse(projectMcpHandoff());
     }
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from('https://project.example').toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl('https://project.example', projectToken));
     }
     if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -774,12 +823,11 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
     const calls: URL[] = [];
     const api = createSpalaApiClient(config, controlToken, fetchStub((url, init) => {
       calls.push(url);
-      if (url.pathname === '/api/projects/project-1/mcp-handoff') {
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
         return jsonResponse(projectMcpHandoff());
       }
-      if (url.pathname === '/api/projects/project-1/access-url') {
-        const encodedUrl = Buffer.from('https://project.example').toString('base64');
-        return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=project-entry-token` });
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+        return jsonResponse(projectAccessUrl('https://project.example', 'project-entry-token'));
       }
       if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
         return jsonResponse({ token: 'builder-bootstrap-token' });
@@ -795,7 +843,7 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
       assert.doesNotMatch(error.message, /control-plane-secret|project-entry-token/);
       return true;
     });
-    assert.equal(calls.some(url => url.pathname === '/api/projects/project-1/mcp/prepare'), false);
+    assert.equal(calls.some(url => url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp/prepare'), false);
   }
 });
 
@@ -803,11 +851,10 @@ test('project preparation canonicalizes a legacy hosted bootstrap path onto the 
   const projectToken = 'temporary-legacy-bootstrap-token';
   const builderToken = 'builder-legacy-bootstrap-token';
   const projectUrl = 'https://property-listings.example.spala.ai';
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url, init) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from(projectUrl).toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -832,11 +879,10 @@ test('project preparation rejects a bootstrap capability from an unrelated publi
   const projectToken = 'temporary-unrelated-bootstrap-token';
   const builderToken = 'builder-unrelated-bootstrap-token';
   const projectUrl = 'https://property-listings.example.spala.ai';
-  const api = createSpalaApiClient(config, 'dashboard-secret', fetchStub((url) => {
-    if (url.pathname === '/api/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
-    if (url.pathname === '/api/projects/project-1/access-url') {
-      const encodedUrl = Buffer.from(projectUrl).toString('base64');
-      return jsonResponse({ url: `https://app.spala.ai/?url=${encodeURIComponent(encodedUrl)}&auth_token=${projectToken}` });
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -861,7 +907,7 @@ test('project creation auto-selects a sole organization and parses the direct PO
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, 'sole-org-token', fetchStub((url, init) => {
     calls.push({ url, init });
-    if (url.pathname === '/api/me') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-only', name: 'Only organization' }] });
     }
     return jsonResponse({
@@ -891,7 +937,7 @@ test('organization creation writes only the requested name and parses the new or
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, 'organization-token', fetchStub((url, init) => {
     calls.push({ url, init });
-    if (url.pathname === '/api/organizations' && init.method === 'POST') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/organizations' && init.method === 'POST') {
       return jsonResponse({ organization: { organization_id: 'org-2', name: 'Second Workspace' } }, 201);
     }
     return jsonResponse({ error: 'not_found' }, 404);
@@ -902,7 +948,7 @@ test('organization creation writes only the requested name and parses the new or
     name: 'Second Workspace',
   });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.url.pathname, '/api/organizations');
+  assert.equal(calls[0]!.url.pathname, '/api/__internal/public-mcp/v1/organizations');
   assert.equal(calls[0]!.init.body, JSON.stringify({ name: 'Second Workspace' }));
   assert.equal(new Headers(calls[0]!.init.headers).get('authorization'), 'Bearer organization-token');
 });
@@ -912,10 +958,10 @@ test('caller selectors cannot change the configured upstream origin', async () =
   const urls: URL[] = [];
   const api = createSpalaApiClient(config, 'fixed-origin-token', fetchStub((url) => {
     urls.push(url);
-    if (url.pathname === '/api/me') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: hostile }] });
     }
-    if (url.pathname === '/api/projects') return jsonResponse([]);
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects') return jsonResponse([]);
     return jsonResponse({
       projectId: hostile,
       projectName: 'Hostile-looking ID',
@@ -930,7 +976,7 @@ test('caller selectors cannot change the configured upstream origin', async () =
   assert.equal(urls[1]?.origin, 'https://control.spala.example');
   assert.equal(urls[1]?.searchParams.get('organizationId'), hostile);
   assert.equal(urls[2]?.origin, 'https://control.spala.example');
-  assert.match(urls[2]?.pathname || '', /^\/api\/projects\/https%3A%2F%2Fattacker\.example%2Fcollect%3Ftoken%3Dx\/mcp-handoff$/);
+  assert.match(urls[2]?.pathname || '', /^\/api\/__internal\/public-mcp\/v1\/projects\/https%3A%2F%2Fattacker\.example%2Fcollect%3Ftoken%3Dx\/mcp-handoff$/);
 });
 
 test('invalid, unavailable, and plan-restricted upstream responses are typed without token leakage', async () => {
@@ -952,6 +998,20 @@ test('invalid, unavailable, and plan-restricted upstream responses are typed wit
     assert.match(error.message, /\[redacted\]/);
     return true;
   });
+
+  for (const code of ['invalid_token', 'access_denied']) {
+    const disabled = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+      error: code,
+      message: 'Account access is no longer available.',
+    }, 403)));
+    await assert.rejects(disabled.getPrincipal(), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.category, 'authentication', code);
+      assert.equal(error.status, 403);
+      assert.equal(error.code, code);
+      return true;
+    });
+  }
 
   const unavailable = createSpalaApiClient(config, secret, fetchStub(() => Promise.reject(new Error(`network ${secret}`))));
   await assert.rejects(unavailable.getPrincipal(), (error: unknown) => {
@@ -978,7 +1038,7 @@ test('invalid, unavailable, and plan-restricted upstream responses are typed wit
   });
 
   const restricted = createSpalaApiClient(config, secret, fetchStub((url) => {
-    if (url.pathname === '/api/me') {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-1' }] });
     }
     return jsonResponse({
@@ -998,8 +1058,9 @@ test('upstream response bodies are capped while streaming without Content-Length
     PUBLIC_BASE_URL: 'https://mcp.spala.ai',
     SPALA_API_BASE_URL: 'https://control.spala.example',
     PUBLIC_OAUTH_ENCRYPTION_SECRET: 'test-public-oauth-encryption-secret-32-bytes',
+    PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'test-public-mcp-platform-service-secret-32-bytes',
     PUBLIC_OAUTH_REPLAY_STATE_PATH: '/tmp/mcp-spala-ai-api-bounded-test-replay',
-    SPALA_API_RESPONSE_LIMIT_BYTES: '1024',
+    PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES: '1024',
   });
   const encoder = new TextEncoder();
   const oversizedBody = new ReadableStream<Uint8Array>({
