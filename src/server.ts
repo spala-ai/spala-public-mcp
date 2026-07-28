@@ -15,11 +15,21 @@ import {
   SUPPORTED_INSTALL_CLIENTS,
 } from './mcp.js';
 import { createSpalaApiClient, SpalaApiError } from './spalaApi.js';
-import { PublicOAuthError, PublicOAuthFacade } from './publicOAuth.js';
+import {
+  PublicOAuthError,
+  PublicOAuthFacade,
+  type PublicOAuthClientTokenSet,
+} from './publicOAuth.js';
+import {
+  createPublicMcpPlatformClient,
+  PublicMcpPlatformError,
+} from './publicMcpPlatform.js';
+import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 
 const config = loadConfig();
 const publicOAuth = new PublicOAuthFacade(config);
+const platformClient = createPublicMcpPlatformClient(config);
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
@@ -60,8 +70,9 @@ app.use((req, res, next) => {
 
 app.use('/mcp', mcpRateLimit);
 app.use('/oauth', oauthRateLimit);
-app.use(express.json({ limit: config.mcpBodyLimitBytes, strict: false }));
-app.use(express.urlencoded({ extended: false, limit: config.mcpBodyLimitBytes }));
+app.use('/oauth', express.json({ limit: config.publicOAuthBodyLimitBytes, strict: false }));
+app.use('/oauth', express.urlencoded({ extended: false, limit: config.publicOAuthBodyLimitBytes }));
+app.use('/mcp', express.json({ limit: config.mcpBodyLimitBytes, strict: false }));
 
 const PUBLIC_TOOLS = ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'];
 const AUTHENTICATED_TOOLS = [
@@ -77,7 +88,7 @@ const AUTHENTICATED_TOOLS = [
   'project_get_public_context',
 ] as const;
 const AUTHENTICATED_TOOL_NAMES = new Set<string>(AUTHENTICATED_TOOLS);
-const MCP_SCOPES = ['api'];
+const MCP_SCOPES = [PUBLIC_MCP_SCOPE];
 const ACCEPTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18'] as const;
 const AGENT_START_URL = 'https://spala.ai/agents.md';
 const MAINTAINER = {
@@ -116,30 +127,30 @@ const PUBLIC_MCP_SERVER_NAME = 'spala_public_mcp';
 const PROJECT_HANDOFF_STATUS = {
   available: true,
   code: 'enabled',
-  authValidation: 'The public MCP securely validates api-scoped access before authenticated project operations.',
+  authValidation: `The public MCP securely validates ${PUBLIC_MCP_SCOPE}-scoped access before authenticated project operations.`,
   reason: 'Authenticated project connect prepares MCP server-side and returns exact project handoff URLs plus one-time installer bootstrap.',
   installerScopeHandling: 'Project handoffs return workspace-only project bind plans with exact clean URLs, immediate one-time bootstrap consumption, local credential proxy setup, and no global project installation or project OAuth.',
 };
-const PROJECT_AUTH_FAILURE_HINT = 'Missing or invalid bearer returns HTTP 401 OAuth metadata; missing api scope returns HTTP 403 insufficient_scope; temporary service failures return HTTP 503.';
+const PROJECT_AUTH_FAILURE_HINT = `Missing or invalid bearer returns HTTP 401 OAuth metadata; missing ${PUBLIC_MCP_SCOPE} scope returns HTTP 403 insufficient_scope; temporary service failures return HTTP 503.`;
 
 function allToolCapabilities() {
   return [...PUBLIC_TOOL_CAPABILITIES, ...projectToolCapabilities(config)];
 }
 
 function publicMcpUrl(): string {
-  return `${config.publicBaseUrl}/mcp`;
+  return PUBLIC_MCP_RESOURCE;
 }
 
 function protectedResourceMetadataUrl(): string {
-  return `${config.publicBaseUrl}/.well-known/oauth-protected-resource/mcp`;
+  return `${publicAuthorizationServerUrl()}/.well-known/oauth-protected-resource/mcp`;
 }
 
 function publicAuthorizationServerUrl(): string {
-  return config.publicBaseUrl;
+  return new URL(PUBLIC_MCP_RESOURCE).origin;
 }
 
 function authorizationServerMetadataUrl(): string {
-  return `${config.publicBaseUrl}/.well-known/oauth-authorization-server/mcp`;
+  return `${publicAuthorizationServerUrl()}/.well-known/oauth-authorization-server`;
 }
 
 function dashboardAuthorizationUrl(): string {
@@ -147,15 +158,16 @@ function dashboardAuthorizationUrl(): string {
 }
 
 function publicAuthorizationEndpoint(): string {
-  return `${config.publicBaseUrl}/oauth/authorize`;
+  return `${publicAuthorizationServerUrl()}/oauth/authorize`;
 }
 
 function publicOAuthMetadata() {
   return {
     issuer: publicAuthorizationServerUrl(),
     authorization_endpoint: publicAuthorizationEndpoint(),
-    token_endpoint: `${config.publicBaseUrl}/oauth/token`,
-    registration_endpoint: `${config.publicBaseUrl}/oauth/register`,
+    token_endpoint: `${publicAuthorizationServerUrl()}/oauth/token`,
+    revocation_endpoint: `${publicAuthorizationServerUrl()}/oauth/revoke`,
+    registration_endpoint: `${publicAuthorizationServerUrl()}/oauth/register`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     token_endpoint_auth_methods_supported: ['none'],
@@ -186,12 +198,13 @@ function authChallengeData() {
     authorizationServer: publicAuthorizationServerUrl(),
     authorizationEndpoint: publicAuthorizationEndpoint(),
     dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
-    tokenEndpoint: `${config.publicBaseUrl}/oauth/token`,
-    registrationEndpoint: `${config.publicBaseUrl}/oauth/register`,
+    tokenEndpoint: `${publicAuthorizationServerUrl()}/oauth/token`,
+    revocationEndpoint: `${publicAuthorizationServerUrl()}/oauth/revoke`,
+    registrationEndpoint: `${publicAuthorizationServerUrl()}/oauth/register`,
     dashboardUrl: config.dashboardUrl,
     agentStartUrl: AGENT_START_URL,
     expectedAuthorization: 'Authorization: Bearer <access token issued for this MCP resource>',
-    scope: 'api',
+    scope: PUBLIC_MCP_SCOPE,
     projectHandoffStatus: 'enabled',
   };
 }
@@ -238,7 +251,7 @@ function projectMcpTestTemplate() {
       authorizationEndpoint: publicAuthorizationEndpoint(),
       dashboardAuthorizationUrl: dashboardAuthorizationUrl(),
       expectedAuthorizationHeader: 'Authorization: Bearer <access token issued for this MCP resource>',
-      scope: 'api',
+      scope: PUBLIC_MCP_SCOPE,
       authFailureBehavior: PROJECT_AUTH_FAILURE_HINT,
     },
     requiredFlow: [
@@ -396,8 +409,13 @@ function sitemapXml(): string {
   ].join('\n');
 }
 
-function authChallengeResponse(res: Response, id: unknown, message = 'Authentication required'): void {
-  setWwwAuthenticate(res);
+function authChallengeResponse(
+  res: Response,
+  id: unknown,
+  message = 'Authentication required',
+  invalidToken = false,
+): void {
+  setWwwAuthenticate(res, invalidToken ? 'invalid_token' : undefined);
   res.setHeader('Cache-Control', 'no-store');
   res.status(401).json({
     jsonrpc: '2.0',
@@ -413,7 +431,7 @@ function authChallengeResponse(res: Response, id: unknown, message = 'Authentica
 function insufficientScopeResponse(res: Response, id: unknown): void {
   res.setHeader(
     'WWW-Authenticate',
-    `Bearer error="insufficient_scope", resource_metadata="${protectedResourceMetadataUrl()}", scope="api"`,
+    `Bearer error="insufficient_scope", resource_metadata="${protectedResourceMetadataUrl()}", scope="${PUBLIC_MCP_SCOPE}"`,
   );
   res.setHeader('Cache-Control', 'no-store');
   res.status(403).json({
@@ -424,7 +442,7 @@ function insufficientScopeResponse(res: Response, id: unknown): void {
       message: 'Insufficient OAuth scope',
       data: {
         error: 'insufficient_scope',
-        requiredScope: 'api',
+        requiredScope: PUBLIC_MCP_SCOPE,
       },
     },
   });
@@ -443,7 +461,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - After OAuth, call authenticated spala_start whenever the user asks to use, install, connect, configure, or build with Spala, before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 - Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
-- Account status/setup, project lookup, creation, preparation, and handoff require an api-scoped Spala MCP OAuth token.
+- Account status/setup, project lookup, creation, preparation, and handoff require a ${PUBLIC_MCP_SCOPE}-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
 - Do not hardcode project MCP URLs.
 - spala_start absorbs account_status and organization/project discovery. Follow exactly its one nextAction. Call spala_start again only when that action explicitly requests it after a state transition. If setup is required, use companyName when no organization exists. Never invent placeholder profile, company, or project names, and never silently choose an existing project without a valid local binding.
@@ -469,7 +487,7 @@ Protected resource metadata: ${protectedResourceMetadataUrl()}
 Authorization server metadata: ${authorizationServerMetadataUrl()}
 Authorization server: ${publicAuthorizationServerUrl()}
 Browser authorization: ${dashboardAuthorizationUrl()}
-Authenticated tools require scope api and Authorization: Bearer <access token issued for this MCP resource>.
+Authenticated tools require scope ${PUBLIC_MCP_SCOPE} and Authorization: Bearer <access token issued for this MCP resource>.
 `;
 }
 
@@ -512,10 +530,10 @@ This MCP service does not define account billing. Use Spala public product pages
 `;
 }
 
-function setWwwAuthenticate(res: Response): void {
+function setWwwAuthenticate(res: Response, error?: 'invalid_token'): void {
   res.setHeader(
     'WWW-Authenticate',
-    `Bearer resource_metadata="${protectedResourceMetadataUrl()}", scope="api"`,
+    `Bearer ${error ? `error="${error}", ` : ''}resource_metadata="${protectedResourceMetadataUrl()}", scope="${PUBLIC_MCP_SCOPE}"`,
   );
 }
 
@@ -631,10 +649,15 @@ function isAuthenticatedToolCall(body: unknown): boolean {
   return typeof toolName === 'string' && AUTHENTICATED_TOOL_NAMES.has(toolName);
 }
 
-function bearerCredential(req: Request): string | undefined {
-  const value = req.get('authorization') || '';
-  if (value.length > 8_192 || /[\r\n]/.test(value)) return undefined;
-  return value.match(/^Bearer ([^\s]+)$/i)?.[1];
+function bearerCredential(req: Request):
+  | { kind: 'missing' }
+  | { kind: 'invalid' }
+  | { kind: 'token'; token: string } {
+  const value = req.get('authorization');
+  if (value === undefined) return { kind: 'missing' };
+  if (value.length > 8_192 || /[\r\n]/.test(value)) return { kind: 'invalid' };
+  const token = value.match(/^Bearer ([^\s]+)$/i)?.[1];
+  return token ? { kind: 'token', token } : { kind: 'invalid' };
 }
 
 function isValidJsonRpcRequest(body: unknown): boolean {
@@ -939,15 +962,36 @@ function publicOAuthError(res: Response, error: unknown): void {
   res.status(oauthError.status).json({ error: oauthError.error, error_description: oauthError.message });
 }
 
+function isTemporaryOAuthUpstreamError(error: unknown): boolean {
+  return (
+    error instanceof SpalaApiError
+    && ['upstream_unavailable', 'invalid_upstream_response'].includes(error.category)
+  ) || (
+    error instanceof PublicMcpPlatformError
+    && ['upstream_unavailable', 'invalid_upstream_response'].includes(error.category)
+  );
+}
+
+function requiredPlatformClient() {
+  return platformClient;
+}
+
 app.get('/oauth/authorize', (req, res) => {
+  const input = oauthInput(req.query);
   try {
-    const ticket = publicOAuth.createAuthorizationTicket(oauthInput(req.query));
+    const ticket = publicOAuth.createAuthorizationTicket(input);
     const target = new URL(dashboardAuthorizationUrl());
     target.searchParams.set('request', ticket);
     res.setHeader('Cache-Control', 'no-store');
     res.redirect(302, target.toString());
   } catch (error) {
-    publicOAuthError(res, error);
+    const redirect = publicOAuth.authorizationErrorRedirect(input, error);
+    if (redirect) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.redirect(302, redirect);
+    } else {
+      publicOAuthError(res, error);
+    }
   }
 });
 
@@ -968,57 +1012,104 @@ app.post('/oauth/register', (req, res) => {
 });
 
 app.post('/oauth/dashboard/approve', async (req, res) => {
-  const dashboardToken = bearerCredential(req);
-  if (!dashboardToken) {
-    publicOAuthError(res, new PublicOAuthError('invalid_token', 'A dashboard sign-in is required.', 401));
+  if (req.get('authorization')) {
+    publicOAuthError(res, new PublicOAuthError('invalid_request', 'Authorization is not accepted by this endpoint.'));
     return;
   }
   try {
-    await createSpalaApiClient(config, dashboardToken).getPrincipal();
-    const request = oauthInput(req.body)['request'];
-    if (typeof request !== 'string') throw new PublicOAuthError('invalid_request', 'Invalid authorization request.');
-    const { callbackUrl } = publicOAuth.approve(request, dashboardToken);
+    const input = oauthInput(req.body);
+    const request = input['request'];
+    const approvalProof = input['approvalProof'];
+    if (typeof request !== 'string' || typeof approvalProof !== 'string') {
+      throw new PublicOAuthError('invalid_request', 'Invalid authorization approval.');
+    }
+    const approval = publicOAuth.prepareApproval(request, approvalProof);
+    const { grantCode, expiresIn } = await requiredPlatformClient().consumeApproval({
+      request,
+      approvalProof,
+      clientHash: approval.clientHash,
+    });
+    const { callbackUrl } = publicOAuth.approve(approval, grantCode, expiresIn);
     res.setHeader('Cache-Control', 'no-store');
     res.json({ redirectTo: callbackUrl });
   } catch (error) {
     if (error instanceof PublicOAuthError) {
       publicOAuthError(res, error);
+    } else if (isTemporaryOAuthUpstreamError(error)) {
+      publicOAuthError(res, new PublicOAuthError('temporarily_unavailable', 'The authorization service is temporarily unavailable.', 503));
     } else {
-      publicOAuthError(res, new PublicOAuthError('invalid_token', 'The dashboard sign-in is invalid or expired.', 401));
+      publicOAuthError(res, new PublicOAuthError('invalid_grant', 'The approval proof is invalid or expired.'));
     }
   }
 });
 
-app.post('/oauth/token', (req, res) => {
+app.post('/oauth/token', async (req, res) => {
   const input = oauthInput(req.body);
-  const sendToken = (token: { accessToken: string; refreshToken: string; expiresIn: number }) => {
+  const sendToken = (token: PublicOAuthClientTokenSet) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       access_token: token.accessToken,
       refresh_token: token.refreshToken,
       token_type: 'Bearer',
       expires_in: token.expiresIn,
-      scope: 'api',
+      scope: PUBLIC_MCP_SCOPE,
       resource: publicMcpUrl(),
     });
   };
   try {
     if (input['grant_type'] === 'authorization_code') {
-      sendToken(publicOAuth.redeem(input));
+      const redemption = await publicOAuth.redeem(
+        input,
+        ({ platformGrantCode, clientHash }) => requiredPlatformClient().issueTokens({
+          grantCode: platformGrantCode,
+          clientHash,
+        }),
+        isTemporaryOAuthUpstreamError,
+      );
+      const tokens = publicOAuth.wrapTokenSet(redemption.tokenSet, redemption.clientId);
+      redemption.complete();
+      sendToken(tokens);
       return;
     }
     if (input['grant_type'] !== 'refresh_token') throw new PublicOAuthError('unsupported_grant_type', 'Unsupported OAuth grant type.');
-    const dashboardToken = publicOAuth.refreshDashboardToken(input);
-    createSpalaApiClient(config, dashboardToken).getPrincipal()
-      .then(() => sendToken(publicOAuth.rotateRefresh(input)))
-      .catch(error => publicOAuthError(
-        res,
-        error instanceof PublicOAuthError
-          ? error
-          : new PublicOAuthError('invalid_grant', 'The dashboard sign-in is invalid or expired.'),
-      ));
+    const refresh = publicOAuth.validateRefresh(input);
+    const tokens = await requiredPlatformClient().refreshTokens({
+      refreshToken: refresh.refreshToken,
+      clientHash: refresh.clientHash,
+    });
+    sendToken(publicOAuth.wrapRefreshTokenSet(tokens, refresh));
   } catch (error) {
-    publicOAuthError(res, error);
+    publicOAuthError(
+      res,
+      error instanceof PublicOAuthError
+        ? error
+        : isTemporaryOAuthUpstreamError(error)
+          ? new PublicOAuthError('temporarily_unavailable', 'The authorization service is temporarily unavailable.', 503)
+          : new PublicOAuthError('invalid_grant', 'The OAuth grant is invalid or expired.'),
+    );
+  }
+});
+
+app.post('/oauth/revoke', async (req, res) => {
+  try {
+    const revocation = publicOAuth.validateRevocation(oauthInput(req.body));
+    if (revocation.token) {
+      await requiredPlatformClient().revokeToken({
+        token: revocation.token,
+        clientHash: revocation.clientHash,
+      });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).end();
+  } catch (error) {
+    publicOAuthError(
+      res,
+      error instanceof PublicOAuthError
+        ? error
+        : isTemporaryOAuthUpstreamError(error)
+          ? new PublicOAuthError('temporarily_unavailable', 'The authorization service is temporarily unavailable.', 503)
+          : new PublicOAuthError('invalid_grant', 'The OAuth credential is invalid or expired.'),
+    );
   }
 });
 
@@ -1035,7 +1126,7 @@ app.get('/mcp/install-manifest', (_req, res) => {
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     maintainer: MAINTAINER,
     auth: 'spala_platform_auth',
-    authNotes: 'Account and project tools require a public MCP bearer with scope api. Revoked account sessions receive a new OAuth challenge.',
+    authNotes: `Account and project tools require a public MCP bearer with scope ${PUBLIC_MCP_SCOPE}. Revoked access receives a new OAuth challenge.`,
     role: 'public-spala-mcp',
     dashboardUrl: config.dashboardUrl,
     agentStartUrl: AGENT_START_URL,
@@ -1156,20 +1247,23 @@ app.post('/mcp', async (req, res) => {
       res.status(202).end();
       return;
     }
-    const accessToken = bearerCredential(req);
-    if (!accessToken) {
+    const bearer = bearerCredential(req);
+    if (bearer.kind === 'missing') {
       authChallengeResponse(res, jsonRpcId(req.body));
       return;
     }
-    let dashboardToken: string;
-    try {
-      dashboardToken = publicOAuth.dashboardToken(accessToken);
-    } catch (error) {
-      authChallengeResponse(res, jsonRpcId(req.body), 'Invalid or expired Spala MCP access token');
+    if (bearer.kind === 'invalid') {
+      authChallengeResponse(res, jsonRpcId(req.body), 'The OAuth access token is invalid. Reauthenticate and retry.', true);
       return;
     }
-
-    const requestApi = createSpalaApiClient(config, dashboardToken);
+    let delegatedAccess: ReturnType<PublicOAuthFacade['delegatedAccessToken']>;
+    try {
+      delegatedAccess = publicOAuth.delegatedAccessToken(bearer.token);
+    } catch {
+      authChallengeResponse(res, jsonRpcId(req.body), 'Spala account session expired or was revoked. Reauthenticate and retry.', true);
+      return;
+    }
+    const requestApi = createSpalaApiClient(config, delegatedAccess);
     try {
       const verifiedPrincipal = await requestApi.getPrincipal();
       const server = createSpalaPublicMcpServer(config, requestApi, { verifiedPrincipal });
@@ -1184,7 +1278,7 @@ app.post('/mcp', async (req, res) => {
     } catch (error) {
       if (!res.headersSent) {
         if (error instanceof SpalaApiError && error.category === 'authentication') {
-          authChallengeResponse(res, jsonRpcId(req.body), 'Spala account session expired or was revoked. Reauthenticate and retry.');
+          authChallengeResponse(res, jsonRpcId(req.body), 'Spala account session expired or was revoked. Reauthenticate and retry.', true);
         } else if (error instanceof SpalaApiError && error.category === 'insufficient_scope') {
           insufficientScopeResponse(res, jsonRpcId(req.body));
         } else {

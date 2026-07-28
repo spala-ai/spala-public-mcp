@@ -1,3 +1,5 @@
+import { PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
+
 export const docsIndex = [
   {
     id: 'spala-backend-intent-boundary',
@@ -31,7 +33,7 @@ export const docsIndex = [
     id: 'auth-oauth-platform',
     title: 'Spala platform auth for public MCP',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Project tools publish Spala platform OAuth metadata with api scope. The public MCP exchanges each inbound audience token for a short-lived request-scoped control-plane bearer before calling project APIs.',
+    summary: `Project tools publish Spala platform OAuth metadata with ${PUBLIC_MCP_SCOPE} scope. The public MCP passes the opaque audience-bound access token only to fixed typed public-MCP platform operations.`,
     keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'token exchange', 'bearer', 'google oauth', 'dashboard', 'platform auth', 'authorization server', 'protected resource', 'device auth', 'device authorization', 'www-authenticate', '401'],
   },
   {

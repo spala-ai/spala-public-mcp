@@ -1,5 +1,9 @@
 import { isIP } from 'node:net';
 import type { AppConfig } from './config.js';
+import {
+  PUBLIC_MCP_PLATFORM_ROUTES,
+  PUBLIC_MCP_SERVICE_AUTH_HEADER,
+} from './publicMcpContract.js';
 
 export type SpalaUser = {
   id: string;
@@ -75,6 +79,11 @@ export type SpalaApiClient = {
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
   prepareProjectMcp(projectId: string, client: 'codex' | 'roo'): Promise<PreparedProjectMcpHandoff>;
+};
+
+export type SpalaDelegatedAccess = {
+  platformAccessToken: string;
+  clientHash: string;
 };
 
 export type SpalaApiErrorCategory =
@@ -386,7 +395,10 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
 }
 
 function errorCategory(status: number, code?: string, message?: string): SpalaApiErrorCategory {
+  if (status === 401 && code === 'invalid_service_auth') return 'upstream_unavailable';
+  if (code === 'invalid_token' || code === 'access_denied') return 'authentication';
   if (status === 401) return 'authentication';
+  if (status === 403 && code === 'insufficient_scope') return 'insufficient_scope';
   if (status === 402) return 'payment_required';
   if (status === 404) return 'not_found';
   if (status >= 500) return 'upstream_unavailable';
@@ -399,7 +411,7 @@ function errorCategory(status: number, code?: string, message?: string): SpalaAp
 
 function defaultErrorMessage(category: SpalaApiErrorCategory): string {
   if (category === 'authentication') return 'The Spala MCP access token is invalid or expired.';
-  if (category === 'insufficient_scope') return 'The Spala MCP access token does not include the required api scope.';
+  if (category === 'insufficient_scope') return 'The Spala MCP access token does not include the required public MCP scope.';
   if (category === 'organization_selection_required') return 'Select an organization before continuing.';
   if (category === 'payment_required' || category === 'plan_restricted') return 'This operation requires an eligible Spala plan or completed payment.';
   if (category === 'forbidden') return 'The authenticated user is not allowed to perform this project operation.';
@@ -485,18 +497,8 @@ function decodeBase64Url(value: string): string | undefined {
 function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): ProjectAccess | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
-  const data = record['data'];
-  const dataRecord = data && typeof data === 'object' && !Array.isArray(data)
-    ? data as Record<string, unknown>
-    : undefined;
-  const candidates = [
-    stringField(record, 'url', 16_384),
-    stringField(record, 'accessUrl', 16_384),
-    dataRecord ? stringField(dataRecord, 'url', 16_384) : undefined,
-  ].filter((value): value is string => Boolean(value));
-  const uniqueCandidates = [...new Set(candidates)];
-  if (uniqueCandidates.length !== 1) return undefined;
-  const accessUrlValue = uniqueCandidates[0]!;
+  const accessUrlValue = stringField(record, 'url', 16_384);
+  if (!accessUrlValue) return undefined;
 
   let accessUrl: URL;
   try {
@@ -518,8 +520,7 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
   const encodedProjectUrl = accessUrl.searchParams.get('url');
   const token = accessUrl.searchParams.get('auth_token');
   if (!encodedProjectUrl || !validBearerToken(token)) return undefined;
-  const decodedProjectUrl = decodeBase64Url(encodedProjectUrl);
-  const projectUrl = parseProjectBaseUrl(decodedProjectUrl);
+  const projectUrl = parseProjectBaseUrl(decodeBase64Url(encodedProjectUrl));
   const expectedProjectUrl = parseProjectBaseUrl(expectedProjectUrlValue);
   if (!projectUrl || !expectedProjectUrl || projectUrl !== expectedProjectUrl) return undefined;
   return { projectUrl, token };
@@ -594,11 +595,15 @@ function rethrowProjectStage(error: unknown, code: string): never {
 
 export function createSpalaApiClient(
   config: AppConfig,
-  controlPlaneAccessToken: string,
+  delegatedAccess: SpalaDelegatedAccess,
   fetchImpl: FetchLike = fetch,
 ): SpalaApiClient {
-  if (!validBearerToken(controlPlaneAccessToken)) {
+  const publicMcpAccessToken = delegatedAccess.platformAccessToken;
+  if (!validBearerToken(publicMcpAccessToken)) {
     throw new SpalaApiError({ category: 'authentication', message: 'The Spala MCP access token is invalid.' });
+  }
+  if (!/^[a-f0-9]{64}$/.test(delegatedAccess.clientHash)) {
+    throw new SpalaApiError({ category: 'authentication', message: 'The Spala MCP client binding is invalid.' });
   }
 
   let principalPromise: Promise<SpalaPrincipal> | undefined;
@@ -610,12 +615,13 @@ export function createSpalaApiClient(
     const url = new URL(pathname, config.spalaApiBaseUrl);
     for (const [key, value] of Object.entries(options?.query || {})) url.searchParams.set(key, value);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), config.publicMcpPlatformTimeoutMs);
     try {
       const response = await fetchImpl(url, {
         method,
         headers: {
-          authorization: `Bearer ${controlPlaneAccessToken}`,
+          authorization: `Bearer ${publicMcpAccessToken}`,
+          [PUBLIC_MCP_SERVICE_AUTH_HEADER]: config.publicMcpPlatformServiceSecret,
           ...(method !== 'GET' ? { 'content-type': 'application/json' } : {}),
         },
         body: options?.body ? JSON.stringify(options.body) : undefined,
@@ -623,7 +629,7 @@ export function createSpalaApiClient(
         redirect: 'error',
         cache: 'no-store',
       });
-      const bodyText = await readBoundedResponseBody(response, config.spalaApiResponseLimitBytes);
+      const bodyText = await readBoundedResponseBody(response, config.publicMcpPlatformResponseLimitBytes);
       let payload: unknown;
       try {
         payload = bodyText ? JSON.parse(bodyText) : null;
@@ -638,7 +644,7 @@ export function createSpalaApiClient(
       }
 
       if (!response.ok) {
-        const parsed = safeErrorPayload(payload, [controlPlaneAccessToken]);
+        const parsed = safeErrorPayload(payload, [publicMcpAccessToken, config.publicMcpPlatformServiceSecret]);
         const category = errorCategory(response.status, parsed.code, parsed.message);
         throw new SpalaApiError({
           category,
@@ -670,7 +676,7 @@ export function createSpalaApiClient(
   ): Promise<unknown> => {
     const url = new URL(`${projectUrl}${pathname}`);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), config.publicMcpPlatformTimeoutMs);
     try {
       const response = await fetchImpl(url, {
         method,
@@ -683,7 +689,7 @@ export function createSpalaApiClient(
         redirect: 'error',
         cache: 'no-store',
       });
-      const bodyText = await readBoundedResponseBody(response, config.spalaApiResponseLimitBytes);
+      const bodyText = await readBoundedResponseBody(response, config.publicMcpPlatformResponseLimitBytes);
       let payload: unknown;
       try {
         payload = bodyText ? JSON.parse(bodyText) : null;
@@ -720,7 +726,7 @@ export function createSpalaApiClient(
   };
 
   const getPrincipal = (): Promise<SpalaPrincipal> => {
-    principalPromise ??= requestJson('GET', '/api/me').then(payload => {
+    principalPromise ??= requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.principal).then(payload => {
       const principal = parsePrincipal(payload);
       if (!principal) {
         throw new SpalaApiError({
@@ -776,7 +782,7 @@ export function createSpalaApiClient(
   const verifiedProjectHandoff = (
     payload: unknown,
     expectedProjectId: string,
-    sensitiveTokens: readonly string[] = [controlPlaneAccessToken],
+    sensitiveTokens: readonly string[] = [publicMcpAccessToken],
   ): ProjectMcpHandoff => {
     const handoff = parseProjectHandoff(payload);
     const containsAccessToken = handoff && Object.values(handoff).some(value =>
@@ -825,7 +831,7 @@ export function createSpalaApiClient(
         const profileBody: Record<string, unknown> = {};
         if (!principal.user.firstName) profileBody['first_name'] = firstName;
         if (!principal.user.lastName) profileBody['last_name'] = lastName;
-        await requestJson('PATCH', '/api/users', {
+        await requestJson('PATCH', PUBLIC_MCP_PLATFORM_ROUTES.users, {
           body: profileBody,
         });
       }
@@ -855,7 +861,7 @@ export function createSpalaApiClient(
           message: 'Organization names must be between 1 and 120 characters.',
         });
       }
-      const payload = await requestJson('POST', '/api/organizations', { body: { name } });
+      const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.organizations, { body: { name } });
       const organization = parseCreatedOrganization(payload);
       if (!organization) {
         throw new SpalaApiError({
@@ -869,7 +875,7 @@ export function createSpalaApiClient(
 
     async listProjects(input = {}) {
       const organization = await resolveOrganization(input.organizationId);
-      const payload = await requestJson('GET', '/api/projects', {
+      const payload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
         query: { organizationId: organization.id },
       });
       const projects = parseProjectCollection(payload);
@@ -891,7 +897,7 @@ export function createSpalaApiClient(
         throw new SpalaApiError({ category: 'request_failed', message: 'Project name must be between 1 and 120 characters.' });
       }
       const organization = await resolveOrganization(input.organizationId);
-      const payload = await requestJson('POST', '/api/projects', {
+      const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
         body: { project_name: name, organization_id: organization.id },
       });
       const project = parseCreatedProject(payload);
@@ -906,7 +912,7 @@ export function createSpalaApiClient(
 
     async getProjectHandoff(projectId) {
       const id = normalizeProjectId(projectId);
-      const payload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+      const payload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
       return verifiedProjectHandoff(payload, id);
     },
 
@@ -914,18 +920,18 @@ export function createSpalaApiClient(
       const id = normalizeProjectId(projectIdValue);
       let projectHandoff: ProjectMcpHandoff;
       try {
-        const handoffPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+        const handoffPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
         projectHandoff = verifiedProjectHandoff(handoffPayload, id);
       } catch (error) {
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
       }
 
-      const accessPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/access-url`);
+      const accessPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectAccessUrl(id));
       const access = parseProjectAccess(accessPayload, projectHandoff.projectUrl);
       if (
         !access
-        || access.token.includes(controlPlaneAccessToken)
-        || containsSensitiveToken(projectHandoff.projectUrl, [access.token, controlPlaneAccessToken])
+        || access.token.includes(publicMcpAccessToken)
+        || containsSensitiveToken(projectHandoff.projectUrl, [access.token, publicMcpAccessToken])
       ) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
@@ -942,13 +948,13 @@ export function createSpalaApiClient(
           'POST',
           '/api/__internal/builder-auth/external',
           { token: access.token },
-          { authorization: false, sensitiveTokens: [controlPlaneAccessToken] },
+          { authorization: false, sensitiveTokens: [publicMcpAccessToken] },
         );
         const exchangeRecord = exchangePayload && typeof exchangePayload === 'object' && !Array.isArray(exchangePayload)
           ? exchangePayload as Record<string, unknown>
           : undefined;
         const token = exchangeRecord ? stringField(exchangeRecord, 'token', 8_192) : undefined;
-        if (!validBearerToken(token) || token === access.token || token.includes(controlPlaneAccessToken)) {
+        if (!validBearerToken(token) || token === access.token || token.includes(publicMcpAccessToken)) {
           throw new SpalaApiError({
             category: 'invalid_upstream_response',
             code: 'invalid_project_builder_token',
@@ -967,7 +973,7 @@ export function createSpalaApiClient(
           'POST',
           '/api/__internal/project/config',
           { securityConfig: { mcpEnabled: true } },
-          { sensitiveTokens: [access.token, controlPlaneAccessToken] },
+          { sensitiveTokens: [access.token, publicMcpAccessToken] },
         );
       } catch (error) {
         rethrowProjectStage(error, 'project_mcp_enable_failed');
@@ -985,7 +991,7 @@ export function createSpalaApiClient(
             clientName: `Spala ${client} agent`,
             deliveryMode: 'one-time',
           },
-          { sensitiveTokens: [access.token, controlPlaneAccessToken] },
+          { sensitiveTokens: [access.token, publicMcpAccessToken] },
         );
       } catch (error) {
         rethrowProjectStage(error, 'project_agent_instruction_failed');
@@ -1000,7 +1006,7 @@ export function createSpalaApiClient(
       // `${projectUrl}/mcp`.
       let preparedHandoff: ProjectMcpHandoff;
       try {
-        const preparedPayload = await requestJson('GET', `/api/projects/${encodeURIComponent(id)}/mcp-handoff`);
+        const preparedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
         // Token-bearing bootstrap fields are diagnosed below without logging
         // their values, so parse the refreshed handoff before the unified
         // bootstrap-material gate applies all known credentials.
@@ -1011,7 +1017,7 @@ export function createSpalaApiClient(
       const preparedProjectUrl = parseProjectBaseUrl(preparedHandoff.projectUrl);
       const mcpUrl = preparedHandoff.mcpUrl;
       const manifestUrl = preparedHandoff.manifestUrl;
-      const sensitiveTokens = [access.token, builderToken, controlPlaneAccessToken];
+      const sensitiveTokens = [access.token, builderToken, publicMcpAccessToken];
       const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
         typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
       );
