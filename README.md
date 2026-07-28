@@ -150,6 +150,11 @@ https://mcp.spala.ai/mcp
 
 The repository does not include platform secrets, registry private keys, build output, `node_modules`, or local `.env` files.
 
+`package.json` versions the Node service implementation. `server.json` versions
+the independently published MCP Registry listing. They are intentionally
+separate release channels; update `server.json` only when publishing new
+registry metadata.
+
 ## Handoff
 
 Public MCP does not assume a project MCP URL pattern. It accepts only the complete public HTTPS `mcpUrl` and `manifestUrl` returned by the authenticated project handoff. Project MCP URLs may contain one canonical `scope` query composed only of `builder`, `project`, and `data`; arbitrary queries, credentials, fragments, duplicate scopes, and noncanonical URLs are rejected. The exact accepted string, including `/mcp/` and scope query, is preserved.
