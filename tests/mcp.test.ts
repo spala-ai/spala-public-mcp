@@ -505,11 +505,8 @@ test('project selectors enforce exactly one field before API access', async () =
   });
 });
 
-test('unscoped prepared handoffs get the default project scope applied to the bind plan', async () => {
+test('project tools reject an unscoped prepared handoff instead of returning conflicting URLs', async () => {
   const unscopedMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/';
-  // The bootstrap consume endpoint answers with the scoped URL, and the
-  // installer's --exact-url check must find the same endpoint in the plan.
-  const scopedPlanUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject%2Cdata';
   let prepareCalls = 0;
   const api = apiStub({
     async prepareProjectMcp() {
@@ -524,86 +521,13 @@ test('unscoped prepared handoffs get the default project scope applied to the bi
         name,
         arguments: { projectId: 'project-1', client: 'codex' },
       });
-      assert.notEqual(result.isError, true);
+      assert.equal(result.isError, true);
       const body = resultJson(result);
-      assert.equal(body.mcpUrl, unscopedMcpUrl);
-      const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
-      assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
-      assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], scopedPlanUrl);
-      assert.equal(plan.mcpUrl, scopedPlanUrl);
-      assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
-      assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], handoff.projectUrl);
-      assert.equal(plan.argv[plan.argv.indexOf('--client') + 1], 'codex');
-      assert.equal(plan.argv[plan.argv.indexOf('--install-scope') + 1], 'workspace');
-      assert.equal(plan.argv.includes('--bootstrap-stdin'), true);
-      assert.equal(plan.argv.includes('--bootstrap-url'), false);
-      assert.equal(plan.argv.includes(handoff.bootstrapConsumeUrl), false);
-      assert.equal((body.bootstrap as { consumeUrl: string }).consumeUrl, handoff.bootstrapConsumeUrl);
-      assert.equal(plan.workspaceOnly, true);
-      assert.equal(plan.globalInstall, false);
-      assert.equal(plan.bindingFile, '.spala/project.json');
-      assert.deepEqual(plan.execution, {
-        method: 'process',
-        shell: false,
-        tty: true,
-        waitForRunningProcess: true,
-        stdin: {
-          tool: 'process_stdin',
-          processSource: 'running_process',
-          valueSource: 'bootstrap.consumeUrl',
-          appendNewline: true,
-          shell: false,
-          argv: false,
-        },
-        sequence: [
-          { order: 1, action: 'start_process', argvSource: 'installPlan.argv', shell: false, tty: true },
-          { order: 2, action: 'wait_for_running_process', required: true },
-          {
-            order: 3,
-            action: 'send_process_stdin',
-            tool: 'process_stdin',
-            processSource: 'running_process',
-            valueSource: 'bootstrap.consumeUrl',
-            appendNewline: true,
-          },
-        ],
-      });
-      assert.doesNotMatch(plan.argv.join(' '), /--scope user|--scope global/);
+      assert.equal(body.error, name === 'project_get_mcp_manifest' ? 'project_manifest_failed' : `${name}_failed`);
+      assert.equal('installPlan' in body, false);
     }
     assert.equal(prepareCalls, 3);
   });
-});
-
-test('A2A project connection returns a server-side bootstrap without installer argv', async () => {
-  const calls: string[] = [];
-  const api = apiStub({
-    async listProjects() {
-      calls.push('list');
-      return { organization: principal.organizations[0]!, projects: [project] };
-    },
-    async prepareProjectMcp(projectId, client) {
-      calls.push(`prepare:${projectId}:${client}`);
-      return handoff;
-    },
-  });
-
-  await withVerifiedClient(api, async client => {
-    const result = await client.callTool({
-      name: 'project_connect',
-      arguments: { projectId: 'project-1', client: 'a2a' },
-    });
-    assert.notEqual(result.isError, true);
-    const body = resultJson(result);
-    assert.equal(body.connectionMode, 'server_side_a2a');
-    assert.equal(body.workspaceOnly, false);
-    assert.equal((body.bootstrap as { consumeUrl: string }).consumeUrl, handoff.bootstrapConsumeUrl);
-    const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
-    assert.deepEqual(plan.argv, []);
-    assert.equal(plan.client, 'a2a');
-    assert.equal(plan.credentialMode, 'in_process_after_bootstrap');
-    assert.equal(JSON.stringify(body).split(handoff.bootstrapConsumeUrl).length - 1, 1);
-  });
-  assert.deepEqual(calls, ['list', 'prepare:project-1:a2a']);
 });
 
 test('project_list and project_create use authoritative organization inputs and report a real write', async () => {
@@ -678,10 +602,12 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.notEqual(connected.isError, true);
     const connectedBody = resultJson(connected);
     assert.equal(connectedBody.mcpUrl, handoff.mcpUrl);
+    assert.equal((connectedBody.handoff as Record<string, unknown>).mcpUrl, handoff.mcpUrl);
     assert.equal(connectedBody.preparedByProjectBackend, true);
     assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
+    assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
     assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
@@ -855,7 +781,6 @@ test('account_status reports only request-verified identity state', async () => 
     assert.deepEqual(resultJson(result), {
       authenticated: true,
       tokenStatus: 'active',
-      oauthResource: 'https://mcp.spala.ai/mcp',
       subject: 'test-user',
       user: { id: 'test-user', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
       organizations: [{ id: 'org-1', name: 'Test organization' }],

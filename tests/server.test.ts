@@ -52,6 +52,11 @@ const insufficientScopeAccessTokens = new Set<string>();
 const projectConfigFailures = new Set<string>();
 const temporaryProjectToken = 'project-entry-token';
 const builderProjectToken = 'project-builder-token';
+const authorizedProjectScope = 'builder,project';
+const canonicalProjectMcpUrl = 'https://project-one.example/mcp/?scope=builder%2Cproject';
+const canonicalProjectManifestUrl = 'https://project-one.example/mcp/install-manifest?scope=builder%2Cproject';
+const bootstrapConsumeUrl = 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume';
+let bootstrapConsumeCount = 0;
 let newAccountProfile: { firstName: string; lastName: string } | undefined;
 let newAccountOrganization: { id: string; name: string } | undefined;
 let credentialSequence = 0;
@@ -147,6 +152,16 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     body: typeof init?.body === 'string' ? init.body : undefined,
   });
   if (url.origin === 'https://project-one.example') {
+    if (url.pathname === '/mcp/agent-instructions/mcp_agent_test/consume' && (!init?.method || init.method === 'GET')) {
+      bootstrapConsumeCount += 1;
+      if (bootstrapConsumeCount > 1) {
+        return Response.json({ error: 'bootstrap_already_consumed' }, { status: 410 });
+      }
+      return Response.json({
+        mcpUrl: canonicalProjectMcpUrl,
+        credential: 'installer-only-project-credential',
+      });
+    }
     if (url.pathname === '/api/__internal/builder-auth/external' && init?.method === 'POST') {
       if (authorization) return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
       if (String(init.body) !== JSON.stringify({ token: temporaryProjectToken })) {
@@ -164,8 +179,12 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       return Response.json({ success: true });
     }
     if (url.pathname === '/mcp/agent-instructions' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      if (body['scope'] !== authorizedProjectScope) {
+        return Response.json({ error: 'scope_mismatch' }, { status: 400 });
+      }
       return Response.json({
-        consumeUrl: 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume',
+        consumeUrl: bootstrapConsumeUrl,
         bootstrapToken: 'project-bootstrap-token-must-not-escape',
       }, { status: 201 });
     }
@@ -375,8 +394,8 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       status: 'ready',
       projectUrl: 'https://project-one.example',
       mcpEnabled: true,
-      mcpUrl: 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata',
-      manifestUrl: 'https://project-one.example/mcp/install-manifest?scope=builder%2Cproject%2Cdata',
+      mcpUrl: canonicalProjectMcpUrl,
+      manifestUrl: canonicalProjectManifestUrl,
     });
   }
   if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1' && init?.method === 'GET') {
@@ -677,7 +696,6 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.deepEqual(await toolBody(status), {
     authenticated: true,
     tokenStatus: 'active',
-    oauthResource: 'https://mcp.spala.ai/mcp',
     subject: 'user-1',
     user: { id: 'user-1', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
     organizations: [{ id: 'org-1', name: 'First organization' }],
@@ -689,7 +707,8 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
   const delegatedAccessToken = latestDelegatedAccessToken();
-  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata');
+  assert.equal(connectedBody.mcpUrl, canonicalProjectMcpUrl);
+  assert.equal((connectedBody.handoff as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(connectedBody.workspaceOnly, true);
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
@@ -705,6 +724,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     };
   };
   assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
+  assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], 'https://project-one.example');
   assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], connectedBody.mcpUrl);
@@ -713,8 +733,8 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(plan.argv[plan.argv.indexOf('--install-scope') + 1], 'workspace');
   assert.equal(plan.argv.includes('--bootstrap-stdin'), true);
   assert.equal(plan.argv.includes('--bootstrap-url'), false);
-  assert.equal(plan.argv.includes('https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume'), false);
-  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume');
+  assert.equal(plan.argv.includes(bootstrapConsumeUrl), false);
+  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, bootstrapConsumeUrl);
   assert.equal(plan.globalInstall, false);
   assert.equal(plan.workspaceScope, 'workspace');
   assert.equal(plan.execution.shell, false);
@@ -757,6 +777,19 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       'api\\.spala\\.ai',
     ].join('|')),
   );
+
+  bootstrapConsumeCount = 0;
+  const installerBootstrap = await responseJson(await fetch(bootstrapConsumeUrl));
+  assert.equal(installerBootstrap.mcpUrl, connectedBody.mcpUrl);
+  assert.equal(installerBootstrap.mcpUrl, (connectedBody.handoff as Record<string, unknown>).mcpUrl);
+  assert.equal(installerBootstrap.mcpUrl, (connectedBody.installPlan as Record<string, unknown>).mcpUrl);
+  assert.equal(
+    installerBootstrap.mcpUrl,
+    plan.argv[plan.argv.indexOf('--url') + 1],
+    'the consumed bootstrap and installer argv must bind the same scoped endpoint',
+  );
+  const consumedAgain = await fetch(bootstrapConsumeUrl);
+  assert.equal(consumedAgain.status, 410, 'the installer capability must remain one-time');
 
   const callsBeforeConfigFailure = upstreamCalls.length;
   projectConfigFailures.add(builderProjectToken);

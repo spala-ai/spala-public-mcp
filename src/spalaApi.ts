@@ -81,6 +81,8 @@ export type SpalaApiClient = {
   prepareProjectMcp(projectId: string, client: 'codex' | 'roo' | 'claude-code' | 'cursor'): Promise<PreparedProjectMcpHandoff>;
 };
 
+export const DEFAULT_PROJECT_MCP_SCOPE = 'builder,project,data';
+
 export type SpalaDelegatedAccess = {
   platformAccessToken: string;
   clientHash: string;
@@ -234,6 +236,32 @@ function hasValidProjectScopeQuery(url: URL): boolean {
   return scopes.length > 0
     && scopes.every(scope => scope.length > 0 && allowedScopes.has(scope))
     && new Set(scopes).size === scopes.length;
+}
+
+function projectScopeFromUrl(value: string | undefined): string {
+  if (!value) return DEFAULT_PROJECT_MCP_SCOPE;
+  return new URL(value).searchParams.get('scope') || DEFAULT_PROJECT_MCP_SCOPE;
+}
+
+function sameProjectScope(left: string, right: string): boolean {
+  const leftScopes = left.split(',').sort();
+  const rightScopes = right.split(',').sort();
+  return leftScopes.length === rightScopes.length
+    && leftScopes.every((scope, index) => scope === rightScopes[index]);
+}
+
+function applyAuthorizedProjectScope(value: string, authorizedScope: string): string {
+  const parsed = new URL(value);
+  const existingScope = parsed.searchParams.get('scope');
+  if (existingScope && !sameProjectScope(existingScope, authorizedScope)) {
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      code: 'project_mcp_scope_mismatch',
+      message: 'The project backend returned an MCP URL with a different scope than the authorized bootstrap.',
+    });
+  }
+  if (!existingScope) parsed.searchParams.set('scope', authorizedScope);
+  return parsed.toString();
 }
 
 function parsePublicHttpsUrl(value: unknown, options: { allowProjectScope?: boolean; requireCanonical?: boolean } = {}): string | undefined {
@@ -925,6 +953,7 @@ export function createSpalaApiClient(
       } catch (error) {
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
       }
+      const authorizedScope = projectScopeFromUrl(projectHandoff.mcpUrl);
 
       const accessPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectAccessUrl(id));
       const access = parseProjectAccess(accessPayload, projectHandoff.projectUrl);
@@ -987,7 +1016,7 @@ export function createSpalaApiClient(
           'POST',
           '/mcp/agent-instructions',
           {
-            scope: 'builder,project,data',
+            scope: authorizedScope,
             clientName: `Spala ${client} agent`,
             deliveryMode: 'one-time',
           },
@@ -1015,8 +1044,12 @@ export function createSpalaApiClient(
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
       }
       const preparedProjectUrl = parseProjectBaseUrl(preparedHandoff.projectUrl);
-      const mcpUrl = preparedHandoff.mcpUrl;
-      const manifestUrl = preparedHandoff.manifestUrl;
+      const mcpUrl = preparedHandoff.mcpUrl
+        ? applyAuthorizedProjectScope(preparedHandoff.mcpUrl, authorizedScope)
+        : undefined;
+      const manifestUrl = preparedHandoff.manifestUrl
+        ? applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope)
+        : undefined;
       const sensitiveTokens = [access.token, builderToken, publicMcpAccessToken];
       const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
         typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)

@@ -325,7 +325,8 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
   assert.equal(prepared.projectId, 'project-1');
   assert.equal(prepared.mcpEnabled, true);
-  assert.equal(prepared.mcpUrl, 'https://one.example/mcp');
+  assert.equal(prepared.mcpUrl, 'https://one.example/mcp?scope=builder%2Cproject%2Cdata');
+  assert.equal(prepared.manifestUrl, 'https://one.example/mcp/install-manifest?scope=builder%2Cproject%2Cdata');
   assert.equal(prepared.bootstrapConsumeUrl, 'https://one.example/mcp/agent-instructions/mcp_agent_test/consume');
 
   assert.equal(calls.filter(call => call.url.pathname === '/api/__internal/public-mcp/v1/principal').length, 1);
@@ -377,9 +378,11 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
   const projectToken = 'temporary-authoritative-url-token';
   const builderToken = 'builder-authoritative-url-token';
   const projectUrl = 'https://project.example';
-  const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject%2Cdata';
-  const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject%2Cdata';
-  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+  const authorizedScope = 'builder,project';
+  const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject';
+  const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject';
+  let instructionRequest: Record<string, unknown> | undefined;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse({
         projectId: 'project-1',
@@ -401,6 +404,7 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
       return jsonResponse({ success: true });
     }
     if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionRequest = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
       return jsonResponse({
         consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_authoritative/consume`,
       }, 201);
@@ -412,6 +416,7 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
 
   assert.equal(prepared.mcpUrl, authoritativeMcpUrl);
   assert.equal(prepared.manifestUrl, authoritativeManifestUrl);
+  assert.equal(instructionRequest?.['scope'], authorizedScope);
 });
 
 test('project preparation refreshes the authoritative handoff after enabling MCP', async () => {
@@ -465,8 +470,54 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
 
   assert.equal(handoffReads, 2);
   assert.equal(mcpEnabled, true);
-  assert.equal(prepared.mcpUrl, authoritativeMcpUrl);
-  assert.equal(prepared.manifestUrl, authoritativeManifestUrl);
+  assert.equal(prepared.mcpUrl, `${authoritativeMcpUrl}?scope=builder%2Cproject%2Cdata`);
+  assert.equal(prepared.manifestUrl, `${authoritativeManifestUrl}?scope=builder%2Cproject%2Cdata`);
+});
+
+test('project preparation rejects a refreshed handoff that widens the authorized scope', async () => {
+  const projectToken = 'temporary-scope-mismatch-token';
+  const builderToken = 'builder-scope-mismatch-token';
+  const projectUrl = 'https://project.example';
+  let handoffReads = 0;
+  let requestedScope: unknown;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      handoffReads += 1;
+      const scope = handoffReads === 1 ? 'builder%2Cproject' : 'builder%2Cproject%2Cdata';
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'One',
+        status: 'ready',
+        projectUrl,
+        mcpEnabled: true,
+        mcpUrl: `${projectUrl}/mcp?scope=${scope}`,
+        manifestUrl: `${projectUrl}/mcp/install-manifest?scope=${scope}`,
+      });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      requestedScope = (JSON.parse(String(init.body || '{}')) as Record<string, unknown>)['scope'];
+      return jsonResponse({
+        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_scope_mismatch/consume`,
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.code, 'project_mcp_scope_mismatch');
+    return true;
+  });
+  assert.equal(requestedScope, 'builder,project');
 });
 
 test('project preparation rejects authoritative handoff URLs containing credentials', async () => {

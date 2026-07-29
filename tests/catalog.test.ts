@@ -8,8 +8,8 @@ test('docs_search recommends the current secure 0.1.16 Codex installer flow', ()
   );
 
   assert.ok(result);
-  assert.match(result.summary, /npx --yes @spala-ai\/mcp-install@0\.1\.15 init --client codex --yes --json/);
-  assert.match(result.summary, /npx --yes @spala-ai\/mcp-install@0\.1\.15 status --client codex --json/);
+  assert.match(result.summary, /npx --yes @spala-ai\/mcp-install@0\.1\.16 init --client codex --yes --json/);
+  assert.match(result.summary, /npx --yes @spala-ai\/mcp-install@0\.1\.16 status --client codex --json/);
   assert.match(result.summary, /exact JSON steps/);
   assert.match(result.summary, /project_connect once for workspace binding/);
   assert.match(result.summary, /tty:true and shell:false/);
