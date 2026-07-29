@@ -17,6 +17,7 @@ const BASE_ENV = {
   CORS_ALLOWED_ORIGINS: 'https://app.spala.ai,https://client.example',
   PUBLIC_MCP_PLATFORM_TIMEOUT_MS: '2500',
   PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES: '32768',
+  PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'https://runtime.spala.ai,https://runtime-2.spala.ai,https://runtime.spala.ai',
   PUBLIC_OAUTH_BODY_LIMIT_BYTES: '8192',
   PUBLIC_OAUTH_TICKET_LIFETIME_SECONDS: '300',
   PUBLIC_OAUTH_RATE_LIMIT_MAX: '180',
@@ -37,6 +38,10 @@ test('loadConfig parses strict valid configuration', () => {
   assert.equal(config.publicMcpPlatformServiceSecret, 'test-public-mcp-platform-service-secret-32-bytes');
   assert.equal(config.publicMcpPlatformTimeoutMs, 2500);
   assert.equal(config.publicMcpPlatformResponseLimitBytes, 32768);
+  assert.deepEqual(config.publicMcpTrustedSharedRuntimeOrigins, [
+    'https://runtime.spala.ai',
+    'https://runtime-2.spala.ai',
+  ]);
   assert.equal(config.mcpBodyLimitBytes, 65536);
   assert.equal(config.mcpRateLimitMax, 240);
   assert.equal(config.pricingUrl, 'https://spala.ai/pricing');
@@ -57,6 +62,11 @@ test('loadConfig rejects malformed and unsafe configuration', () => {
     ['body limit', { MCP_BODY_LIMIT_BYTES: '100' }],
     ['rate limit', { MCP_RATE_LIMIT_MAX: '0' }],
     ['OAuth rate limit', { PUBLIC_OAUTH_RATE_LIMIT_MAX: '0' }],
+    ['trusted runtime wildcard', { PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: '*' }],
+    ['trusted runtime path', { PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'https://runtime.spala.ai/project' }],
+    ['trusted runtime query', { PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'https://runtime.spala.ai?project=one' }],
+    ['trusted runtime credentials', { PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'https://user:pass@runtime.spala.ai' }],
+    ['insecure trusted runtime', { PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'http://runtime.spala.ai' }],
     ['public URL credentials', { PUBLIC_BASE_URL: 'https://user:pass@mcp.spala.ai' }],
     ['API URL path', { SPALA_API_BASE_URL: 'https://api.spala.ai/private' }],
     ['insecure API origin', { SPALA_API_BASE_URL: 'http://api.spala.example' }],
@@ -90,6 +100,7 @@ test('configuration fails closed without an explicit platform origin and service
     PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'local-platform-service-secret-value-32-bytes',
   });
   assert.equal(local.spalaApiBaseUrl, 'http://127.0.0.1:3000');
+  assert.deepEqual(local.publicMcpTrustedSharedRuntimeOrigins, []);
   assert.match(local.publicOAuthReplayStatePath, /^\//);
 });
 

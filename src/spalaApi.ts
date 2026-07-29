@@ -608,6 +608,33 @@ function projectRuntimeEndpoint(runtimeBaseUrl: URL, pathname: string): URL {
   return url;
 }
 
+const RESERVED_SHARED_RUNTIME_SLUGS = new Set([
+  'root',
+  'api',
+  'mcp',
+  'auth',
+  'health',
+  'internal',
+]);
+
+function trustedProjectRuntime(
+  runtimeBaseUrl: URL,
+  accessProjectUrl: string,
+  trustedSharedRuntimeOrigins: readonly string[],
+): boolean {
+  const accessBaseUrl = new URL(accessProjectUrl);
+  const runtimePath = runtimeBaseUrl.pathname.replace(/\/+$/, '') || '/';
+  const accessPath = accessBaseUrl.pathname.replace(/\/+$/, '') || '/';
+  if (runtimeBaseUrl.origin === accessBaseUrl.origin && runtimePath === accessPath) {
+    return true;
+  }
+
+  const sharedSlug = /^\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(runtimePath)?.[1];
+  return trustedSharedRuntimeOrigins.includes(runtimeBaseUrl.origin)
+    && Boolean(sharedSlug)
+    && !RESERVED_SHARED_RUNTIME_SLUGS.has(sharedSlug!.toLowerCase());
+}
+
 function exchangedBuilderToken(
   raw: unknown,
   disallowedTokens: readonly string[],
@@ -1105,6 +1132,13 @@ export function createSpalaApiClient(
       const agentInstructionUrl = runtimeBaseUrl
         ? projectRuntimeEndpoint(runtimeBaseUrl, '/mcp/agent-instructions')
         : undefined;
+      const runtimeTrusted = runtimeBaseUrl
+        ? trustedProjectRuntime(
+            runtimeBaseUrl,
+            access.projectUrl,
+            config.publicMcpTrustedSharedRuntimeOrigins,
+          )
+        : false;
       const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
         typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
       );
@@ -1121,6 +1155,7 @@ export function createSpalaApiClient(
         || !runtimeBaseUrl
         || !runtimeBuilderAuthUrl
         || !agentInstructionUrl
+        || !runtimeTrusted
       ) {
         rejectInvalidProjectBootstrapMaterial(id, {
           handoffMetadataContainsToken,
@@ -1133,6 +1168,7 @@ export function createSpalaApiClient(
           runtimeBaseUrl: runtimeBaseUrl ? 'valid' : 'invalid',
           runtimeBuilderAuthUrl: runtimeBuilderAuthUrl ? 'valid' : 'invalid',
           agentInstructionUrl: agentInstructionUrl ? 'valid' : 'invalid',
+          runtimeAuthority: runtimeTrusted ? 'trusted' : 'untrusted',
         });
       }
 
