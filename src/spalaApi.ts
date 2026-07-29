@@ -557,7 +557,14 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
 type AgentInstructionBootstrapParseResult =
   | { consumeUrl: string }
   | {
-      reason: 'invalid_shape' | 'invalid_url' | 'untrusted_origin' | 'invalid_session_path';
+      reason:
+        | 'invalid_shape'
+        | 'invalid_url'
+        | 'untrusted_origin'
+        | 'invalid_session_path'
+        | 'invalid_scope'
+        | 'scope_mismatch'
+        | 'invalid_delivery_mode';
       diagnostic?: Record<string, string | number | boolean>;
     };
 
@@ -584,27 +591,49 @@ function bootstrapUrlDiagnostic(value: unknown): Record<string, string | number 
   return diagnostic;
 }
 
-function parseAgentInstructionBootstrap(raw: unknown, projectUrl: string): AgentInstructionBootstrapParseResult {
+function projectMcpAgentInstructionUrl(mcpUrl: string): URL | undefined {
+  const parsedMcpUrl = parseProjectMcpUrl(mcpUrl);
+  if (!parsedMcpUrl) return undefined;
+  const url = new URL(parsedMcpUrl);
+  url.search = '';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/agent-instructions`;
+  return url;
+}
+
+function parseAgentInstructionBootstrap(
+  raw: unknown,
+  mcpUrl: string,
+  authorizedScope: string,
+): AgentInstructionBootstrapParseResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { reason: 'invalid_shape' };
-  const consumeUrlValue = stringField(raw as Record<string, unknown>, 'consumeUrl', 4_096);
+  const record = raw as Record<string, unknown>;
+  const scopes = record['scopes'];
+  if (!Array.isArray(scopes) || scopes.some(scope => typeof scope !== 'string')) {
+    return { reason: 'invalid_scope' };
+  }
+  const sessionScope = scopes.join(',');
+  if (!sessionScope || !sameProjectScope(sessionScope, authorizedScope)) {
+    return { reason: 'scope_mismatch' };
+  }
+  if (record['deliveryMode'] !== 'one-time') return { reason: 'invalid_delivery_mode' };
+
+  const consumeUrlValue = stringField(record, 'consumeUrl', 4_096);
   const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
   if (!consumeUrl) return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
   const parsed = new URL(consumeUrl);
-  const expectedProject = new URL(projectUrl);
-  const isSpalaHosted = (hostname: string): boolean => (
-    hostname === 'spala.ai' || hostname.endsWith('.spala.ai')
-  );
-  if (parsed.origin !== expectedProject.origin && !isSpalaHosted(parsed.hostname)) {
-    return { reason: 'untrusted_origin' };
-  }
+  const expectedMcp = new URL(mcpUrl);
+  if (parsed.origin !== expectedMcp.origin) return { reason: 'untrusted_origin' };
 
-  // Hosted projects can expose the same backend through a custom domain and a
-  // legacy shared-runtime path. The session id is the capability; consume it
-  // through the control-plane-verified project backend instead of trusting the
-  // presentation origin/path returned by that legacy route.
-  const match = parsed.pathname.match(/\/mcp\/agent-instructions\/(mcp_agent_[A-Za-z0-9_-]{1,256})\/consume$/);
-  if (!match) return { reason: 'invalid_session_path' };
-  return { consumeUrl: `${projectUrl}/mcp/agent-instructions/${match[1]}/consume` };
+  const prefix = `${expectedMcp.pathname.replace(/\/+$/, '')}/agent-instructions/`;
+  const suffix = '/consume';
+  if (!parsed.pathname.startsWith(prefix) || !parsed.pathname.endsWith(suffix)) {
+    return { reason: 'invalid_session_path' };
+  }
+  const sessionId = parsed.pathname.slice(prefix.length, -suffix.length);
+  if (!/^mcp_agent_[A-Za-z0-9_-]{1,256}$/.test(sessionId)) {
+    return { reason: 'invalid_session_path' };
+  }
+  return { consumeUrl };
 }
 
 function rethrowProjectStage(error: unknown, code: string): never {
@@ -619,6 +648,21 @@ function rethrowProjectStage(error: unknown, code: string): never {
     });
   }
   throw error;
+}
+
+function rejectInvalidProjectBootstrapMaterial(
+  projectId: string,
+  diagnostic: Record<string, unknown>,
+): never {
+  console.warn('[project_connect] Invalid project bootstrap material', {
+    projectId,
+    ...diagnostic,
+  });
+  throw new SpalaApiError({
+    category: 'invalid_upstream_response',
+    code: 'invalid_project_bootstrap_material',
+    message: 'The project backend returned invalid MCP bootstrap material.',
+  });
 }
 
 export function createSpalaApiClient(
@@ -695,14 +739,12 @@ export function createSpalaApiClient(
   };
 
   const requestProjectJson = async (
-    projectUrl: string,
+    url: URL,
     projectAccessToken: string,
     method: 'POST',
-    pathname: '/api/__internal/builder-auth/external' | '/api/__internal/project/config' | '/mcp/agent-instructions',
     body?: Record<string, unknown>,
     options: { authorization?: boolean; sensitiveTokens?: string[] } = {},
   ): Promise<unknown> => {
-    const url = new URL(`${projectUrl}${pathname}`);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.publicMcpPlatformTimeoutMs);
     try {
@@ -972,10 +1014,9 @@ export function createSpalaApiClient(
       let builderToken: string;
       try {
         const exchangePayload = await requestProjectJson(
-          access.projectUrl,
+          new URL(`${access.projectUrl}/api/__internal/builder-auth/external`),
           access.token,
           'POST',
-          '/api/__internal/builder-auth/external',
           { token: access.token },
           { authorization: false, sensitiveTokens: [publicMcpAccessToken] },
         );
@@ -997,10 +1038,9 @@ export function createSpalaApiClient(
 
       try {
         await requestProjectJson(
-          access.projectUrl,
+          new URL(`${access.projectUrl}/api/__internal/project/config`),
           builderToken,
           'POST',
-          '/api/__internal/project/config',
           { securityConfig: { mcpEnabled: true } },
           { sensitiveTokens: [access.token, publicMcpAccessToken] },
         );
@@ -1008,31 +1048,9 @@ export function createSpalaApiClient(
         rethrowProjectStage(error, 'project_mcp_enable_failed');
       }
 
-      let instructionSession: unknown;
-      try {
-        instructionSession = await requestProjectJson(
-          access.projectUrl,
-          builderToken,
-          'POST',
-          '/mcp/agent-instructions',
-          {
-            scope: authorizedScope,
-            clientName: `Spala ${client} agent`,
-            deliveryMode: 'one-time',
-          },
-          { sensitiveTokens: [access.token, publicMcpAccessToken] },
-        );
-      } catch (error) {
-        rethrowProjectStage(error, 'project_agent_instruction_failed');
-      }
-      const bootstrapResult = parseAgentInstructionBootstrap(instructionSession, access.projectUrl);
-      const bootstrapConsumeUrl = 'consumeUrl' in bootstrapResult ? bootstrapResult.consumeUrl : undefined;
-      const bootstrapReason = 'reason' in bootstrapResult ? bootstrapResult.reason : 'valid';
-
       // Enabling MCP can change the authoritative handoff. Re-read it and use
-      // its exact URLs instead of deriving transport paths from projectUrl.
-      // Shared runtimes and custom domains are not required to expose MCP at
-      // `${projectUrl}/mcp`.
+      // its exact URLs before creating a bootstrap session. The project
+      // backend binds the session endpoint identity from this request URL.
       let preparedHandoff: ProjectMcpHandoff;
       try {
         const preparedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
@@ -1051,45 +1069,88 @@ export function createSpalaApiClient(
         ? applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope)
         : undefined;
       const sensitiveTokens = [access.token, builderToken, publicMcpAccessToken];
+      const agentInstructionUrl = mcpUrl ? projectMcpAgentInstructionUrl(mcpUrl) : undefined;
       const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
         typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
       );
-      const consumeUrlContainsToken = bootstrapConsumeUrl
-        ? containsSensitiveToken(bootstrapConsumeUrl, sensitiveTokens)
-        : false;
       const mcpUrlContainsToken = mcpUrl ? containsSensitiveToken(mcpUrl, sensitiveTokens) : false;
       const manifestUrlContainsToken = manifestUrl ? containsSensitiveToken(manifestUrl, sensitiveTokens) : false;
       if (
-        !bootstrapConsumeUrl
-        || handoffMetadataContainsToken
-        || consumeUrlContainsToken
+        handoffMetadataContainsToken
         || mcpUrlContainsToken
         || manifestUrlContainsToken
         || preparedProjectUrl !== access.projectUrl
         || !preparedHandoff.mcpEnabled
         || !mcpUrl
         || !manifestUrl
+        || !agentInstructionUrl
       ) {
-        console.warn('[project_connect] Invalid project bootstrap material', {
-          projectId: id,
-          instructionSessionFields: instructionSession && typeof instructionSession === 'object' && !Array.isArray(instructionSession)
-            ? Object.keys(instructionSession as Record<string, unknown>).sort()
-            : [],
-          consumeUrl: bootstrapReason,
-          consumeUrlDiagnostic: 'diagnostic' in bootstrapResult ? bootstrapResult.diagnostic : undefined,
+        rejectInvalidProjectBootstrapMaterial(id, {
           handoffMetadataContainsToken,
-          consumeUrlContainsToken,
           mcpUrlContainsToken,
           manifestUrlContainsToken,
           projectUrl: preparedProjectUrl === access.projectUrl ? 'valid' : 'mismatch',
           mcpEnabled: preparedHandoff.mcpEnabled,
           mcpUrl: mcpUrl ? 'valid' : 'invalid',
           manifestUrl: manifestUrl ? 'valid' : 'invalid',
+          agentInstructionUrl: agentInstructionUrl ? 'valid' : 'invalid',
         });
-        throw new SpalaApiError({
-          category: 'invalid_upstream_response',
-          code: 'invalid_project_bootstrap_material',
-          message: 'The project backend returned invalid MCP bootstrap material.',
+      }
+
+      let instructionSession: unknown;
+      try {
+        instructionSession = await requestProjectJson(
+          agentInstructionUrl,
+          builderToken,
+          'POST',
+          {
+            scope: authorizedScope,
+            clientName: `Spala ${client} agent`,
+            deliveryMode: 'one-time',
+          },
+          { sensitiveTokens: [access.token, publicMcpAccessToken] },
+        );
+      } catch (error) {
+        rethrowProjectStage(error, 'project_agent_instruction_failed');
+      }
+      const bootstrapResult = parseAgentInstructionBootstrap(instructionSession, mcpUrl, authorizedScope);
+      const bootstrapConsumeUrl = 'consumeUrl' in bootstrapResult ? bootstrapResult.consumeUrl : undefined;
+      const consumeUrlContainsToken = bootstrapConsumeUrl
+        ? containsSensitiveToken(bootstrapConsumeUrl, sensitiveTokens)
+        : false;
+      if (!bootstrapConsumeUrl || consumeUrlContainsToken) {
+        const bootstrapReason = 'reason' in bootstrapResult ? bootstrapResult.reason : 'valid';
+        let endpointIdentity = 'unverified';
+        if (bootstrapReason === 'valid') endpointIdentity = 'valid';
+        else if (bootstrapReason === 'untrusted_origin' || bootstrapReason === 'invalid_session_path') {
+          endpointIdentity = 'mismatch';
+        } else if (bootstrapReason === 'invalid_url') endpointIdentity = 'invalid';
+
+        let authorizedScopeStatus = 'valid';
+        if (bootstrapReason === 'invalid_scope' || bootstrapReason === 'scope_mismatch') {
+          authorizedScopeStatus = 'mismatch';
+        } else if (bootstrapReason === 'invalid_shape') authorizedScopeStatus = 'unverified';
+
+        let deliveryModeStatus = 'valid';
+        if (bootstrapReason === 'invalid_delivery_mode') deliveryModeStatus = 'mismatch';
+        else if (
+          bootstrapReason === 'invalid_shape'
+          || bootstrapReason === 'invalid_scope'
+          || bootstrapReason === 'scope_mismatch'
+        ) {
+          deliveryModeStatus = 'unverified';
+        }
+
+        rejectInvalidProjectBootstrapMaterial(id, {
+          instructionSessionFields: instructionSession && typeof instructionSession === 'object' && !Array.isArray(instructionSession)
+            ? Object.keys(instructionSession as Record<string, unknown>).sort()
+            : [],
+          consumeUrl: bootstrapReason,
+          consumeUrlDiagnostic: 'diagnostic' in bootstrapResult ? bootstrapResult.diagnostic : undefined,
+          consumeUrlContainsToken,
+          endpointIdentity,
+          authorizedScope: authorizedScopeStatus,
+          deliveryMode: deliveryModeStatus,
         });
       }
 

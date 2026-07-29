@@ -66,6 +66,18 @@ function projectAccessUrl(projectUrl: string, token: string): Record<string, unk
   };
 }
 
+function agentInstructionSession(
+  consumeUrl: unknown,
+  scope = 'builder,project,data',
+  deliveryMode: unknown = 'one-time',
+): Response {
+  return jsonResponse({
+    consumeUrl,
+    scopes: scope.split(','),
+    deliveryMode,
+  }, 201);
+}
+
 test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () => {
   assert.equal(parseProjectMcpUrl('https://project.example/mcp'), 'https://project.example/mcp');
   assert.equal(parseProjectMcpUrl('https://shared.example/project-a/mcp/'), 'https://shared.example/project-a/mcp/');
@@ -179,9 +191,9 @@ test('platform operation fixture matches principal, project, handoff, and access
       return jsonResponse({ success: true });
     }
     if (url.origin === fixture.projectUrl && url.pathname === '/mcp/agent-instructions') {
-      return jsonResponse({
-        consumeUrl: `${fixture.projectUrl}/mcp/agent-instructions/mcp_agent_contract/consume`,
-      }, 201);
+      return agentInstructionSession(
+        `${fixture.projectUrl}/mcp/agent-instructions/mcp_agent_contract/consume`,
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
@@ -280,9 +292,9 @@ test('authenticated client reuses dashboard project access and prepares MCP dire
       return jsonResponse({ success: true });
     }
     if (url.origin === 'https://one.example' && url.pathname === '/mcp/agent-instructions' && init.method === 'POST') {
-      return jsonResponse({
-        consumeUrl: 'https://one.example/mcp/agent-instructions/mcp_agent_test/consume',
-      }, 201);
+      return agentInstructionSession(
+        'https://one.example/mcp/agent-instructions/mcp_agent_test/consume',
+      );
     }
     return jsonResponse({ error: 'not_found' }, 404);
   }));
@@ -382,6 +394,7 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
   const authoritativeMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject';
   const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject';
   let instructionRequest: Record<string, unknown> | undefined;
+  let instructionUrl: string | undefined;
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       return jsonResponse({
@@ -403,11 +416,16 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
     if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
       return jsonResponse({ success: true });
     }
-    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+    if (
+      url.origin === 'https://shared-runtime.example'
+      && url.pathname === '/tenant/project-1/mcp/agent-instructions'
+    ) {
+      instructionUrl = url.toString();
       instructionRequest = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
-      return jsonResponse({
-        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_authoritative/consume`,
-      }, 201);
+      return agentInstructionSession(
+        'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions/mcp_agent_authoritative/consume',
+        authorizedScope,
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
@@ -416,6 +434,11 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
 
   assert.equal(prepared.mcpUrl, authoritativeMcpUrl);
   assert.equal(prepared.manifestUrl, authoritativeManifestUrl);
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions/mcp_agent_authoritative/consume',
+  );
+  assert.equal(instructionUrl, 'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions');
   assert.equal(instructionRequest?.['scope'], authorizedScope);
 });
 
@@ -427,6 +450,7 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   const authoritativeManifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest';
   let handoffReads = 0;
   let mcpEnabled = false;
+  let handoffReadsAtInstruction: number | undefined;
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       handoffReads += 1;
@@ -458,10 +482,14 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
       mcpEnabled = true;
       return jsonResponse({ success: true });
     }
-    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
-      return jsonResponse({
-        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_refresh/consume`,
-      }, 201);
+    if (
+      url.origin === 'https://shared-runtime.example'
+      && url.pathname === '/tenant/project-1/mcp/agent-instructions'
+    ) {
+      handoffReadsAtInstruction = handoffReads;
+      return agentInstructionSession(
+        'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions/mcp_agent_refresh/consume',
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
@@ -469,9 +497,14 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
 
   assert.equal(handoffReads, 2);
+  assert.equal(handoffReadsAtInstruction, 2, 'the authoritative handoff must be refreshed before session creation');
   assert.equal(mcpEnabled, true);
   assert.equal(prepared.mcpUrl, `${authoritativeMcpUrl}?scope=builder%2Cproject%2Cdata`);
   assert.equal(prepared.manifestUrl, `${authoritativeManifestUrl}?scope=builder%2Cproject%2Cdata`);
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions/mcp_agent_refresh/consume',
+  );
 });
 
 test('project preparation rejects a refreshed handoff that widens the authorized scope', async () => {
@@ -505,9 +538,10 @@ test('project preparation rejects a refreshed handoff that widens the authorized
     }
     if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
       requestedScope = (JSON.parse(String(init.body || '{}')) as Record<string, unknown>)['scope'];
-      return jsonResponse({
-        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_scope_mismatch/consume`,
-      }, 201);
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_scope_mismatch/consume`,
+        'builder,project',
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
@@ -517,7 +551,64 @@ test('project preparation rejects a refreshed handoff that widens the authorized
     assert.equal(error.code, 'project_mcp_scope_mismatch');
     return true;
   });
-  assert.equal(requestedScope, 'builder,project');
+  assert.equal(requestedScope, undefined, 'scope mismatch must fail before creating a bootstrap capability');
+});
+
+test('project preparation rejects bootstrap sessions that widen, narrow, or weaken the authorized binding', async () => {
+  const projectToken = 'temporary-session-binding-token';
+  const builderToken = 'builder-session-binding-token';
+  const projectUrl = 'https://project.example';
+  const mcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/?scope=builder%2Cproject';
+  const manifestUrl = 'https://shared-runtime.example/tenant/project-1/mcp/install-manifest?scope=builder%2Cproject';
+
+  for (const fixture of [
+    { label: 'narrowed scope', sessionScope: 'builder', deliveryMode: 'one-time' },
+    { label: 'widened scope', sessionScope: 'builder,project,data', deliveryMode: 'one-time' },
+    { label: 'manual delivery', sessionScope: 'builder,project', deliveryMode: 'manual' },
+  ]) {
+    let instructionRequests = 0;
+    const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+        return jsonResponse({
+          projectId: 'project-1',
+          projectName: 'One',
+          status: 'ready',
+          projectUrl,
+          mcpEnabled: true,
+          mcpUrl,
+          manifestUrl,
+        });
+      }
+      if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+        return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+      }
+      if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+        return jsonResponse({ token: builderToken });
+      }
+      if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+        return jsonResponse({ success: true });
+      }
+      if (
+        url.origin === 'https://shared-runtime.example'
+        && url.pathname === '/tenant/project-1/mcp/agent-instructions'
+      ) {
+        instructionRequests += 1;
+        return agentInstructionSession(
+          'https://shared-runtime.example/tenant/project-1/mcp/agent-instructions/mcp_agent_binding/consume',
+          fixture.sessionScope,
+          fixture.deliveryMode,
+        );
+      }
+      return jsonResponse({ error: 'unexpected_request' }, 500);
+    }));
+
+    await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.code, 'invalid_project_bootstrap_material', fixture.label);
+      return true;
+    });
+    assert.equal(instructionRequests, 1, fixture.label);
+  }
 });
 
 test('project preparation rejects authoritative handoff URLs containing credentials', async () => {
@@ -558,9 +649,9 @@ test('project preparation rejects authoritative handoff URLs containing credenti
             return jsonResponse({ success: true });
           }
           if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
-            return jsonResponse({
-              consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_sensitive/consume`,
-            }, 201);
+            return agentInstructionSession(
+              `${projectUrl}/mcp/agent-instructions/mcp_agent_sensitive/consume`,
+            );
           }
           return jsonResponse({ error: 'unexpected_request' }, 500);
         }));
@@ -687,7 +778,9 @@ test('project backend failures receive stage-specific fallback codes without exp
         if (url.pathname === stage) throw new Error(`backend network failure ${controlToken} ${projectToken}`);
         if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
         if (url.pathname === '/mcp/agent-instructions') {
-          return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
+          return agentInstructionSession(
+            'https://project.example/mcp/agent-instructions/mcp_agent_session/consume',
+          );
         }
       }
       return jsonResponse({ error: 'unexpected_request' }, 500);
@@ -788,7 +881,9 @@ test('project runtime access accepts the platform access-url response field', as
       projectCalls.push(url);
       if (url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
       if (url.pathname === '/mcp/agent-instructions') {
-        return jsonResponse({ consumeUrl: 'https://project.example/mcp/agent-instructions/mcp_agent_session/consume' }, 201);
+        return agentInstructionSession(
+          'https://project.example/mcp/agent-instructions/mcp_agent_session/consume',
+        );
       }
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
@@ -884,7 +979,7 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
         return jsonResponse({ token: 'builder-bootstrap-token' });
       }
       if (url.pathname === '/api/__internal/project/config' && init.method === 'POST') return jsonResponse({ success: true });
-      if (url.pathname === '/mcp/agent-instructions') return jsonResponse({ consumeUrl: bootstrapConsumeUrl }, 201);
+      if (url.pathname === '/mcp/agent-instructions') return agentInstructionSession(bootstrapConsumeUrl);
       return jsonResponse({ error: 'not_found' }, 404);
     }));
     await assert.rejects(api.prepareProjectMcp('project-1', 'roo'), (error: unknown) => {
@@ -898,7 +993,7 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
   }
 });
 
-test('project preparation canonicalizes a legacy hosted bootstrap path onto the verified project backend', async () => {
+test('project preparation rejects a bootstrap capability outside the authoritative MCP endpoint', async () => {
   const projectToken = 'temporary-legacy-bootstrap-token';
   const builderToken = 'builder-legacy-bootstrap-token';
   const projectUrl = 'https://property-listings.example.spala.ai';
@@ -912,18 +1007,18 @@ test('project preparation canonicalizes a legacy hosted bootstrap path onto the 
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
     if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
-      return jsonResponse({
-        consumeUrl: 'https://example.spala.ai/property-listings/mcp/agent-instructions/mcp_agent_legacy/consume',
-      }, 201);
+      return agentInstructionSession(
+        'https://example.spala.ai/property-listings/mcp/agent-instructions/mcp_agent_legacy/consume',
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
 
-  const prepared = await api.prepareProjectMcp('project-1', 'codex');
-  assert.equal(
-    prepared.bootstrapConsumeUrl,
-    'https://property-listings.example.spala.ai/mcp/agent-instructions/mcp_agent_legacy/consume',
-  );
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.code, 'invalid_project_bootstrap_material');
+    return true;
+  });
 });
 
 test('project preparation rejects a bootstrap capability from an unrelated public host', async () => {
@@ -940,9 +1035,9 @@ test('project preparation rejects a bootstrap capability from an unrelated publi
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') return jsonResponse({ success: true });
     if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
-      return jsonResponse({
-        consumeUrl: 'https://attacker.example/mcp/agent-instructions/mcp_agent_stolen/consume',
-      }, 201);
+      return agentInstructionSession(
+        'https://attacker.example/mcp/agent-instructions/mcp_agent_stolen/consume',
+      );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
   }));
