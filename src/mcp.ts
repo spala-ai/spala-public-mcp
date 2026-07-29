@@ -7,6 +7,26 @@ import type { AppConfig } from './config.js';
 import { SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
+import { recordTelemetry } from './telemetry.js';
+
+const TELEMETRY_API_CODES = new Set([
+  'payment_required',
+  'plan_restricted',
+  'organization_selection_required',
+  'organization_required',
+  'authentication',
+  'forbidden',
+  'not_found',
+  'rate_limited',
+  'upstream_unavailable',
+]);
+
+function telemetryErrorCode(error: unknown): string {
+  if (!(error instanceof SpalaApiError)) return 'other';
+  if (error.code && TELEMETRY_API_CODES.has(error.code)) return error.code;
+  if (error.category && TELEMETRY_API_CODES.has(error.category)) return error.category;
+  return 'other';
+}
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -21,8 +41,10 @@ export type RequestContext = {
 export const SUPPORTED_INSTALL_CLIENTS = [
   'codex',
   'roo',
+  'claude-code',
+  'cursor',
 ] as const;
-export const PROJECT_INSTALLER_VERSION = '0.1.14';
+export const PROJECT_INSTALLER_VERSION = '0.1.15';
 export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
 
 export const PROJECT_INSTALL_EXECUTION = {
@@ -141,7 +163,7 @@ const INSTALL_CLIENT_JSON_SCHEMA = {
 
 const PROJECT_INSTALL_SELECTOR_JSON_SCHEMA = {
   ...PROJECT_SELECTOR_JSON_SCHEMA,
-  description: 'Provide exactly one project selector and a supported agentic workspace client (codex or roo) to receive executable installer argv.',
+  description: 'Provide exactly one project selector and a supported agentic workspace client (codex, roo, claude-code, or cursor) to receive executable installer argv.',
   oneOf: PROJECT_SELECTOR_JSON_SCHEMA.oneOf.map(branch => ({
     ...branch,
     properties: { ...branch.properties, client: INSTALL_CLIENT_JSON_SCHEMA },
@@ -837,6 +859,7 @@ async function withAccountSetupLock<T>(subject: string, operation: () => Promise
 
 function requireVerifiedPrincipal(ctx: RequestContext, api: SpalaApiClient | undefined, tool: string): string | ToolResult {
   if (ctx.verifiedPrincipal && api) return ctx.verifiedPrincipal.subject;
+  recordTelemetry('mcp_auth_challenge', { source: 'tool', tool });
   return json({
     error: 'authentication_required',
     tool,
@@ -890,7 +913,7 @@ function requireInstallClient(selector: ProjectSelector): SupportedInstallClient
   return json({
     error: 'client_selection_required',
     category: 'client_selection_required',
-    message: 'Choose one supported agentic workspace client (codex or roo) before requesting an executable install plan.',
+    message: 'Choose one supported agentic workspace client (codex, roo, claude-code, or cursor) before requesting an executable install plan.',
     supportedClients: SUPPORTED_INSTALL_CLIENTS,
     action: { type: 'select_client', argument: 'client' },
   }, true);
@@ -963,9 +986,9 @@ function projectMcpInstallPlan(
 ) {
   if (!handoff.mcpUrl) throw new Error('Prepared project MCP URL is missing.');
   const serverName = projectServerName(handoff.projectId);
-  const runnerArgv = client === 'codex'
-    ? ['npx', '--yes', PROJECT_INSTALLER_SPEC]
-    : ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC];
+  const runnerArgv = client === 'roo'
+    ? ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC]
+    : ['npx', '--yes', PROJECT_INSTALLER_SPEC];
   return {
     argv: [
       ...runnerArgv, 'project', 'bind',
@@ -1229,6 +1252,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const principal = ctx.verifiedPrincipal!;
     const missingFields = missingAccountSetupFields(principal);
     if (missingFields.length > 0) {
+      recordTelemetry('spala_start', { phase: 'account_setup_required' });
       return json({
         schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
         phase: 'account_setup_required',
@@ -1283,6 +1307,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
               allowCreateOrganization: true,
               then: 'Ask for the new project name and call project_create with the selected organizationId.',
             };
+      recordTelemetry('spala_start', { phase });
       return json({
         schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
         phase,
@@ -1296,7 +1321,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         nextAction,
       });
     } catch (error) {
-      return startupBillingError(error, config) || startupFailure(error);
+      const billing = startupBillingError(error, config);
+      recordTelemetry('spala_start', { ok: false, phase: billing ? 'billing_required' : 'startup_failed', code: telemetryErrorCode(error) });
+      return billing || startupFailure(error);
     }
   });
 
@@ -1430,6 +1457,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     if (typeof auth !== 'string') return auth;
     try {
       const created = await api!.createProject(input);
+      recordTelemetry('project_create', { ok: true });
       return json({
         ...created,
         created: true,
@@ -1444,9 +1472,10 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
             instruction: 'Retry this read-only tool after provisioning completes. Do not construct a project MCP URL.',
           },
         },
-        next: 'Call project_connect with the created project ID and one supported agentic workspace client (codex or roo). It will prepare MCP server-side when provisioning is ready.',
+        next: 'Call project_connect with the created project ID and one supported agentic workspace client (codex, roo, claude-code, or cursor). It will prepare MCP server-side when provisioning is ready.',
       });
     } catch (error) {
+      recordTelemetry('project_create', { ok: false, code: telemetryErrorCode(error) });
       return safeProjectError(error, 'project_create_failed', config);
     }
   });
@@ -1455,14 +1484,24 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const selector = parseProjectSelector(input);
     if ('content' in selector) return selector;
     const auth = requireVerifiedPrincipal(ctx, api, tool);
-    if (typeof auth !== 'string') return auth;
+    if (typeof auth !== 'string') {
+      recordTelemetry('project_connect', { ok: false, outcome: 'auth_required', tool });
+      return auth;
+    }
     const client = requireInstallClient(selector);
-    if (typeof client !== 'string') return client;
+    if (typeof client !== 'string') {
+      recordTelemetry('project_connect', { outcome: 'client_selection_required', tool });
+      return client;
+    }
     try {
       const resolved = await prepareHandoff(api!, selector, client, ctx.verifiedPrincipal!);
-      if (!resolved) return json({ error: 'project_not_found' }, true);
+      if (!resolved) {
+        recordTelemetry('project_connect', { ok: false, outcome: 'project_not_found', client, tool });
+        return json({ error: 'project_not_found' }, true);
+      }
       const { handoff } = resolved;
       if (!handoff.mcpEnabled || !handoff.mcpUrl) {
+        recordTelemetry('project_connect', { ok: false, outcome: 'mcp_not_ready', client, tool });
         return json({
           error: 'project_mcp_not_ready',
           projectId: handoff.projectId,
@@ -1473,6 +1512,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       }
       const installPlan = projectMcpInstallPlan(handoff, client);
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
+      recordTelemetry('project_connect', { outcome: 'plan_issued', client, tool });
       return json({
         project: resolved.project,
         handoff: publicHandoff,
@@ -1498,6 +1538,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         rule: 'Use this exact clean mcpUrl only in the bound workspace. Never guess the URL or install this project MCP globally.',
       });
     } catch (error) {
+      recordTelemetry('project_connect', { ok: false, outcome: 'error', client, tool, code: telemetryErrorCode(error) });
       return safeProjectError(error, `${tool}_failed`, config);
     }
   };
