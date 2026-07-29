@@ -26,7 +26,7 @@ export const docsIndex = [
     id: 'agent-setup-auth-handoff',
     title: 'Agent setup, auth, OAuth token, and project MCP handoff',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, protected spala_start returns the one next account, organization, project, billing, or handoff action. Agentic workspace binding through project_connect currently supports Codex and Roo only.',
+    summary: 'Codex, Claude, Cursor, Gemini, and other MCP clients can add https://mcp.spala.ai/mcp for discovery and account access. After OAuth, protected spala_start returns the one next account, organization, project, billing, or handoff action. Agentic workspace binding through project_connect currently supports Codex, Roo, Claude Code, and Cursor.',
     keywords: ['auth', 'oauth', 'oauth metadata', 'token', 'account setup', 'organization', 'company name', 'project', 'mcp', 'handoff', 'setup', 'codex', 'claude', 'cursor', 'gemini', 'bearer', 'authorization', 'spala_start', 'account_setup', 'organization_create', 'project_connect', 'project_select', 'project_list'],
   },
   {
@@ -40,14 +40,14 @@ export const docsIndex = [
     id: 'public-mcp-install-command',
     title: 'Install Spala Public MCP with npm',
     url: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
-    summary: 'For Codex use npx --yes @spala-ai/mcp-install@0.1.14 init --client codex --yes --json, then run npx --yes @spala-ai/mcp-install@0.1.14 status --client codex --json and follow the exact JSON steps. After authentication, call project_connect once for workspace binding. Execute installPlan.argv as a direct process with tty:true and shell:false, wait for the running process, then send bootstrap.consumeUrl plus a newline through the process stdin tool; never put it in shell text or argv. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
+    summary: 'For Codex use npx --yes @spala-ai/mcp-install@0.1.15 init --client codex --yes --json, then run npx --yes @spala-ai/mcp-install@0.1.15 status --client codex --json and follow the exact JSON steps. After authentication, call project_connect once for workspace binding. Execute installPlan.argv as a direct process with tty:true and shell:false, wait for the running process, then send bootstrap.consumeUrl plus a newline through the process stdin tool; never put it in shell text or argv. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
     id: 'project-mcp-resolution',
     title: 'Project MCP URL resolution',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Agents choose Codex or Roo. project_connect prepares MCP server-side and returns workspace-only project bind argv plus a separate short-lived one-time capability. For Codex the argv starts with npx --yes @spala-ai/mcp-install@0.1.14. Start it with tty:true and shell:false, wait for the running process, then send the capability plus a newline through the process stdin tool; it must never appear in argv or shell text.',
+    summary: 'Agents choose Codex, Roo, Claude Code, or Cursor. project_connect prepares MCP server-side and returns workspace-only project bind argv plus a separate short-lived one-time capability. For Codex the argv starts with npx --yes @spala-ai/mcp-install@0.1.15. Start it with tty:true and shell:false, wait for the running process, then send the capability plus a newline through the process stdin tool; it must never appear in argv or shell text.',
     keywords: ['project mcp', 'access-url', 'access url', 'project handoff', 'mcp url', 'runtime', 'shared runtime', 'slug', 'project slug'],
   },
   {

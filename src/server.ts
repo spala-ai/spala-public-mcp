@@ -26,8 +26,27 @@ import {
 } from './publicMcpPlatform.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { SPALA_BACKEND_INTENT_TEXT } from './intent.js';
+import { configureTelemetry, drainTelemetry, recordTelemetry } from './telemetry.js';
 
 const config = loadConfig();
+configureTelemetry(config.telemetryStatePath);
+let runningServer: import('node:http').Server | null = null;
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    // Shutdown contract: stop accepting connections, AWAIT in-flight requests,
+    // then drain telemetry (so events those requests enqueue are captured).
+    // The single deadline covers the whole sequence; expiry force-exits.
+    const shutdown = (async () => {
+      if (runningServer) {
+        runningServer.closeIdleConnections?.();
+        await new Promise<void>(resolve => runningServer!.close(() => resolve()));
+      }
+      await drainTelemetry();
+    })();
+    const deadline = new Promise<void>(resolve => setTimeout(resolve, 2_000).unref());
+    void Promise.race([shutdown, deadline]).finally(() => process.exit(signal === 'SIGTERM' ? 143 : 130));
+  });
+}
 const publicOAuth = new PublicOAuthFacade(config);
 const platformClient = createPublicMcpPlatformClient(config);
 const app = express();
@@ -299,13 +318,13 @@ function projectMcpTestTemplate() {
       },
       {
         step: 8,
-        call: 'project_connect with the codex or roo agentic workspace client identifier',
+        call: 'project_connect with the codex, roo, claude-code, or cursor agentic workspace client identifier',
         expected: 'Idempotently prepares MCP server-side and returns exact clean URLs plus a workspace-only project bind plan. Send the separate bootstrap.consumeUrl as the installer stdin line.',
         redact: ['private project IDs', 'private slugs', 'tenant identifiers', 'protected bootstrap URL'],
       },
       {
         step: 9,
-        call: 'project_get_mcp_manifest with the codex or roo agentic workspace client identifier',
+        call: 'project_get_mcp_manifest with the codex, roo, claude-code, or cursor agentic workspace client identifier',
         expected: 'Returns exact mcpUrl and manifestUrl values plus workspace project bind argv; omitted client returns a structured no-plan error.',
         redact: ['private project URL if it contains private identifiers'],
       },
@@ -415,6 +434,7 @@ function authChallengeResponse(
   message = 'Authentication required',
   invalidToken = false,
 ): void {
+  recordTelemetry('mcp_auth_challenge', { invalidToken, source: 'http' });
   setWwwAuthenticate(res, invalidToken ? 'invalid_token' : undefined);
   res.setHeader('Cache-Control', 'no-store');
   res.status(401).json({
@@ -557,6 +577,7 @@ function mcpRateLimit(req: Request, res: Response, next: NextFunction): void {
   res.setHeader('RateLimit-Reset', String(resetSeconds));
 
   if (bucket.count >= config.mcpRateLimitMax) {
+    recordTelemetry('rate_limited', { surface: 'mcp' });
     res.setHeader('Retry-After', String(resetSeconds));
     res.status(429).json({
       jsonrpc: '2.0',
@@ -599,6 +620,7 @@ function oauthRateLimit(req: Request, res: Response, next: NextFunction): void {
   res.setHeader('RateLimit-Reset', String(resetSeconds));
 
   if (bucket.count >= config.publicOAuthRateLimitMax) {
+    recordTelemetry('rate_limited', { surface: 'oauth' });
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Retry-After', String(resetSeconds));
     res.status(429).json({
@@ -982,9 +1004,14 @@ app.get('/oauth/authorize', (req, res) => {
     const ticket = publicOAuth.createAuthorizationTicket(input);
     const target = new URL(dashboardAuthorizationUrl());
     target.searchParams.set('request', ticket);
+    recordTelemetry('oauth_authorize_redirect', { ok: true });
     res.setHeader('Cache-Control', 'no-store');
     res.redirect(302, target.toString());
   } catch (error) {
+    recordTelemetry('oauth_authorize_redirect', {
+      ok: false,
+      code: error instanceof PublicOAuthError ? error.error : 'other',
+    });
     const redirect = publicOAuth.authorizationErrorRedirect(input, error);
     if (redirect) {
       res.setHeader('Cache-Control', 'no-store');
@@ -998,6 +1025,7 @@ app.get('/oauth/authorize', (req, res) => {
 app.post('/oauth/register', (req, res) => {
   try {
     const registration = publicOAuth.register(oauthInput(req.body));
+    recordTelemetry('oauth_register', { ok: true });
     res.setHeader('Cache-Control', 'no-store');
     res.status(201).json({
       client_id: registration.clientId,
@@ -1007,12 +1035,17 @@ app.post('/oauth/register', (req, res) => {
       token_endpoint_auth_method: 'none',
     });
   } catch (error) {
+    recordTelemetry('oauth_register', {
+      ok: false,
+      code: error instanceof PublicOAuthError ? error.error : 'other',
+    });
     publicOAuthError(res, error);
   }
 });
 
 app.post('/oauth/dashboard/approve', async (req, res) => {
   if (req.get('authorization')) {
+    recordTelemetry('oauth_approval', { ok: false, code: 'invalid_request' });
     publicOAuthError(res, new PublicOAuthError('invalid_request', 'Authorization is not accepted by this endpoint.'));
     return;
   }
@@ -1030,9 +1063,24 @@ app.post('/oauth/dashboard/approve', async (req, res) => {
       clientHash: approval.clientHash,
     });
     const { callbackUrl } = publicOAuth.approve(approval, grantCode, expiresIn);
+    recordTelemetry('oauth_approval', { ok: true });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ redirectTo: callbackUrl });
   } catch (error) {
+    const upstream = error as { code?: unknown; category?: unknown };
+    const upstreamCause = typeof upstream?.code === 'string'
+      ? upstream.code
+      : typeof upstream?.category === 'string' ? upstream.category : undefined;
+    recordTelemetry('oauth_approval', {
+      ok: false,
+      // The upstream cause (notably access_denied from the platform allow_access
+      // gate) is the meaningful failure code; the client-facing mapping hides it.
+      code: upstreamCause ?? (error instanceof PublicOAuthError
+        ? error.error
+        : isTemporaryOAuthUpstreamError(error)
+          ? 'temporarily_unavailable'
+          : 'invalid_grant'),
+    });
     if (error instanceof PublicOAuthError) {
       publicOAuthError(res, error);
     } else if (isTemporaryOAuthUpstreamError(error)) {
@@ -1068,6 +1116,7 @@ app.post('/oauth/token', async (req, res) => {
       );
       const tokens = publicOAuth.wrapTokenSet(redemption.tokenSet, redemption.clientId);
       redemption.complete();
+      recordTelemetry('oauth_token', { ok: true, grant: 'authorization_code' });
       sendToken(tokens);
       return;
     }
@@ -1077,8 +1126,16 @@ app.post('/oauth/token', async (req, res) => {
       refreshToken: refresh.refreshToken,
       clientHash: refresh.clientHash,
     });
+    recordTelemetry('oauth_token', { ok: true, grant: 'refresh_token' });
     sendToken(publicOAuth.wrapRefreshTokenSet(tokens, refresh));
   } catch (error) {
+    recordTelemetry('oauth_token', {
+      ok: false,
+      grant: typeof input['grant_type'] === 'string' ? input['grant_type'] : 'unknown',
+      code: error instanceof PublicOAuthError
+        ? error.error
+        : isTemporaryOAuthUpstreamError(error) ? 'temporarily_unavailable' : 'invalid_grant',
+    });
     publicOAuthError(
       res,
       error instanceof PublicOAuthError
@@ -1114,6 +1171,7 @@ app.post('/oauth/revoke', async (req, res) => {
 });
 
 app.get('/mcp/install-manifest', (_req, res) => {
+  recordTelemetry('manifest_fetch', {});
   setDiscoveryCache(res);
   const mcpUrl = publicMcpUrl();
   res.json({
@@ -1336,16 +1394,18 @@ export function startServer() {
     if (existsSync(config.port) && statSync(config.port).isSocket()) {
       unlinkSync(config.port);
     }
-    return app.listen(config.port, () => {
+    runningServer = app.listen(config.port, () => {
       console.log(`mcp-spala-ai listening on ${config.port}`);
       console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
     });
+    return runningServer;
   }
 
-  return app.listen(config.port, '127.0.0.1', () => {
+  runningServer = app.listen(config.port, '127.0.0.1', () => {
     console.log(`mcp-spala-ai listening on http://127.0.0.1:${config.port}`);
     console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
   });
+  return runningServer;
 }
 
 const entrypoint = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';

@@ -78,7 +78,7 @@ export type SpalaApiClient = {
   listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
-  prepareProjectMcp(projectId: string, client: 'codex' | 'roo'): Promise<PreparedProjectMcpHandoff>;
+  prepareProjectMcp(projectId: string, client: 'codex' | 'roo' | 'claude-code' | 'cursor'): Promise<PreparedProjectMcpHandoff>;
 };
 
 export type SpalaDelegatedAccess = {
