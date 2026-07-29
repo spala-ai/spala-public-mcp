@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -51,7 +51,9 @@ const disabledPrincipalAccessTokens = new Set<string>();
 const insufficientScopeAccessTokens = new Set<string>();
 const projectConfigFailures = new Set<string>();
 const temporaryProjectToken = 'project-entry-token';
-const builderProjectToken = 'project-builder-token';
+const builderJwtSecret = 'server-test-builder-jwt-secret';
+const builderProjectToken = issueBuilderToken('root');
+const runtimeBuilderProjectToken = issueBuilderToken('project-1');
 const authorizedProjectScope = 'builder,project';
 const projectUrl = 'https://project-one.example';
 const sharedRuntimeOrigin = 'https://shared-runtime.example';
@@ -140,6 +142,43 @@ function assertNoRawPlatformTokens(payload: unknown): void {
   }
 }
 
+function issueBuilderToken(projectScope: string): string {
+  const encodedHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const encodedPayload = Buffer.from(JSON.stringify({
+    userId: 'builder-user-1',
+    projectScope,
+    iss: 'Spala-Builder',
+    aud: 'builder-ui',
+    exp: Math.floor(Date.now() / 1_000) + 3_600,
+  })).toString('base64url');
+  const unsigned = `${encodedHeader}.${encodedPayload}`;
+  const signature = createHmac('sha256', builderJwtSecret).update(unsigned).digest('base64url');
+  return `${unsigned}.${signature}`;
+}
+
+function builderAuthorizationHasScope(authorization: string, projectScope: string): boolean {
+  if (!authorization.startsWith('Bearer ')) return false;
+  try {
+    const token = authorization.slice('Bearer '.length);
+    const [encodedHeader, encodedPayload, signature, extra] = token.split('.');
+    if (!encodedHeader || !encodedPayload || !signature || extra) return false;
+    const unsigned = `${encodedHeader}.${encodedPayload}`;
+    const expected = createHmac('sha256', builderJwtSecret).update(unsigned).digest();
+    const actual = Buffer.from(signature, 'base64url');
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return false;
+    const header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Record<string, unknown>;
+    return header['alg'] === 'HS256'
+      && payload['iss'] === 'Spala-Builder'
+      && payload['aud'] === 'builder-ui'
+      && typeof payload['exp'] === 'number'
+      && payload['exp'] > Math.floor(Date.now() / 1_000)
+      && payload['projectScope'] === projectScope;
+  } catch {
+    return false;
+  }
+}
+
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : input.toString());
   const headers = new Headers(init?.headers);
@@ -185,10 +224,20 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       });
     }
     if (
+      url.pathname === '/tenant/project-1/api/__internal/builder-auth/external'
+      && init?.method === 'POST'
+    ) {
+      if (authorization) return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
+      if (String(init.body) !== JSON.stringify({ token: temporaryProjectToken })) {
+        return Response.json({ error: 'invalid_exchange_body' }, { status: 400 });
+      }
+      return Response.json({ token: runtimeBuilderProjectToken });
+    }
+    if (
       url.pathname === '/tenant/project-1/mcp/agent-instructions'
       && init?.method === 'POST'
     ) {
-      if (authorization !== `Bearer ${builderProjectToken}`) {
+      if (!builderAuthorizationHasScope(authorization, 'project-1')) {
         return Response.json({ error: 'invalid_project_token' }, { status: 401 });
       }
       const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
@@ -215,7 +264,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       }
       return Response.json({ token: builderProjectToken });
     }
-    if (authorization !== `Bearer ${builderProjectToken}`) {
+    if (!builderAuthorizationHasScope(authorization, 'root')) {
       return Response.json({ error: 'invalid_project_token' }, { status: 401 });
     }
     if (url.pathname === '/api/__internal/project/config' && init?.method === 'POST') {
@@ -739,6 +788,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.',
   });
 
+  const callsBeforeConnect = upstreamCalls.length;
   const connected = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
@@ -790,23 +840,48 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     && call.authorization === `Bearer ${delegatedAccessToken}`
   )));
   assert.equal(upstreamCalls.some(call => call.url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp/prepare'), false);
+  const connectionUpstreamCalls = upstreamCalls.slice(callsBeforeConnect);
   assert.deepEqual(
-    upstreamCalls.filter(call => call.url.origin === projectUrl).map(call => `${call.method} ${call.url.pathname}`),
+    connectionUpstreamCalls.filter(call => call.url.origin === projectUrl).map(call => `${call.method} ${call.url.pathname}`),
     ['POST /api/__internal/builder-auth/external', 'POST /api/__internal/project/config'],
   );
   assert.deepEqual(
-    upstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
-    ['POST /tenant/project-1/mcp/agent-instructions'],
+    connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
+    [
+      'POST /tenant/project-1/api/__internal/builder-auth/external',
+      'POST /tenant/project-1/mcp/agent-instructions',
+    ],
   );
-  const projectUpstreamCalls = upstreamCalls.filter(call => call.url.origin === projectUrl);
-  const sharedRuntimeCalls = upstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin);
+  assert.deepEqual(
+    connectionUpstreamCalls
+      .filter(call => (
+        call.url.origin === projectUrl
+        || call.url.origin === sharedRuntimeOrigin
+        || call.url.pathname.endsWith('/mcp-handoff')
+        || call.url.pathname.endsWith('/access-url')
+      ))
+      .map(call => `${call.method} ${call.url.origin}${call.url.pathname}`),
+    [
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/access-url',
+      'POST https://project-one.example/api/__internal/builder-auth/external',
+      'POST https://project-one.example/api/__internal/project/config',
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
+      'POST https://shared-runtime.example/tenant/project-1/api/__internal/builder-auth/external',
+      'POST https://shared-runtime.example/tenant/project-1/mcp/agent-instructions',
+    ],
+  );
+  const projectUpstreamCalls = connectionUpstreamCalls.filter(call => call.url.origin === projectUrl);
+  const sharedRuntimeCalls = connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin);
   assert.ok(projectUpstreamCalls.every(call => call.serviceAuthentication === ''));
   assert.ok(sharedRuntimeCalls.every(call => call.serviceAuthentication === ''));
   assert.equal(projectUpstreamCalls[0]?.authorization, '');
   assert.equal(projectUpstreamCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
   assert.ok(projectUpstreamCalls.slice(1).every(call => call.authorization === `Bearer ${builderProjectToken}`));
-  assert.equal(sharedRuntimeCalls[0]?.authorization, `Bearer ${builderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({
+  assert.equal(sharedRuntimeCalls[0]?.authorization, '');
+  assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
+  assert.equal(sharedRuntimeCalls[1]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
+  assert.equal(sharedRuntimeCalls[1]?.body, JSON.stringify({
     scope: authorizedProjectScope,
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -818,13 +893,31 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     new RegExp([
       'dashboard-valid',
       'project-entry-token',
-      'project-builder-token',
+      builderProjectToken,
+      runtimeBuilderProjectToken,
       installerProjectAccessToken,
       platformServiceSecret,
       accessToken,
       'api\\.spala\\.ai',
     ].join('|')),
   );
+
+  const entryTokenAtSharedMount = await fetch(
+    `${sharedRuntimeOrigin}/tenant/project-1/mcp/agent-instructions`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${builderProjectToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        scope: authorizedProjectScope,
+        clientName: 'Spala codex agent',
+        deliveryMode: 'one-time',
+      }),
+    },
+  );
+  assert.equal(entryTokenAtSharedMount.status, 401, 'the projectUrl builder token must not authenticate at the shared mount');
 
   bootstrapConsumeCount = 0;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
@@ -866,7 +959,10 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     assert.equal(configFailure.status, 200);
     const failureBody = await toolBody(configFailure);
     assert.equal(failureBody.category, 'forbidden');
-    assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|project-builder-token|api\.spala\.ai/);
+    assert.equal(JSON.stringify(failureBody).includes(temporaryProjectToken), false);
+    assert.equal(JSON.stringify(failureBody).includes(builderProjectToken), false);
+    assert.equal(JSON.stringify(failureBody).includes(runtimeBuilderProjectToken), false);
+    assert.doesNotMatch(JSON.stringify(failureBody), /api\.spala\.ai/);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
       .filter(call => call.url.origin === projectUrl)
       .map(call => `${call.method} ${call.url.pathname}`), [
