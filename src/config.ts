@@ -20,6 +20,7 @@ export type AppConfig = {
   corsAllowedOrigins: readonly string[];
   mcpBodyLimitBytes: number;
   mcpRateLimitMax: number;
+  telemetryStatePath: string | null;
 };
 
 type Environment = Record<string, string | undefined>;
@@ -166,6 +167,21 @@ function oauthReplayStatePath(env: Environment, required: boolean): string {
   return normalized;
 }
 
+function telemetryStatePath(env: Environment): string | null {
+  const disabled = (env['TELEMETRY_DISABLED'] ?? '').trim().toLowerCase();
+  if (disabled === '1' || disabled === 'true') return null;
+  const value = env['TELEMETRY_STATE_PATH']?.trim();
+  if (!value) return resolve('.state/telemetry');
+  if (!isAbsolute(value) || value.length > 1_024 || /[\0\r\n]/.test(value)) {
+    configError('TELEMETRY_STATE_PATH', 'must be an absolute filesystem path without control line breaks');
+  }
+  const normalized = resolve(value);
+  if (normalized === parse(normalized).root) {
+    configError('TELEMETRY_STATE_PATH', 'must be a dedicated directory below the filesystem root');
+  }
+  return normalized;
+}
+
 export function loadConfig(env: Environment = process.env): AppConfig {
   const publicBaseUrl = absoluteUrl(env, 'PUBLIC_BASE_URL', 'http://localhost:4100', {
     originOnly: true,
@@ -203,5 +219,6 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     corsAllowedOrigins: corsOrigins(env),
     mcpBodyLimitBytes: integerEnv(env, 'MCP_BODY_LIMIT_BYTES', 1_048_576, 16_384, 10_485_760),
     mcpRateLimitMax: integerEnv(env, 'MCP_RATE_LIMIT_MAX', 120, 1, 10_000),
+    telemetryStatePath: telemetryStatePath(env),
   };
 }
