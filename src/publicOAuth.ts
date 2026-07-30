@@ -143,7 +143,7 @@ const NATIVE_REDIRECT_URIS = new Set([
   'codex://mcp/oauth/callback',
 ]);
 const GOOGLE_AGENT_IDENTITY_CALLBACK_PATH =
-  /^\/v1alpha\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/locations\/[a-z0-9-]+\/authProviders\/[a-z][a-z0-9-]{0,62}\/oauthcallback$/;
+  /^\/v1(?:alpha)?\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/locations\/[a-z0-9-]+\/authProviders\/[a-z][a-z0-9-]{0,62}\/oauthcallback$/;
 
 export { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE };
 

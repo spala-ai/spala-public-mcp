@@ -1259,7 +1259,7 @@ test('authorization codes are single-use after issuance and authorization errors
   assert.deepEqual((await responseJson(hostedRegistration)).redirect_uris, ['https://claude.ai/api/mcp/auth_callback']);
 
   const agentIdentityCallback =
-    'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback';
+    'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback';
   const agentIdentityRegistration = await fetch(`${baseUrl}/oauth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
