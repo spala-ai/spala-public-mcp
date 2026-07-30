@@ -505,7 +505,7 @@ test('project selectors enforce exactly one field before API access', async () =
   });
 });
 
-test('unscoped prepared handoffs produce workspace-only project bind plans without URL mutation', async () => {
+test('project tools reject an unscoped prepared handoff instead of returning conflicting URLs', async () => {
   const unscopedMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/';
   let prepareCalls = 0;
   const api = apiStub({
@@ -521,50 +521,10 @@ test('unscoped prepared handoffs produce workspace-only project bind plans witho
         name,
         arguments: { projectId: 'project-1', client: 'codex' },
       });
-      assert.notEqual(result.isError, true);
+      assert.equal(result.isError, true);
       const body = resultJson(result);
-      assert.equal(body.mcpUrl, unscopedMcpUrl);
-      const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
-      assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.15', 'project', 'bind']);
-      assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], unscopedMcpUrl);
-      assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
-      assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], handoff.projectUrl);
-      assert.equal(plan.argv[plan.argv.indexOf('--client') + 1], 'codex');
-      assert.equal(plan.argv[plan.argv.indexOf('--install-scope') + 1], 'workspace');
-      assert.equal(plan.argv.includes('--bootstrap-stdin'), true);
-      assert.equal(plan.argv.includes('--bootstrap-url'), false);
-      assert.equal(plan.argv.includes(handoff.bootstrapConsumeUrl), false);
-      assert.equal((body.bootstrap as { consumeUrl: string }).consumeUrl, handoff.bootstrapConsumeUrl);
-      assert.equal(plan.workspaceOnly, true);
-      assert.equal(plan.globalInstall, false);
-      assert.equal(plan.bindingFile, '.spala/project.json');
-      assert.deepEqual(plan.execution, {
-        method: 'process',
-        shell: false,
-        tty: true,
-        waitForRunningProcess: true,
-        stdin: {
-          tool: 'process_stdin',
-          processSource: 'running_process',
-          valueSource: 'bootstrap.consumeUrl',
-          appendNewline: true,
-          shell: false,
-          argv: false,
-        },
-        sequence: [
-          { order: 1, action: 'start_process', argvSource: 'installPlan.argv', shell: false, tty: true },
-          { order: 2, action: 'wait_for_running_process', required: true },
-          {
-            order: 3,
-            action: 'send_process_stdin',
-            tool: 'process_stdin',
-            processSource: 'running_process',
-            valueSource: 'bootstrap.consumeUrl',
-            appendNewline: true,
-          },
-        ],
-      });
-      assert.doesNotMatch(plan.argv.join(' '), /--scope user|--scope global/);
+      assert.equal(body.error, name === 'project_get_mcp_manifest' ? 'project_manifest_failed' : `${name}_failed`);
+      assert.equal('installPlan' in body, false);
     }
     assert.equal(prepareCalls, 3);
   });
@@ -642,11 +602,13 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.notEqual(connected.isError, true);
     const connectedBody = resultJson(connected);
     assert.equal(connectedBody.mcpUrl, handoff.mcpUrl);
+    assert.equal((connectedBody.handoff as Record<string, unknown>).mcpUrl, handoff.mcpUrl);
     assert.equal(connectedBody.preparedByProjectBackend, true);
     assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.15', 'project', 'bind']);
+    assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -703,7 +665,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.15', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);

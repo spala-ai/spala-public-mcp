@@ -82,6 +82,17 @@ pnpm build
 pnpm start
 ```
 
+To run the optional cross-repository contract smoke against a local installer
+checkout while keeping ordinary CI self-contained:
+
+```bash
+SPALA_MCP_INSTALLER_ROOT=/path/to/npmjs-minimal pnpm test
+```
+
+The smoke passes the generated `project bind` argv and bootstrap capability to
+the installer module directly, verifies the scoped `/<slug>/mcp` binding, and
+confirms one-time POST consumption.
+
 ## Environment
 
 Copy `.env.example` to `.env` when running locally.
@@ -98,6 +109,7 @@ Important variables:
 - `PUBLIC_MCP_PLATFORM_SERVICE_SECRET`: required dedicated service credential for the fixed internal public-MCP lifecycle and typed-operation API; never print or expose this value.
 - `PUBLIC_MCP_PLATFORM_TIMEOUT_MS`: bounded timeout for fixed platform lifecycle and operation requests (default `8000`).
 - `PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES`: maximum streamed response body accepted from fixed platform and project-runtime requests (default `1048576`).
+- `PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS`: optional comma-separated allowlist of exact HTTPS origins that may receive project-entry credentials for authoritative `/<slug>/mcp` shared-runtime mounts. Wildcards, paths, queries, credentials, and HTTP origins are rejected. Leave it empty when project MCPs use their authenticated project URL.
 - `SPALA_DASHBOARD_URL`: dashboard origin, for example `https://dashboard.spala.ai`.
 - `SPALA_PRICING_URL`: pricing page used for plan and payment recovery actions, for example `https://spala.ai/pricing/`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated exact HTTPS browser origins. Wildcards and credentials are rejected.
@@ -123,7 +135,7 @@ Single-binding ticket and authorization-code claims are stored as hash-only mark
 ## Client install
 
 ```bash
-npx --yes @spala-ai/mcp-install@0.1.15 init --client codex --yes --json
+npx --yes @spala-ai/mcp-install@0.1.16 init --client codex --yes --json
 ```
 
 For Codex this safely writes the user-scoped MCP configuration and a managed
@@ -157,17 +169,17 @@ registry metadata.
 
 ## Handoff
 
-Public MCP does not assume a project MCP URL pattern. It accepts only the complete public HTTPS `mcpUrl` and `manifestUrl` returned by the authenticated project handoff. Project MCP URLs may contain one canonical `scope` query composed only of `builder`, `project`, and `data`; arbitrary queries, credentials, fragments, duplicate scopes, and noncanonical URLs are rejected. The exact accepted string, including `/mcp/` and scope query, is preserved.
+Public MCP accepts only the complete public HTTPS `mcpUrl` and `manifestUrl` returned by the authenticated project handoff. Before sending the reusable project-entry credential to a runtime builder-auth endpoint, it requires the MCP mount base to match the authenticated `projectUrl` origin and path exactly. This supports standalone deployments and custom domains without extra configuration. A distinct shared-runtime origin is fail-closed unless it appears exactly in `PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS`, and configured shared runtimes must use the authoritative `/<slug>/mcp` mount shape. Project MCP URLs may contain one canonical `scope` query composed only of `builder`, `project`, and `data`; arbitrary queries, credentials, fragments, duplicate scopes, and noncanonical URLs are rejected. The exact accepted string, including `/mcp/` and scope query, is preserved.
 
 Agentic workspace binding currently supports four client identifiers: `codex`, `roo`, `claude-code`, and `cursor`. Other applications may connect to the public MCP through their own MCP configuration, but `project_connect` does not return an executable project-binding plan for them. Without `client`, install-capable tools return `client_selection_required` and no executable plan.
 
 Successful Codex connection returns an argv with this contract:
 
 ```txt
-npx --yes @spala-ai/mcp-install@0.1.15 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-mcp-url> --name <deterministic-server-name> --client codex --install-scope workspace --bootstrap-stdin --exact-url --yes --json
+npx --yes @spala-ai/mcp-install@0.1.16 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client codex --install-scope workspace --bootstrap-stdin --exact-url --yes --json
 ```
 
-Run the argv immediately as a direct process from the intended project root with `tty:true` and `shell:false`. Wait for the process tool to report a running process, then use the process stdin tool to send `bootstrap.consumeUrl` plus a newline. Never interpolate the capability into shell text or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. `--exact-url` preserves the complete clean handoff URL without adding a default scope. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
+Run the argv immediately as a direct process from the intended project root with `tty:true` and `shell:false`. Wait for the process tool to report a running process, then use the process stdin tool to send `bootstrap.consumeUrl` plus a newline. Never interpolate the capability into shell text or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. The handoff, top-level response, install plan, and bootstrap exchange use the same authorized scoped MCP endpoint; subset scopes are never widened. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
 
 After the authenticated contract returns an exact project MCP URL, the agent should connect to that project MCP and call:
 
