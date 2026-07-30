@@ -226,6 +226,31 @@ test('authorization code redemption permits omitted redirect_uri and binds any s
   }
 });
 
+test('authorization code redemption permits omitted resource and rejects a supplied mismatch', async () => {
+  const statePath = mkdtempSync(join(tmpdir(), 'public-oauth-optional-resource-'));
+  try {
+    const facade = new PublicOAuthFacade(testConfig(statePath));
+    const omittedGrant = createGrant(facade);
+    const omittedInput = { ...omittedGrant.redeemInput };
+    delete (omittedInput as Partial<typeof omittedInput>).resource;
+    const omitted = await facade.redeem(omittedInput, async () => PLATFORM_TOKENS);
+    assert.equal(omitted.resource, RESOURCE);
+    facade.wrapTokenSet(omitted.tokenSet, omitted.clientId, omitted.resource);
+    omitted.complete();
+
+    const mismatchGrant = createGrant(facade);
+    await assert.rejects(
+      facade.redeem({
+        ...mismatchGrant.redeemInput,
+        resource: 'https://agent.spala.ai/a2a/jsonrpc',
+      }, async () => PLATFORM_TOKENS),
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_grant',
+    );
+  } finally {
+    rmSync(statePath, { recursive: true, force: true });
+  }
+});
+
 test('a failed platform exchange reserves the exact code binding for a safe retry', async () => {
   const statePath = mkdtempSync(join(tmpdir(), 'public-oauth-retryable-code-'));
   try {

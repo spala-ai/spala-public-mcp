@@ -651,7 +651,7 @@ async function redeem(
   code: string,
   verifier: string,
   redirectUri: string | null = 'http://127.0.0.1:3939/callback',
-  resource = 'https://mcp.spala.ai/mcp',
+  resource: string | null = 'https://mcp.spala.ai/mcp',
 ): Promise<Response> {
   return fetch(`${baseUrl}/oauth/token`, {
     method: 'POST',
@@ -660,7 +660,7 @@ async function redeem(
       grant_type: 'authorization_code',
       client_id: clientId,
       ...(redirectUri === null ? {} : { redirect_uri: redirectUri }),
-      resource,
+      ...(resource === null ? {} : { resource }),
       code,
       code_verifier: verifier,
     }),
@@ -1295,6 +1295,32 @@ test('authorization code redemption allows an omitted redirect_uri but rejects a
   const recovered = await redeem(mismatched.clientId, mismatched.code, mismatched.verifier);
   assert.equal(recovered.status, 200);
   assertNoRawPlatformTokens(await responseJson(recovered));
+});
+
+test('authorization code redemption allows an omitted resource but rejects a supplied mismatch', async () => {
+  const omitted = await authorize('dashboard-valid', 'https://agent.spala.ai/a2a/jsonrpc');
+  const omittedResponse = await redeem(
+    omitted.clientId,
+    omitted.code,
+    omitted.verifier,
+    'http://127.0.0.1:3939/callback',
+    null,
+  );
+  assert.equal(omittedResponse.status, 200);
+  const token = await responseJson(omittedResponse);
+  assert.equal(token.resource, 'https://agent.spala.ai/a2a/jsonrpc');
+  assertNoRawPlatformTokens(token);
+
+  const mismatched = await authorize('dashboard-valid', 'https://agent.spala.ai/a2a/jsonrpc');
+  const mismatchResponse = await redeem(
+    mismatched.clientId,
+    mismatched.code,
+    mismatched.verifier,
+    'http://127.0.0.1:3939/callback',
+    'https://mcp.spala.ai/mcp',
+  );
+  assert.equal(mismatchResponse.status, 400);
+  assert.equal((await responseJson(mismatchResponse)).error, 'invalid_grant');
 });
 
 test('concurrent authorization code redemption has one owner and never revokes the winner', async () => {
