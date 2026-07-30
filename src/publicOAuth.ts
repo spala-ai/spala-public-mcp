@@ -1030,7 +1030,14 @@ export class PublicOAuthFacade {
       ? code.redirectUri
       : validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048));
     const verifier = requiredString(input['code_verifier'], 'code_verifier', 128);
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || input['resource'] !== code.resource || !equal(clientId, code.clientId) || redirectUri !== code.redirectUri || !equal(sha256Base64Url(verifier), code.codeChallenge)) {
+    const requestedResource = input['resource'];
+    if (
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)
+      || (requestedResource !== undefined && requestedResource !== code.resource)
+      || !equal(clientId, code.clientId)
+      || redirectUri !== code.redirectUri
+      || !equal(sha256Base64Url(verifier), code.codeChallenge)
+    ) {
       throw new PublicOAuthError('invalid_grant', 'The authorization code cannot be redeemed.');
     }
     const bindingHash = publicMcpClientHash(code.clientId);
