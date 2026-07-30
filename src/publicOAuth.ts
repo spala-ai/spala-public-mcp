@@ -21,6 +21,8 @@ type ClientRegistration = {
   kind: 'client';
   clientId: string;
   redirectUris: string[];
+  tokenEndpointAuthMethod?: 'none' | 'client_secret_post';
+  clientSecretHash?: string;
   expiresAt: number;
 };
 
@@ -48,7 +50,7 @@ type DelegatedAccessToken = {
   kind: 'delegated-access';
   platformAccessToken: string;
   clientHash: string;
-  resource: typeof PUBLIC_MCP_RESOURCE;
+  resource: string;
   scope: typeof PUBLIC_MCP_SCOPE;
   expiresAt: number;
 };
@@ -57,7 +59,7 @@ type DelegatedRefreshToken = {
   kind: 'delegated-refresh';
   platformRefreshToken: string;
   clientHash: string;
-  resource: typeof PUBLIC_MCP_RESOURCE;
+  resource: string;
   scope: typeof PUBLIC_MCP_SCOPE;
   expiresAt: number;
 };
@@ -130,6 +132,8 @@ const REPLAY_BUCKET_PATTERN = /^\d+$/;
 const HOSTED_REDIRECT_URIS = new Set([
   'https://claude.ai/api/mcp/auth_callback',
   'https://vscode.dev/redirect',
+  'https://vertexaisearch.cloud.google.com/oauth-redirect',
+  'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
 ]);
 const NATIVE_REDIRECT_URIS = new Set([
   'cursor://anysphere.cursor-mcp/oauth/callback',
@@ -810,16 +814,79 @@ export class PublicOAuthFacade {
     this.replayStore = new DurableReplayStore(config.publicOAuthReplayStatePath);
   }
 
-  register(input: unknown): { clientId: string; redirectUris: string[]; expiresAt: number } {
+  private isAllowedResource(value: unknown): value is string {
+    return value === PUBLIC_MCP_RESOURCE
+      || (this.config.spalaAgentA2aResourceUrl !== null
+        && value === this.config.spalaAgentA2aResourceUrl);
+  }
+
+  private requireAllowedResource(value: unknown, error = 'invalid_target'): string {
+    if (!this.isAllowedResource(value)) {
+      throw new PublicOAuthError(error, 'The OAuth resource is invalid.');
+    }
+    return value;
+  }
+
+  register(input: unknown): {
+    clientId: string;
+    clientSecret?: string;
+    redirectUris: string[];
+    tokenEndpointAuthMethod: 'none' | 'client_secret_post';
+    expiresAt: number;
+  } {
     const record = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
     const values = record?.['redirect_uris'];
     if (!Array.isArray(values) || values.length < 1 || values.length > 16) {
       throw new PublicOAuthError('invalid_client_metadata', 'Provide between one and sixteen redirect_uris.');
     }
     const redirectUris = [...new Set(values.map(value => validateRedirectUri(requiredString(value, 'redirect_uri', 2_048))))];
+    const tokenEndpointAuthMethod = record?.['token_endpoint_auth_method'] ?? 'none';
+    if (tokenEndpointAuthMethod !== 'none' && tokenEndpointAuthMethod !== 'client_secret_post') {
+      throw new PublicOAuthError('invalid_client_metadata', 'Unsupported token_endpoint_auth_method.');
+    }
     const expiresAt = nowSeconds() + this.config.publicOAuthClientLifetimeSeconds;
-    const clientId = encrypt(this.config, { kind: 'client', clientId: randomId(), redirectUris, expiresAt });
-    return { clientId, redirectUris, expiresAt };
+    const clientSecret = tokenEndpointAuthMethod === 'client_secret_post' ? randomId() : undefined;
+    const clientId = encrypt(this.config, {
+      kind: 'client',
+      clientId: randomId(),
+      redirectUris,
+      tokenEndpointAuthMethod,
+      ...(clientSecret ? { clientSecretHash: sha256Base64Url(clientSecret) } : {}),
+      expiresAt,
+    });
+    return { clientId, clientSecret, redirectUris, tokenEndpointAuthMethod, expiresAt };
+  }
+
+  private authenticateTokenClient(input: Record<string, unknown>): {
+    clientId: string;
+    registration: ClientRegistration;
+  } {
+    const clientId = requiredString(input['client_id'], 'client_id', 16_384);
+    let registration: EncryptedPayload;
+    try {
+      registration = decrypt(this.config, clientId);
+    } catch {
+      throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
+    }
+    if (registration.kind !== 'client') {
+      throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
+    }
+    const method = registration.tokenEndpointAuthMethod ?? 'none';
+    if (method === 'client_secret_post') {
+      let clientSecret: string;
+      try {
+        clientSecret = requiredString(input['client_secret'], 'client_secret', 512);
+      } catch {
+        throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
+      }
+      if (
+        typeof registration.clientSecretHash !== 'string'
+        || !equal(sha256Base64Url(clientSecret), registration.clientSecretHash)
+      ) {
+        throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
+      }
+    }
+    return { clientId, registration };
   }
 
   createAuthorizationTicket(input: Record<string, unknown>): string {
@@ -836,7 +903,7 @@ export class PublicOAuthFacade {
       throw new PublicOAuthError('invalid_request', 'The redirect_uri is not registered for this client.');
     }
     if (input['response_type'] !== 'code') throw new PublicOAuthError('unsupported_response_type', 'Only authorization code flow is supported.');
-    if (input['resource'] !== PUBLIC_MCP_RESOURCE) throw new PublicOAuthError('invalid_target', 'The OAuth resource is invalid.');
+    const resource = this.requireAllowedResource(input['resource']);
     if (input['scope'] !== PUBLIC_MCP_SCOPE) {
       throw new PublicOAuthError('invalid_scope', `The OAuth scope must be ${PUBLIC_MCP_SCOPE}.`);
     }
@@ -851,7 +918,7 @@ export class PublicOAuthFacade {
       redirectUri,
       state,
       codeChallenge,
-      resource: PUBLIC_MCP_RESOURCE,
+      resource,
       scope: PUBLIC_MCP_SCOPE,
       expiresAt: nowSeconds() + this.config.publicOAuthTicketLifetimeSeconds,
     });
@@ -951,18 +1018,26 @@ export class PublicOAuthFacade {
     tokenSet: PublicOAuthTokenSet;
     clientId: string;
     clientHash: string;
+    resource: string;
     complete: () => void;
   }> {
     if (input['grant_type'] !== 'authorization_code') throw new PublicOAuthError('unsupported_grant_type', 'Only authorization_code is supported.');
     const codeValue = requiredString(input['code'], 'code', 16_384);
     const code = decrypt(this.config, codeValue, true);
     if (code.kind !== 'code') throw new PublicOAuthError('invalid_grant', 'The authorization code is invalid.');
-    const clientId = requiredString(input['client_id'], 'client_id', 16_384);
+    const { clientId } = this.authenticateTokenClient(input);
     const redirectUri = input['redirect_uri'] === undefined
       ? code.redirectUri
       : validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048));
     const verifier = requiredString(input['code_verifier'], 'code_verifier', 128);
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || input['resource'] !== code.resource || !equal(clientId, code.clientId) || redirectUri !== code.redirectUri || !equal(sha256Base64Url(verifier), code.codeChallenge)) {
+    const requestedResource = input['resource'];
+    if (
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)
+      || (requestedResource !== undefined && requestedResource !== code.resource)
+      || !equal(clientId, code.clientId)
+      || redirectUri !== code.redirectUri
+      || !equal(sha256Base64Url(verifier), code.codeChallenge)
+    ) {
       throw new PublicOAuthError('invalid_grant', 'The authorization code cannot be redeemed.');
     }
     const bindingHash = publicMcpClientHash(code.clientId);
@@ -1023,6 +1098,7 @@ export class PublicOAuthFacade {
       tokenSet,
       clientId: code.clientId,
       clientHash: bindingHash,
+      resource: code.resource,
       complete: () => this.replayStore.completeRedemption(
         code.codeId,
         redemptionExpiresAt,
@@ -1038,27 +1114,21 @@ export class PublicOAuthFacade {
     clientHash: string;
     resultId: string;
     resultExpiresAt: number;
+    resource: string;
   } {
     if (input['grant_type'] !== 'refresh_token') throw new PublicOAuthError('unsupported_grant_type', 'Unsupported OAuth grant type.');
     const refreshToken = requiredString(input['refresh_token'], 'refresh_token', 16_384);
     if (/\s/.test(refreshToken)) throw new PublicOAuthError('invalid_grant', 'The refresh token is invalid.');
-    const clientId = requiredString(input['client_id'], 'client_id', 16_384);
-    let registration: EncryptedPayload;
-    try {
-      registration = decrypt(this.config, clientId);
-    } catch {
-      throw new PublicOAuthError('invalid_grant', 'The OAuth client is invalid.');
-    }
-    if (registration.kind !== 'client') throw new PublicOAuthError('invalid_grant', 'The OAuth client is invalid.');
-    if (input['resource'] !== undefined && input['resource'] !== PUBLIC_MCP_RESOURCE) {
-      throw new PublicOAuthError('invalid_grant', 'The refresh token cannot be redeemed.');
-    }
+    const { clientId } = this.authenticateTokenClient(input);
     if (input['scope'] !== undefined && input['scope'] !== PUBLIC_MCP_SCOPE) {
       throw new PublicOAuthError('invalid_scope', `The OAuth scope must be ${PUBLIC_MCP_SCOPE}.`);
     }
     const clientHash = publicMcpClientHash(clientId);
     const delegated = this.readDelegatedRefreshToken(refreshToken, false);
-    if (!equal(delegated.clientHash, clientHash)) {
+    if (
+      !equal(delegated.clientHash, clientHash)
+      || (input['resource'] !== undefined && input['resource'] !== delegated.resource)
+    ) {
       throw new PublicOAuthError('invalid_grant', 'The refresh token cannot be redeemed.');
     }
     return {
@@ -1068,10 +1138,11 @@ export class PublicOAuthFacade {
       resultId: requestFingerprint(this.config, 'refresh-result-v1', [
         refreshToken,
         clientHash,
-        PUBLIC_MCP_RESOURCE,
+        delegated.resource,
         PUBLIC_MCP_SCOPE,
       ]),
       resultExpiresAt: delegated.expiresAt,
+      resource: delegated.resource,
     };
   }
 
@@ -1079,7 +1150,7 @@ export class PublicOAuthFacade {
     tokenSet: PublicOAuthTokenSet,
     refresh: ReturnType<PublicOAuthFacade['validateRefresh']>,
   ): PublicOAuthClientTokenSet {
-    const wrapped = this.wrapTokenSet(tokenSet, refresh.clientId);
+    const wrapped = this.wrapTokenSet(tokenSet, refresh.clientId, refresh.resource);
     const cacheExpiresAt = Math.min(
       refresh.resultExpiresAt,
       nowSeconds() + REFRESH_RESULT_CACHE_SECONDS,
@@ -1164,10 +1235,12 @@ export class PublicOAuthFacade {
   wrapTokenSet(
     tokenSet: PublicOAuthTokenSet,
     clientIdValue: string,
+    resourceValue: string = PUBLIC_MCP_RESOURCE,
   ): PublicOAuthClientTokenSet {
     const clientId = requiredString(clientIdValue, 'client_id', 16_384);
     const registration = decrypt(this.config, clientId);
     if (registration.kind !== 'client') throw new PublicOAuthError('invalid_grant', 'The OAuth client is invalid.');
+    const resource = this.requireAllowedResource(resourceValue, 'invalid_grant');
     const platformAccessToken = requiredString(tokenSet.accessToken, 'platform access token', 8_192);
     const refreshToken = requiredString(tokenSet.refreshToken, 'refresh token', 16_384);
     const currentTime = nowSeconds();
@@ -1190,7 +1263,7 @@ export class PublicOAuthFacade {
         kind: 'delegated-access',
         platformAccessToken,
         clientHash: publicMcpClientHash(clientId),
-        resource: PUBLIC_MCP_RESOURCE,
+        resource,
         scope: PUBLIC_MCP_SCOPE,
         expiresAt: accessExpiresAt,
       }, 'delegated-access', 'v1a') as `v1a.${string}`,
@@ -1198,7 +1271,7 @@ export class PublicOAuthFacade {
         kind: 'delegated-refresh',
         platformRefreshToken: refreshToken,
         clientHash: publicMcpClientHash(clientId),
-        resource: PUBLIC_MCP_RESOURCE,
+        resource,
         scope: PUBLIC_MCP_SCOPE,
         expiresAt: registration.expiresAt,
       }, 'delegated-refresh', 'v1r') as `v1r.${string}`,
@@ -1206,14 +1279,14 @@ export class PublicOAuthFacade {
     };
   }
 
-  delegatedAccessToken(value: string): { platformAccessToken: string; clientHash: string } {
+  delegatedAccessToken(value: string): { platformAccessToken: string; clientHash: string; resource: string } {
     return this.readDelegatedAccessToken(value, false);
   }
 
   private readDelegatedAccessToken(
     value: string,
     allowExpired: boolean,
-  ): { platformAccessToken: string; clientHash: string } {
+  ): { platformAccessToken: string; clientHash: string; resource: string } {
     let token: EncryptedPayload;
     try {
       token = decrypt(this.config, value, allowExpired);
@@ -1223,7 +1296,7 @@ export class PublicOAuthFacade {
     if (
       !value.startsWith('v1a.')
       || token.kind !== 'delegated-access'
-      || token.resource !== PUBLIC_MCP_RESOURCE
+      || !this.isAllowedResource(token.resource)
       || token.scope !== PUBLIC_MCP_SCOPE
       || !/^[a-f0-9]{64}$/.test(token.clientHash)
       || typeof token.platformAccessToken !== 'string'
@@ -1236,13 +1309,14 @@ export class PublicOAuthFacade {
     return {
       platformAccessToken: token.platformAccessToken,
       clientHash: token.clientHash,
+      resource: token.resource,
     };
   }
 
   private readDelegatedRefreshToken(
     value: string,
     allowExpired: boolean,
-  ): { platformRefreshToken: string; clientHash: string; expiresAt: number } {
+  ): { platformRefreshToken: string; clientHash: string; resource: string; expiresAt: number } {
     let token: EncryptedPayload;
     try {
       token = decrypt(this.config, value, allowExpired);
@@ -1252,7 +1326,7 @@ export class PublicOAuthFacade {
     if (
       !value.startsWith('v1r.')
       || token.kind !== 'delegated-refresh'
-      || token.resource !== PUBLIC_MCP_RESOURCE
+      || !this.isAllowedResource(token.resource)
       || token.scope !== PUBLIC_MCP_SCOPE
       || !/^[a-f0-9]{64}$/.test(token.clientHash)
       || typeof token.platformRefreshToken !== 'string'
@@ -1265,6 +1339,7 @@ export class PublicOAuthFacade {
     return {
       platformRefreshToken: token.platformRefreshToken,
       clientHash: token.clientHash,
+      resource: token.resource,
       expiresAt: token.expiresAt,
     };
   }

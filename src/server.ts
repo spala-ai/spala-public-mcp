@@ -189,7 +189,7 @@ function publicOAuthMetadata() {
     registration_endpoint: `${publicAuthorizationServerUrl()}/oauth/register`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
-    token_endpoint_auth_methods_supported: ['none'],
+    token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
     scopes_supported: MCP_SCOPES,
   };
@@ -1031,8 +1031,14 @@ app.post('/oauth/register', (req, res) => {
       client_id: registration.clientId,
       client_id_issued_at: Math.floor(Date.now() / 1_000),
       client_id_expires_at: registration.expiresAt,
+      ...(registration.clientSecret
+        ? {
+            client_secret: registration.clientSecret,
+            client_secret_expires_at: registration.expiresAt,
+          }
+        : {}),
       redirect_uris: registration.redirectUris,
-      token_endpoint_auth_method: 'none',
+      token_endpoint_auth_method: registration.tokenEndpointAuthMethod,
     });
   } catch (error) {
     recordTelemetry('oauth_register', {
@@ -1093,7 +1099,7 @@ app.post('/oauth/dashboard/approve', async (req, res) => {
 
 app.post('/oauth/token', async (req, res) => {
   const input = oauthInput(req.body);
-  const sendToken = (token: PublicOAuthClientTokenSet) => {
+  const sendToken = (token: PublicOAuthClientTokenSet, resource: string) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       access_token: token.accessToken,
@@ -1101,7 +1107,7 @@ app.post('/oauth/token', async (req, res) => {
       token_type: 'Bearer',
       expires_in: token.expiresIn,
       scope: PUBLIC_MCP_SCOPE,
-      resource: publicMcpUrl(),
+      resource,
     });
   };
   try {
@@ -1114,10 +1120,10 @@ app.post('/oauth/token', async (req, res) => {
         }),
         isTemporaryOAuthUpstreamError,
       );
-      const tokens = publicOAuth.wrapTokenSet(redemption.tokenSet, redemption.clientId);
+      const tokens = publicOAuth.wrapTokenSet(redemption.tokenSet, redemption.clientId, redemption.resource);
       redemption.complete();
       recordTelemetry('oauth_token', { ok: true, grant: 'authorization_code' });
-      sendToken(tokens);
+      sendToken(tokens, redemption.resource);
       return;
     }
     if (input['grant_type'] !== 'refresh_token') throw new PublicOAuthError('unsupported_grant_type', 'Unsupported OAuth grant type.');
@@ -1127,7 +1133,7 @@ app.post('/oauth/token', async (req, res) => {
       clientHash: refresh.clientHash,
     });
     recordTelemetry('oauth_token', { ok: true, grant: 'refresh_token' });
-    sendToken(publicOAuth.wrapRefreshTokenSet(tokens, refresh));
+    sendToken(publicOAuth.wrapRefreshTokenSet(tokens, refresh), refresh.resource);
   } catch (error) {
     recordTelemetry('oauth_token', {
       ok: false,
@@ -1324,7 +1330,10 @@ app.post('/mcp', async (req, res) => {
     const requestApi = createSpalaApiClient(config, delegatedAccess);
     try {
       const verifiedPrincipal = await requestApi.getPrincipal();
-      const server = createSpalaPublicMcpServer(config, requestApi, { verifiedPrincipal });
+      const server = createSpalaPublicMcpServer(config, requestApi, {
+        verifiedPrincipal,
+        oauthResource: delegatedAccess.resource,
+      });
       let transport: StreamableHTTPServerTransport | null = null;
       try {
         transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

@@ -73,7 +73,10 @@ async function withVerifiedClient<T>(
   run: (client: Client) => Promise<T>,
   verifiedPrincipal: SpalaPrincipal = principal,
 ): Promise<T> {
-  const server = createSpalaPublicMcpServer(config, api, { verifiedPrincipal });
+  const server = createSpalaPublicMcpServer(config, api, {
+    verifiedPrincipal,
+    oauthResource: 'https://agent.spala.ai/a2a/jsonrpc',
+  });
   const client = new Client({ name: 'mcp-test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -530,6 +533,41 @@ test('project tools reject an unscoped prepared handoff instead of returning con
   });
 });
 
+test('A2A project connection returns a server-side bootstrap without installer argv', async () => {
+  const calls: string[] = [];
+  const api = apiStub({
+    async listProjects() {
+      calls.push('list');
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp(projectId, client) {
+      calls.push(`prepare:${projectId}:${client}`);
+      return handoff;
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: 'project-1', client: 'a2a' },
+    });
+    assert.notEqual(result.isError, true);
+    const body = resultJson(result);
+    const scopedMcpUrl = handoff.mcpUrl;
+    assert.equal(body.connectionMode, 'server_side_a2a');
+    assert.equal(body.workspaceOnly, false);
+    assert.equal(body.mcpUrl, scopedMcpUrl);
+    assert.equal((body.handoff as { mcpUrl: string }).mcpUrl, scopedMcpUrl);
+    assert.equal((body.bootstrap as { consumeUrl: string }).consumeUrl, handoff.bootstrapConsumeUrl);
+    const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
+    assert.deepEqual(plan.argv, []);
+    assert.equal(plan.client, 'a2a');
+    assert.equal(plan.credentialMode, 'in_process_after_bootstrap');
+    assert.equal(JSON.stringify(body).split(handoff.bootstrapConsumeUrl).length - 1, 1);
+  });
+  assert.deepEqual(calls, ['list', 'prepare:project-1:a2a']);
+});
+
 test('project_list and project_create use authoritative organization inputs and report a real write', async () => {
   const received: Array<unknown> = [];
   const api = apiStub({
@@ -781,6 +819,7 @@ test('account_status reports only request-verified identity state', async () => 
     assert.deepEqual(resultJson(result), {
       authenticated: true,
       tokenStatus: 'active',
+      oauthResource: 'https://agent.spala.ai/a2a/jsonrpc',
       subject: 'test-user',
       user: { id: 'test-user', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
       organizations: [{ id: 'org-1', name: 'Test organization' }],
