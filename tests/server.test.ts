@@ -1258,11 +1258,32 @@ test('authorization codes are single-use after issuance and authorization errors
   assert.equal(hostedRegistration.status, 201);
   assert.deepEqual((await responseJson(hostedRegistration)).redirect_uris, ['https://claude.ai/api/mcp/auth_callback']);
 
+  const agentIdentityCallback =
+    'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback';
+  const agentIdentityRegistration = await fetch(`${baseUrl}/oauth/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      client_name: 'Spala Gemini Coordinator',
+      redirect_uris: [agentIdentityCallback],
+      token_endpoint_auth_method: 'client_secret_post',
+    }),
+  });
+  assert.equal(agentIdentityRegistration.status, 201);
+  assert.deepEqual(
+    (await responseJson(agentIdentityRegistration)).redirect_uris,
+    [agentIdentityCallback],
+  );
+
   for (const redirectUri of [
     'https://claude.com/api/mcp/auth_callback',
     'https://claude.ai/api/mcp/auth_callback/',
     'https://subdomain.claude.ai/api/mcp/auth_callback',
     'https://claude.ai/api/mcp/auth_callback?next=https://evil.example',
+    `${agentIdentityCallback}?next=https://evil.example`,
+    `${agentIdentityCallback}#fragment`,
+    agentIdentityCallback.replace('agentidentitycredentials.googleapis.com', 'agentidentitycredentials.googleapis.com.evil.example'),
+    agentIdentityCallback.replace('/oauthcallback', '/oauthcallback/extra'),
     'codex://attacker.example/callback',
     'claude://attacker.example/oauth/callback',
     'vscode://attacker.example/mcp/oauth/callback',

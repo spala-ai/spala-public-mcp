@@ -142,6 +142,8 @@ const NATIVE_REDIRECT_URIS = new Set([
   'claude://mcp/oauth/callback',
   'codex://mcp/oauth/callback',
 ]);
+const GOOGLE_AGENT_IDENTITY_CALLBACK_PATH =
+  /^\/v1alpha\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/locations\/[a-z0-9-]+\/authProviders\/[a-z][a-z0-9-]{0,62}\/oauthcallback$/;
 
 export { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE };
 
@@ -274,8 +276,21 @@ function validateRedirectUri(value: string): string {
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   const localHttp = url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(hostname);
   const hosted = HOSTED_REDIRECT_URIS.has(value) && url.toString() === value;
+  const googleAgentIdentity = (
+    url.protocol === 'https:'
+    && hostname === 'agentidentitycredentials.googleapis.com'
+    && url.port === ''
+    && GOOGLE_AGENT_IDENTITY_CALLBACK_PATH.test(url.pathname)
+    && url.toString() === value
+  );
   const native = NATIVE_REDIRECT_URIS.has(value) && url.toString() === value;
-  if ((!localHttp && !hosted && !native) || url.username || url.password || url.hash || url.search) {
+  if (
+    (!localHttp && !hosted && !googleAgentIdentity && !native)
+    || url.username
+    || url.password
+    || url.hash
+    || url.search
+  ) {
     throw new PublicOAuthError('invalid_request', 'Invalid redirect_uri.');
   }
   return url.toString();
