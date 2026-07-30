@@ -14,6 +14,7 @@ export type AppConfig = {
   publicMcpPlatformServiceSecret: string;
   publicMcpPlatformTimeoutMs: number;
   publicMcpPlatformResponseLimitBytes: number;
+  publicMcpTrustedSharedRuntimeOrigins: readonly string[];
   dashboardUrl: string;
   pricingUrl: string;
   docsUrl: string;
@@ -131,6 +132,45 @@ function corsOrigins(env: Environment): readonly string[] {
   }))];
 }
 
+function trustedSharedRuntimeOrigins(env: Environment): readonly string[] {
+  const raw = env['PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS']?.trim();
+  if (!raw) return [];
+
+  const values = raw.split(',').map(value => value.trim());
+  if (values.some(value => !value)) {
+    configError('PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS', 'contains an empty entry');
+  }
+  if (values.includes('*')) {
+    configError('PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS', 'wildcards are not allowed');
+  }
+
+  return [...new Set(values.map(value => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return configError(
+        'PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS',
+        'entries must be exact HTTPS origins',
+      );
+    }
+    if (
+      url.protocol !== 'https:'
+      || url.username
+      || url.password
+      || url.pathname !== '/'
+      || url.search
+      || url.hash
+    ) {
+      configError(
+        'PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS',
+        'entries must be exact HTTPS origins without credentials, paths, queries, or fragments',
+      );
+    }
+    return url.origin;
+  }))];
+}
+
 function oauthEncryptionSecret(env: Environment): string {
   const value = env['PUBLIC_OAUTH_ENCRYPTION_SECRET'] || '';
   if (!value) configError('PUBLIC_OAUTH_ENCRYPTION_SECRET', 'is required');
@@ -206,6 +246,7 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     publicMcpPlatformServiceSecret: platformServiceSecret(env),
     publicMcpPlatformTimeoutMs: integerEnv(env, 'PUBLIC_MCP_PLATFORM_TIMEOUT_MS', 8_000, 100, 60_000),
     publicMcpPlatformResponseLimitBytes: integerEnv(env, 'PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES', 1_048_576, 1_024, 10_485_760),
+    publicMcpTrustedSharedRuntimeOrigins: trustedSharedRuntimeOrigins(env),
     dashboardUrl: absoluteUrl(env, 'SPALA_DASHBOARD_URL', 'https://dashboard.spala.ai', {
       originOnly: true,
       allowHttpLocalhost: true,

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 const nativeFetch = globalThis.fetch;
+const localInstallerRoot = process.env['SPALA_MCP_INSTALLER_ROOT']?.trim();
 const upstreamCalls: Array<{
   url: URL;
   method: string;
@@ -51,7 +54,19 @@ const disabledPrincipalAccessTokens = new Set<string>();
 const insufficientScopeAccessTokens = new Set<string>();
 const projectConfigFailures = new Set<string>();
 const temporaryProjectToken = 'project-entry-token';
-const builderProjectToken = 'project-builder-token';
+const builderJwtSecret = 'server-test-builder-jwt-secret';
+const builderProjectToken = issueBuilderToken('root');
+const runtimeBuilderProjectToken = issueBuilderToken('project-1');
+const authorizedProjectScope = 'builder,project';
+const projectUrl = 'https://project-one.example';
+const sharedRuntimeOrigin = 'https://shared-runtime.example';
+const sharedRuntimeSlug = 'p123';
+const canonicalProjectMcpUrl = `${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/?scope=builder%2Cproject`;
+const canonicalProjectManifestUrl = `${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/install-manifest?scope=builder%2Cproject`;
+const bootstrapConsumeUrl = `${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions/mcp_agent_test/consume`;
+const installerProjectAccessToken = 'installer-only-project-access-token';
+const installerProjectAccessExpiresAt = '2099-10-01T00:00:00.000Z';
+let bootstrapConsumeCount = 0;
 let newAccountProfile: { firstName: string; lastName: string } | undefined;
 let newAccountOrganization: { id: string; name: string } | undefined;
 let credentialSequence = 0;
@@ -131,12 +146,53 @@ function assertNoRawPlatformTokens(payload: unknown): void {
   }
 }
 
+function issueBuilderToken(projectScope: string): string {
+  const encodedHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const encodedPayload = Buffer.from(JSON.stringify({
+    userId: 'builder-user-1',
+    projectScope,
+    iss: 'Spala-Builder',
+    aud: 'builder-ui',
+    exp: Math.floor(Date.now() / 1_000) + 3_600,
+  })).toString('base64url');
+  const unsigned = `${encodedHeader}.${encodedPayload}`;
+  const signature = createHmac('sha256', builderJwtSecret).update(unsigned).digest('base64url');
+  return `${unsigned}.${signature}`;
+}
+
+function builderAuthorizationHasScope(authorization: string, projectScope: string): boolean {
+  if (!authorization.startsWith('Bearer ')) return false;
+  try {
+    const token = authorization.slice('Bearer '.length);
+    const [encodedHeader, encodedPayload, signature, extra] = token.split('.');
+    if (!encodedHeader || !encodedPayload || !signature || extra) return false;
+    const unsigned = `${encodedHeader}.${encodedPayload}`;
+    const expected = createHmac('sha256', builderJwtSecret).update(unsigned).digest();
+    const actual = Buffer.from(signature, 'base64url');
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return false;
+    const header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Record<string, unknown>;
+    return header['alg'] === 'HS256'
+      && payload['iss'] === 'Spala-Builder'
+      && payload['aud'] === 'builder-ui'
+      && typeof payload['exp'] === 'number'
+      && payload['exp'] > Math.floor(Date.now() / 1_000)
+      && payload['projectScope'] === projectScope;
+  } catch {
+    return false;
+  }
+}
+
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(input instanceof Request ? input.url : input.toString());
   const headers = new Headers(init?.headers);
   const authorization = headers.get('authorization') || '';
   const serviceAuthentication = headers.get('x-spala-public-mcp-service-secret') || '';
-  if (url.origin !== 'https://api.spala.ai' && url.origin !== 'https://project-one.example') {
+  if (
+    url.origin !== 'https://api.spala.ai'
+    && url.origin !== projectUrl
+    && url.origin !== sharedRuntimeOrigin
+  ) {
     return nativeFetch(input, init);
   }
   upstreamCalls.push({
@@ -146,7 +202,65 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     serviceAuthentication,
     body: typeof init?.body === 'string' ? init.body : undefined,
   });
-  if (url.origin === 'https://project-one.example') {
+  if (url.origin === sharedRuntimeOrigin) {
+    if (url.pathname === `/${sharedRuntimeSlug}/mcp/agent-instructions/mcp_agent_test/consume`) {
+      if (init?.method !== 'POST') {
+        return Response.json({ error: 'method_not_allowed' }, { status: 405 });
+      }
+      if (authorization) {
+        return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
+      }
+      bootstrapConsumeCount += 1;
+      if (bootstrapConsumeCount > 1) {
+        return Response.json({ error: 'bootstrap_already_consumed' }, { status: 410 });
+      }
+      return Response.json({
+        access_token: installerProjectAccessToken,
+        token_type: 'Bearer',
+        expires_at: installerProjectAccessExpiresAt,
+        scopes: authorizedProjectScope.split(','),
+        mcp_url: canonicalProjectMcpUrl,
+      }, {
+        headers: {
+          'cache-control': 'no-store, no-cache, private',
+          pragma: 'no-cache',
+        },
+      });
+    }
+    if (
+      url.pathname === `/${sharedRuntimeSlug}/api/__internal/builder-auth/external`
+      && init?.method === 'POST'
+    ) {
+      if (authorization) return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
+      if (String(init.body) !== JSON.stringify({ token: temporaryProjectToken })) {
+        return Response.json({ error: 'invalid_exchange_body' }, { status: 400 });
+      }
+      return Response.json({ token: runtimeBuilderProjectToken });
+    }
+    if (
+      url.pathname === `/${sharedRuntimeSlug}/mcp/agent-instructions`
+      && init?.method === 'POST'
+    ) {
+      if (!builderAuthorizationHasScope(authorization, 'project-1')) {
+        return Response.json({ error: 'invalid_project_token' }, { status: 401 });
+      }
+      const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      if (
+        body['scope'] !== authorizedProjectScope
+        || body['deliveryMode'] !== 'one-time'
+      ) {
+        return Response.json({ error: 'bootstrap_binding_mismatch' }, { status: 400 });
+      }
+      return Response.json({
+        consumeUrl: bootstrapConsumeUrl,
+        scopes: authorizedProjectScope.split(','),
+        deliveryMode: 'one-time',
+      }, { status: 201 });
+    }
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
+
+  if (url.origin === projectUrl) {
     if (url.pathname === '/api/__internal/builder-auth/external' && init?.method === 'POST') {
       if (authorization) return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
       if (String(init.body) !== JSON.stringify({ token: temporaryProjectToken })) {
@@ -154,7 +268,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       }
       return Response.json({ token: builderProjectToken });
     }
-    if (authorization !== `Bearer ${builderProjectToken}`) {
+    if (!builderAuthorizationHasScope(authorization, 'root')) {
       return Response.json({ error: 'invalid_project_token' }, { status: 401 });
     }
     if (url.pathname === '/api/__internal/project/config' && init?.method === 'POST') {
@@ -162,12 +276,6 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         return Response.json({ error: { code: 'forbidden', message: `${builderProjectToken} must not escape` } }, { status: 403 });
       }
       return Response.json({ success: true });
-    }
-    if (url.pathname === '/mcp/agent-instructions' && init?.method === 'POST') {
-      return Response.json({
-        consumeUrl: 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume',
-        bootstrapToken: 'project-bootstrap-token-must-not-escape',
-      }, { status: 201 });
     }
     return Response.json({ error: 'not_found' }, { status: 404 });
   }
@@ -373,10 +481,10 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       projectId: 'project-1',
       projectName: 'Project One',
       status: 'ready',
-      projectUrl: 'https://project-one.example',
+      projectUrl,
       mcpEnabled: true,
-      mcpUrl: 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata',
-      manifestUrl: 'https://project-one.example/mcp/install-manifest?scope=builder%2Cproject%2Cdata',
+      mcpUrl: canonicalProjectMcpUrl,
+      manifestUrl: canonicalProjectManifestUrl,
     });
   }
   if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1' && init?.method === 'GET') {
@@ -386,7 +494,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     if (runtimeRevokedAccessTokens.has(accessToken)) {
       return Response.json({ error: 'invalid_token' }, { status: 401 });
     }
-    const encodedProjectUrl = Buffer.from('https://project-one.example').toString('base64');
+    const encodedProjectUrl = Buffer.from(projectUrl).toString('base64');
     return Response.json({
       url: `https://app.spala.ai/?url=${encodeURIComponent(encodedProjectUrl)}&auth_token=${temporaryProjectToken}`,
     });
@@ -398,6 +506,7 @@ process.env['PUBLIC_BASE_URL'] = 'https://mcp.spala.ai';
 process.env['SPALA_API_BASE_URL'] = 'https://api.spala.ai';
 process.env['PUBLIC_OAUTH_ENCRYPTION_SECRET'] = 'server-test-public-oauth-encryption-secret-32-bytes';
 process.env['PUBLIC_MCP_PLATFORM_SERVICE_SECRET'] = platformServiceSecret;
+process.env['PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS'] = sharedRuntimeOrigin;
 process.env['PUBLIC_OAUTH_REPLAY_STATE_PATH'] = replayStatePath;
 process.env['SPALA_DASHBOARD_URL'] = 'https://dashboard.spala.ai';
 process.env['SPALA_PRICING_URL'] = 'https://spala.ai/pricing/';
@@ -684,11 +793,13 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.',
   });
 
+  const callsBeforeConnect = upstreamCalls.length;
   const connected = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
   const delegatedAccessToken = latestDelegatedAccessToken();
-  assert.equal(connectedBody.mcpUrl, 'https://project-one.example/mcp/?scope=builder%2Cproject%2Cdata');
+  assert.equal(connectedBody.mcpUrl, canonicalProjectMcpUrl);
+  assert.equal((connectedBody.handoff as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(connectedBody.workspaceOnly, true);
   assert.equal(connectedBody.preparedByProjectBackend, true);
   assert.equal(connectedBody.bootstrapPreparedByProjectBackend, true);
@@ -703,17 +814,18 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.15', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
+  assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
-  assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], 'https://project-one.example');
+  assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], connectedBody.mcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--name') + 1], connectedBody.serverName);
   assert.equal(plan.argv[plan.argv.indexOf('--client') + 1], 'codex');
   assert.equal(plan.argv[plan.argv.indexOf('--install-scope') + 1], 'workspace');
   assert.equal(plan.argv.includes('--bootstrap-stdin'), true);
   assert.equal(plan.argv.includes('--bootstrap-url'), false);
-  assert.equal(plan.argv.includes('https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume'), false);
-  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, 'https://project-one.example/mcp/agent-instructions/mcp_agent_test/consume');
+  assert.equal(plan.argv.includes(bootstrapConsumeUrl), false);
+  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, bootstrapConsumeUrl);
   assert.equal(plan.globalInstall, false);
   assert.equal(plan.workspaceScope, 'workspace');
   assert.equal(plan.execution.shell, false);
@@ -733,15 +845,52 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     && call.authorization === `Bearer ${delegatedAccessToken}`
   )));
   assert.equal(upstreamCalls.some(call => call.url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp/prepare'), false);
+  const connectionUpstreamCalls = upstreamCalls.slice(callsBeforeConnect);
   assert.deepEqual(
-    upstreamCalls.filter(call => call.url.origin === 'https://project-one.example').map(call => `${call.method} ${call.url.pathname}`),
-    ['POST /api/__internal/builder-auth/external', 'POST /api/__internal/project/config', 'POST /mcp/agent-instructions'],
+    connectionUpstreamCalls.filter(call => call.url.origin === projectUrl).map(call => `${call.method} ${call.url.pathname}`),
+    ['POST /api/__internal/builder-auth/external', 'POST /api/__internal/project/config'],
   );
-  const projectUpstreamCalls = upstreamCalls.filter(call => call.url.origin === 'https://project-one.example');
+  assert.deepEqual(
+    connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
+    [
+      `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
+      `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
+    ],
+  );
+  assert.deepEqual(
+    connectionUpstreamCalls
+      .filter(call => (
+        call.url.origin === projectUrl
+        || call.url.origin === sharedRuntimeOrigin
+        || call.url.pathname.endsWith('/mcp-handoff')
+        || call.url.pathname.endsWith('/access-url')
+      ))
+      .map(call => `${call.method} ${call.url.origin}${call.url.pathname}`),
+    [
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/access-url',
+      'POST https://project-one.example/api/__internal/builder-auth/external',
+      'POST https://project-one.example/api/__internal/project/config',
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
+      `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
+      `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions`,
+    ],
+  );
+  const projectUpstreamCalls = connectionUpstreamCalls.filter(call => call.url.origin === projectUrl);
+  const sharedRuntimeCalls = connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin);
   assert.ok(projectUpstreamCalls.every(call => call.serviceAuthentication === ''));
+  assert.ok(sharedRuntimeCalls.every(call => call.serviceAuthentication === ''));
   assert.equal(projectUpstreamCalls[0]?.authorization, '');
   assert.equal(projectUpstreamCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
   assert.ok(projectUpstreamCalls.slice(1).every(call => call.authorization === `Bearer ${builderProjectToken}`));
+  assert.equal(sharedRuntimeCalls[0]?.authorization, '');
+  assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
+  assert.equal(sharedRuntimeCalls[1]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
+  assert.equal(sharedRuntimeCalls[1]?.body, JSON.stringify({
+    scope: authorizedProjectScope,
+    clientName: 'Spala codex agent',
+    deliveryMode: 'one-time',
+  }));
   assert.equal((connectedBody.handoff as Record<string, unknown>).bootstrapConsumeUrl, undefined);
   assert.equal(JSON.stringify(connectedBody).split('mcp_agent_test').length - 1, 1);
   assert.doesNotMatch(
@@ -749,13 +898,64 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     new RegExp([
       'dashboard-valid',
       'project-entry-token',
-      'project-builder-token',
-      'project-bootstrap-token-must-not-escape',
+      builderProjectToken,
+      runtimeBuilderProjectToken,
+      installerProjectAccessToken,
       platformServiceSecret,
       accessToken,
       'api\\.spala\\.ai',
     ].join('|')),
   );
+
+  const entryTokenAtSharedMount = await fetch(
+    `${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${builderProjectToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        scope: authorizedProjectScope,
+        clientName: 'Spala codex agent',
+        deliveryMode: 'one-time',
+      }),
+    },
+  );
+  assert.equal(entryTokenAtSharedMount.status, 401, 'the projectUrl builder token must not authenticate at the shared mount');
+
+  bootstrapConsumeCount = 0;
+  const wrongMethod = await fetch(bootstrapConsumeUrl);
+  assert.equal(wrongMethod.status, 405, 'installer 0.1.16 must consume the capability with POST');
+  assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
+
+  const installerResponse = await fetch(bootstrapConsumeUrl, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+  });
+  assert.equal(installerResponse.status, 200);
+  assert.match(installerResponse.headers.get('cache-control') || '', /no-store/);
+  assert.equal(installerResponse.headers.get('pragma'), 'no-cache');
+  const installerBootstrap = await responseJson(installerResponse);
+  assert.deepEqual(installerBootstrap, {
+    access_token: installerProjectAccessToken,
+    token_type: 'Bearer',
+    expires_at: installerProjectAccessExpiresAt,
+    scopes: authorizedProjectScope.split(','),
+    mcp_url: canonicalProjectMcpUrl,
+  });
+  assert.equal(installerBootstrap.mcp_url, connectedBody.mcpUrl);
+  assert.equal(installerBootstrap.mcp_url, (connectedBody.handoff as Record<string, unknown>).mcpUrl);
+  assert.equal(installerBootstrap.mcp_url, (connectedBody.installPlan as Record<string, unknown>).mcpUrl);
+  assert.equal(
+    installerBootstrap.mcp_url,
+    plan.argv[plan.argv.indexOf('--url') + 1],
+    'the consumed bootstrap and installer argv must bind the same scoped endpoint',
+  );
+  assert.doesNotMatch(JSON.stringify(connectedBody), new RegExp(installerProjectAccessToken));
+  assert.equal(plan.argv.includes(installerProjectAccessToken), false);
+  const consumedAgain = await fetch(bootstrapConsumeUrl, { method: 'POST' });
+  assert.equal(consumedAgain.status, 410, 'the installer capability must remain one-time');
 
   const callsBeforeConfigFailure = upstreamCalls.length;
   projectConfigFailures.add(builderProjectToken);
@@ -764,9 +964,12 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     assert.equal(configFailure.status, 200);
     const failureBody = await toolBody(configFailure);
     assert.equal(failureBody.category, 'forbidden');
-    assert.doesNotMatch(JSON.stringify(failureBody), /project-entry-token|project-builder-token|api\.spala\.ai/);
+    assert.equal(JSON.stringify(failureBody).includes(temporaryProjectToken), false);
+    assert.equal(JSON.stringify(failureBody).includes(builderProjectToken), false);
+    assert.equal(JSON.stringify(failureBody).includes(runtimeBuilderProjectToken), false);
+    assert.doesNotMatch(JSON.stringify(failureBody), /api\.spala\.ai/);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
-      .filter(call => call.url.origin === 'https://project-one.example')
+      .filter(call => call.url.origin === projectUrl)
       .map(call => `${call.method} ${call.url.pathname}`), [
         'POST /api/__internal/builder-auth/external',
         'POST /api/__internal/project/config',
@@ -803,6 +1006,96 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     assert.doesNotMatch(JSON.stringify(revokedBody), /upstream_unavailable|service unavailable/i);
   } finally {
     revokedAccessTokens.delete(delegatedAccessToken);
+  }
+});
+
+test('generated project bind plan and bootstrap run against the local installer contract', {
+  skip: !localInstallerRoot,
+}, async () => {
+  const installerCliPath = join(localInstallerRoot!, 'src/cli.js');
+  assert.equal(existsSync(installerCliPath), true, 'SPALA_MCP_INSTALLER_ROOT must contain src/cli.js');
+  const installer = await import(pathToFileURL(installerCliPath).href) as {
+    runCli(
+      argv: string[],
+      env: NodeJS.ProcessEnv,
+      cwd: string,
+      streams: {
+        stdin: NodeJS.ReadableStream;
+        stdout: { write(chunk: string): void };
+        stderr: { write(chunk: string): void };
+      },
+      runtime: { fetch: typeof fetch },
+    ): Promise<void>;
+  };
+
+  const authorization = await authorize();
+  const token = await responseJson(await redeem(
+    authorization.clientId,
+    authorization.code,
+    authorization.verifier,
+  ));
+  const connected = await mcpRequest(
+    'project_connect',
+    { projectId: 'project-1', client: 'codex' },
+    `Bearer ${token.access_token as string}`,
+  );
+  assert.equal(connected.status, 200);
+  const connectedBody = await toolBody(connected);
+  const plan = connectedBody.installPlan as { argv: string[]; mcpUrl: string };
+  const consumeUrl = (connectedBody.bootstrap as { consumeUrl: string }).consumeUrl;
+  assert.deepEqual(plan.argv.slice(0, 3), [
+    'npx',
+    '--yes',
+    '@spala-ai/mcp-install@0.1.16',
+  ]);
+
+  const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
+  const credentialHome = mkdtempSync(join(tmpdir(), 'spala-public-mcp-credentials-smoke-'));
+  let stdout = '';
+  let stderr = '';
+  try {
+    mkdirSync(join(workspace, '.git'));
+    mkdirSync(join(workspace, '.codex'), { recursive: true });
+    writeFileSync(join(workspace, '.codex', 'config.toml'), '[projects]\ntrust_level = "trusted"\n');
+    bootstrapConsumeCount = 0;
+
+    await installer.runCli(
+      plan.argv.slice(3),
+      { ...process.env, SPALA_MCP_CREDENTIAL_HOME: credentialHome },
+      workspace,
+      {
+        stdin: Readable.from([`${consumeUrl}\n`]),
+        stdout: { write: chunk => { stdout += chunk; } },
+        stderr: { write: chunk => { stderr += chunk; } },
+      },
+      { fetch: async (input, init) => fetch(input, init) },
+    );
+
+    const result = JSON.parse(stdout) as Record<string, unknown>;
+    const binding = JSON.parse(
+      readFileSync(join(workspace, '.spala', 'project.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(result['ok'], true);
+    assert.equal(result['outcome'], 'bound');
+    assert.equal(binding['projectId'], 'project-1');
+    assert.equal(binding['projectUrl'], projectUrl);
+    const installedMcpUrl = new URL(String(binding['mcpUrl']));
+    const plannedMcpUrl = new URL(plan.mcpUrl);
+    assert.equal(installedMcpUrl.origin, plannedMcpUrl.origin);
+    assert.equal(installedMcpUrl.pathname, plannedMcpUrl.pathname.replace(/\/+$/, ''));
+    assert.equal(installedMcpUrl.searchParams.get('scope'), plannedMcpUrl.searchParams.get('scope'));
+    assert.equal(bootstrapConsumeCount, 1, 'the local installer must POST the capability exactly once');
+    assert.equal(stderr, '');
+    assert.doesNotMatch(
+      `${stdout}\n${readFileSync(join(workspace, '.spala', 'project.json'), 'utf8')}`,
+      /mcp_agent_test|installer-only-project-access-token/,
+    );
+
+    const consumedAgain = await fetch(consumeUrl, { method: 'POST' });
+    assert.equal(consumedAgain.status, 410, 'the local installer must consume a one-time session');
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(credentialHome, { recursive: true, force: true });
   }
 });
 
@@ -1511,24 +1804,24 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.15 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 0.1.16 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
 
-  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.15 init --client <client> --yes --json');
-  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.15 init --client <client> --yes --json');
+  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
   assert.deepEqual(commands.installerNpmArgv, {
-    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.15', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.15', 'status', '--client', '<client>', '--json'],
+    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'status', '--client', '<client>', '--json'],
   });
   assert.deepEqual(commands.installerPnpmArgv, {
-    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.15', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.15', 'status', '--client', '<client>', '--json'],
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'status', '--client', '<client>', '--json'],
   });
-  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.15 init --client codex --yes --json');
+  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
-  assert.equal(installer.version, '0.1.15');
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.15']);
+  assert.equal(installer.version, '0.1.16');
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.16']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',
