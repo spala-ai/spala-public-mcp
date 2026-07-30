@@ -78,7 +78,7 @@ export type SpalaApiClient = {
   listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
-  prepareProjectMcp(projectId: string, client: 'codex' | 'roo' | 'claude-code' | 'cursor'): Promise<PreparedProjectMcpHandoff>;
+  prepareProjectMcp(projectId: string, client: 'codex' | 'roo' | 'claude-code' | 'cursor' | 'a2a'): Promise<PreparedProjectMcpHandoff>;
 };
 
 export const DEFAULT_PROJECT_MCP_SCOPE = 'builder,project,data';

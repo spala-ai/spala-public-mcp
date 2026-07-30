@@ -15,6 +15,7 @@ export type AppConfig = {
   publicMcpPlatformTimeoutMs: number;
   publicMcpPlatformResponseLimitBytes: number;
   publicMcpTrustedSharedRuntimeOrigins: readonly string[];
+  spalaAgentA2aResourceUrl: string | null;
   dashboardUrl: string;
   pricingUrl: string;
   docsUrl: string;
@@ -222,6 +223,19 @@ function telemetryStatePath(env: Environment): string | null {
   return normalized;
 }
 
+function optionalA2aResourceUrl(env: Environment): string | null {
+  const value = env['SPALA_AGENT_A2A_RESOURCE_URL']?.trim();
+  if (!value) return null;
+  const normalized = absoluteUrl(env, 'SPALA_AGENT_A2A_RESOURCE_URL', value, {
+    allowHttpLocalhost: true,
+  });
+  const url = new URL(normalized);
+  if (url.search || url.pathname !== '/a2a/jsonrpc') {
+    configError('SPALA_AGENT_A2A_RESOURCE_URL', 'must be an exact /a2a/jsonrpc resource URL without a query');
+  }
+  return normalized;
+}
+
 export function loadConfig(env: Environment = process.env): AppConfig {
   const publicBaseUrl = absoluteUrl(env, 'PUBLIC_BASE_URL', 'http://localhost:4100', {
     originOnly: true,
@@ -247,6 +261,7 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     publicMcpPlatformTimeoutMs: integerEnv(env, 'PUBLIC_MCP_PLATFORM_TIMEOUT_MS', 8_000, 100, 60_000),
     publicMcpPlatformResponseLimitBytes: integerEnv(env, 'PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES', 1_048_576, 1_024, 10_485_760),
     publicMcpTrustedSharedRuntimeOrigins: trustedSharedRuntimeOrigins(env),
+    spalaAgentA2aResourceUrl: optionalA2aResourceUrl(env),
     dashboardUrl: absoluteUrl(env, 'SPALA_DASHBOARD_URL', 'https://dashboard.spala.ai', {
       originOnly: true,
       allowHttpLocalhost: true,

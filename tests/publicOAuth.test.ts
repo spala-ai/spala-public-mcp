@@ -20,6 +20,7 @@ import { PUBLIC_MCP_SCOPE } from '../src/publicMcpContract.js';
 
 const REDIRECT_URI = 'http://127.0.0.1:3939/callback';
 const RESOURCE = 'https://mcp.spala.ai/mcp';
+const A2A_RESOURCE = 'https://agent.spala.ai/a2a/jsonrpc';
 const VERIFIER = 'v'.repeat(64);
 const APPROVAL_PROOF = 'opaque-approval-proof-valid-for-tests';
 const PLATFORM_TOKENS = {
@@ -35,6 +36,7 @@ function testConfig(statePath: string): AppConfig {
     PUBLIC_OAUTH_ENCRYPTION_SECRET: 'public-oauth-replay-test-encryption-secret-32-bytes',
     PUBLIC_OAUTH_REPLAY_STATE_PATH: statePath,
     PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'public-oauth-test-platform-service-secret-32-bytes',
+    SPALA_AGENT_A2A_RESOURCE_URL: A2A_RESOURCE,
   });
 }
 
@@ -190,6 +192,7 @@ test('approval retries are idempotent and a completed authorization code is sing
     assert.deepEqual(first.delegatedAccessToken(wrapped.accessToken), {
       platformAccessToken: PLATFORM_TOKENS.accessToken,
       clientHash: createHash('sha256').update(grant.clientId).digest('hex'),
+      resource: RESOURCE,
     });
   } finally {
     rmSync(statePath, { recursive: true, force: true });
@@ -253,6 +256,7 @@ test('a failed platform exchange reserves the exact code binding for a safe retr
     assert.deepEqual(facade.delegatedAccessToken(tokens.accessToken), {
       platformAccessToken: PLATFORM_TOKENS.accessToken,
       clientHash: exchangeInput?.clientHash,
+      resource: RESOURCE,
     });
     const validatedRefresh = facade.validateRefresh({
       grant_type: 'refresh_token',
@@ -352,7 +356,7 @@ test('delegated refresh wrappers enforce client, resource, scope, integrity, and
     Date.now = () => startedAt + 3_601_000;
     assert.throws(
       () => facade.validateRefresh(refreshInput),
-      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_grant',
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_client',
     );
   } finally {
     Date.now = originalNow;
@@ -631,6 +635,8 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
       'http://127.0.0.1:33418/callback',
       'https://claude.ai/api/mcp/auth_callback',
       'https://vscode.dev/redirect',
+      'https://vertexaisearch.cloud.google.com/oauth-redirect',
+      'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
       'cursor://anysphere.cursor-mcp/oauth/callback',
       'vscode://github.copilot-chat/mcp/oauth/callback',
       'vscode-insiders://github.copilot-chat/mcp/oauth/callback',
@@ -693,7 +699,60 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
   }
 });
 
-test('OAuth resource binding remains fixed to the canonical public MCP resource', () => {
+test('Gemini Enterprise confidential clients require their secret only at the token endpoint', async () => {
+  const statePath = mkdtempSync(join(tmpdir(), 'public-oauth-gemini-client-'));
+  try {
+    const facade = new PublicOAuthFacade(testConfig(statePath));
+    const registration = facade.register({
+      client_name: 'Google Gemini Enterprise',
+      redirect_uris: [
+        'https://vertexaisearch.cloud.google.com/oauth-redirect',
+        'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
+      ],
+      token_endpoint_auth_method: 'client_secret_post',
+    });
+    assert.equal(registration.tokenEndpointAuthMethod, 'client_secret_post');
+    assert.match(registration.clientSecret ?? '', /^[A-Za-z0-9_-]{32}$/);
+
+    const ticket = facade.createAuthorizationTicket({
+      client_id: registration.clientId,
+      redirect_uri: 'https://vertexaisearch.cloud.google.com/oauth-redirect',
+      response_type: 'code',
+      resource: A2A_RESOURCE,
+      scope: PUBLIC_MCP_SCOPE,
+      state: 'gemini-state',
+      code_challenge_method: 'S256',
+      code_challenge: createHash('sha256').update(VERIFIER, 'utf8').digest('base64url'),
+    });
+    const approval = facade.prepareApproval(ticket, APPROVAL_PROOF);
+    const { callbackUrl } = facade.approve(approval, 'gemini-platform-grant-code', 300);
+    const code = new URL(callbackUrl).searchParams.get('code');
+    assert.ok(code);
+    const redeemInput = {
+      grant_type: 'authorization_code',
+      client_id: registration.clientId,
+      redirect_uri: 'https://vertexaisearch.cloud.google.com/oauth-redirect',
+      resource: A2A_RESOURCE,
+      code,
+      code_verifier: VERIFIER,
+    };
+    await assert.rejects(
+      facade.redeem({ ...redeemInput, client_secret: 'wrong-secret' }, async () => PLATFORM_TOKENS),
+      (error: unknown) => error instanceof PublicOAuthError
+        && error.error === 'invalid_client'
+        && error.status === 401,
+    );
+    const redemption = await facade.redeem({
+      ...redeemInput,
+      client_secret: registration.clientSecret,
+    }, async () => PLATFORM_TOKENS);
+    assert.equal(redemption.resource, A2A_RESOURCE);
+  } finally {
+    rmSync(statePath, { recursive: true, force: true });
+  }
+});
+
+test('OAuth resource binding accepts only the configured MCP and A2A resources', async () => {
   const statePath = mkdtempSync(join(tmpdir(), 'public-oauth-canonical-resource-'));
   try {
     const facade = new PublicOAuthFacade(loadConfig({
@@ -702,6 +761,7 @@ test('OAuth resource binding remains fixed to the canonical public MCP resource'
       PUBLIC_OAUTH_ENCRYPTION_SECRET: 'public-oauth-canonical-resource-test-secret',
       PUBLIC_OAUTH_REPLAY_STATE_PATH: statePath,
       PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'public-oauth-canonical-service-secret-32-bytes',
+      SPALA_AGENT_A2A_RESOURCE_URL: A2A_RESOURCE,
     }));
     const { clientId } = facade.register({ redirect_uris: [REDIRECT_URI] });
     const input = {
@@ -718,6 +778,48 @@ test('OAuth resource binding remains fixed to the canonical public MCP resource'
       (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_target',
     );
     assert.match(facade.createAuthorizationTicket({ ...input, resource: RESOURCE }), /^v1\./);
+    const ticket = facade.createAuthorizationTicket({ ...input, resource: A2A_RESOURCE });
+    const approval = facade.prepareApproval(ticket, APPROVAL_PROOF);
+    const { callbackUrl } = facade.approve(
+      approval,
+      'a2a-platform-grant-code-valid-for-tests',
+      300,
+    );
+    const code = new URL(callbackUrl).searchParams.get('code');
+    assert.ok(code);
+    const redemption = await facade.redeem({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      redirect_uri: REDIRECT_URI,
+      resource: A2A_RESOURCE,
+      code,
+      code_verifier: VERIFIER,
+    }, async () => PLATFORM_TOKENS);
+    assert.equal(redemption.resource, A2A_RESOURCE);
+    const wrapped = facade.wrapTokenSet(
+      redemption.tokenSet,
+      redemption.clientId,
+      redemption.resource,
+    );
+    redemption.complete();
+    assert.equal(facade.delegatedAccessToken(wrapped.accessToken).resource, A2A_RESOURCE);
+    assert.equal(facade.validateRefresh({
+      grant_type: 'refresh_token',
+      refresh_token: wrapped.refreshToken,
+      client_id: clientId,
+      resource: A2A_RESOURCE,
+      scope: PUBLIC_MCP_SCOPE,
+    }).resource, A2A_RESOURCE);
+    assert.throws(
+      () => facade.validateRefresh({
+        grant_type: 'refresh_token',
+        refresh_token: wrapped.refreshToken,
+        client_id: clientId,
+        resource: RESOURCE,
+        scope: PUBLIC_MCP_SCOPE,
+      }),
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_grant',
+    );
   } finally {
     rmSync(statePath, { recursive: true, force: true });
   }
