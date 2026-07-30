@@ -18,6 +18,7 @@ const BASE_ENV = {
   PUBLIC_MCP_PLATFORM_TIMEOUT_MS: '2500',
   PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES: '32768',
   PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS: 'https://runtime.spala.ai,https://runtime-2.spala.ai,https://runtime.spala.ai',
+  SPALA_AGENT_A2A_RESOURCE_URL: 'https://agent.spala.ai/a2a/jsonrpc',
   PUBLIC_OAUTH_BODY_LIMIT_BYTES: '8192',
   PUBLIC_OAUTH_TICKET_LIFETIME_SECONDS: '300',
   PUBLIC_OAUTH_RATE_LIMIT_MAX: '180',
@@ -42,6 +43,7 @@ test('loadConfig parses strict valid configuration', () => {
     'https://runtime.spala.ai',
     'https://runtime-2.spala.ai',
   ]);
+  assert.equal(config.spalaAgentA2aResourceUrl, 'https://agent.spala.ai/a2a/jsonrpc');
   assert.equal(config.mcpBodyLimitBytes, 65536);
   assert.equal(config.mcpRateLimitMax, 240);
   assert.equal(config.pricingUrl, 'https://spala.ai/pricing');
@@ -70,6 +72,8 @@ test('loadConfig rejects malformed and unsafe configuration', () => {
     ['public URL credentials', { PUBLIC_BASE_URL: 'https://user:pass@mcp.spala.ai' }],
     ['API URL path', { SPALA_API_BASE_URL: 'https://api.spala.ai/private' }],
     ['insecure API origin', { SPALA_API_BASE_URL: 'http://api.spala.example' }],
+    ['A2A resource wrong path', { SPALA_AGENT_A2A_RESOURCE_URL: 'https://agent.spala.ai/mcp' }],
+    ['A2A resource query', { SPALA_AGENT_A2A_RESOURCE_URL: 'https://agent.spala.ai/a2a/jsonrpc?scope=api' }],
     ['31-byte OAuth secret', { PUBLIC_OAUTH_ENCRYPTION_SECRET: 'x'.repeat(31) }],
     ['OAuth secret line break', { PUBLIC_OAUTH_ENCRYPTION_SECRET: 'secret\nleak' }],
     ['31-byte service secret', { PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'x'.repeat(31) }],

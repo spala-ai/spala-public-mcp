@@ -43,6 +43,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'roo',
   'claude-code',
   'cursor',
+  'a2a',
 ] as const;
 export const PROJECT_INSTALLER_VERSION = '0.1.16';
 export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
@@ -989,6 +990,30 @@ function projectMcpInstallPlan(
     throw new Error('Prepared project MCP URL is missing its authorized scope.');
   }
   const serverName = projectServerName(handoff.projectId);
+  if (client === 'a2a') {
+    return {
+      argv: [],
+      command: 'server-side a2a handoff',
+      client,
+      projectId: handoff.projectId,
+      projectUrl: handoff.projectUrl,
+      mcpUrl: handoff.mcpUrl,
+      serverName,
+      exactUrl: true,
+      workspaceOnly: false,
+      globalInstall: false,
+      oneTimeBootstrap: true,
+      immediateConsumptionRequired: true,
+      bootstrapInput: 'server_side',
+      bootstrapExposedInArgv: false,
+      execution: { method: 'in_process', shell: false },
+      projectOAuthRequired: false,
+      credentialMode: 'in_process_after_bootstrap',
+      urlSource: 'exact_authenticated_handoff',
+      remoteManifestFetch: false,
+      expectedOutput: 'An in-process project MCP session bound to the exact authorized handoff.',
+    } as const;
+  }
   const runnerArgv = client === 'roo'
     ? ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC]
     : ['npx', '--yes', PROJECT_INSTALLER_SPEC];
@@ -1514,17 +1539,22 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         }, true);
       }
       const installPlan = projectMcpInstallPlan(handoff, client);
+      const serverSideA2a = client === 'a2a';
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
+      const responseHandoff = serverSideA2a
+        ? { ...publicHandoff, mcpUrl: installPlan.mcpUrl }
+        : publicHandoff;
       recordTelemetry('project_connect', { outcome: 'plan_issued', client, tool });
       return json({
         project: resolved.project,
-        handoff: publicHandoff,
-        mcpUrl: handoff.mcpUrl,
+        handoff: responseHandoff,
+        mcpUrl: serverSideA2a ? installPlan.mcpUrl : handoff.mcpUrl,
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         preparedByProjectBackend: true,
         bootstrapPreparedByProjectBackend: true,
-        workspaceOnly: true,
+        workspaceOnly: !serverSideA2a,
+        connectionMode: serverSideA2a ? 'server_side_a2a' : 'workspace_install',
         compatibilityAlias: tool === 'project_select' ? 'project_connect' : undefined,
         installPlan,
         bootstrap: {
@@ -1536,9 +1566,17 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           publicMcpFetchesUrl: false,
           projectOAuthRequired: false,
         },
-        nextSteps: PROJECT_MCP_INSTALL_NEXT_STEPS,
+        nextSteps: serverSideA2a
+          ? [
+              'Consume bootstrap.consumeUrl immediately inside the A2A service.',
+              'Use only the exact returned mcpUrl for this authorized project session.',
+              'Never expose, persist, print, or return the bootstrap URL or exchanged credential.',
+            ]
+          : PROJECT_MCP_INSTALL_NEXT_STEPS,
         intentBoundary: SPALA_BACKEND_INTENT,
-        rule: 'Use this exact clean mcpUrl only in the bound workspace. Never guess the URL or install this project MCP globally.',
+        rule: serverSideA2a
+          ? 'Consume the one-time bootstrap server-side and use the exact mcpUrl only for this authorized A2A project session.'
+          : 'Use this exact clean mcpUrl only in the bound workspace. Never guess the URL or install this project MCP globally.',
       });
     } catch (error) {
       recordTelemetry('project_connect', { ok: false, outcome: 'error', client, tool, code: telemetryErrorCode(error) });
