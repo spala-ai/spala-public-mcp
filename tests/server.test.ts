@@ -504,6 +504,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
 
 process.env['PUBLIC_BASE_URL'] = 'https://mcp.spala.ai';
 process.env['SPALA_API_BASE_URL'] = 'https://api.spala.ai';
+process.env['SPALA_AGENT_A2A_RESOURCE_URL'] = 'https://agent.spala.ai/a2a/jsonrpc';
 process.env['PUBLIC_OAUTH_ENCRYPTION_SECRET'] = 'server-test-public-oauth-encryption-secret-32-bytes';
 process.env['PUBLIC_MCP_PLATFORM_SERVICE_SECRET'] = platformServiceSecret;
 process.env['PUBLIC_MCP_TRUSTED_SHARED_RUNTIME_ORIGINS'] = sharedRuntimeOrigin;
@@ -579,7 +580,7 @@ async function toolBody(response: Response): Promise<Record<string, unknown>> {
   return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
 }
 
-async function beginAuthorization() {
+async function beginAuthorization(resource = 'https://mcp.spala.ai/mcp') {
   const registrationResponse = await fetch(`${baseUrl}/oauth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -593,7 +594,7 @@ async function beginAuthorization() {
   authorizeUrl.searchParams.set('client_id', clientId);
   authorizeUrl.searchParams.set('redirect_uri', 'http://127.0.0.1:3939/callback');
   authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('resource', 'https://mcp.spala.ai/mcp');
+  authorizeUrl.searchParams.set('resource', resource);
   authorizeUrl.searchParams.set('scope', 'api');
   authorizeUrl.searchParams.set('state', 'client-state');
   authorizeUrl.searchParams.set('code_challenge_method', 'S256');
@@ -623,8 +624,11 @@ async function createApprovalProof(request: string, dashboardToken = 'dashboard-
   return approvalProof as string;
 }
 
-async function authorize(dashboardToken = 'dashboard-valid') {
-  const { clientId, verifier, request } = await beginAuthorization();
+async function authorize(
+  dashboardToken = 'dashboard-valid',
+  resource = 'https://mcp.spala.ai/mcp',
+) {
+  const { clientId, verifier, request } = await beginAuthorization(resource);
   const approvalProof = await createApprovalProof(request, dashboardToken);
   const approval = await fetch(`${baseUrl}/oauth/dashboard/approve`, {
     method: 'POST',
@@ -647,6 +651,7 @@ async function redeem(
   code: string,
   verifier: string,
   redirectUri: string | null = 'http://127.0.0.1:3939/callback',
+  resource = 'https://mcp.spala.ai/mcp',
 ): Promise<Response> {
   return fetch(`${baseUrl}/oauth/token`, {
     method: 'POST',
@@ -655,7 +660,7 @@ async function redeem(
       grant_type: 'authorization_code',
       client_id: clientId,
       ...(redirectUri === null ? {} : { redirect_uri: redirectUri }),
-      resource: 'https://mcp.spala.ai/mcp',
+      resource,
       code,
       code_verifier: verifier,
     }),
@@ -786,6 +791,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.deepEqual(await toolBody(status), {
     authenticated: true,
     tokenStatus: 'active',
+    oauthResource: 'https://mcp.spala.ai/mcp',
     subject: 'user-1',
     user: { id: 'user-1', email: 'user@example.test', firstName: 'Test', lastName: 'User' },
     organizations: [{ id: 'org-1', name: 'First organization' }],
@@ -1598,6 +1604,30 @@ test('public MCP startup remains anonymous while native clients receive protecte
       /^Bearer error="invalid_token", resource_metadata="https:\/\/mcp\.spala\.ai\/\.well-known\/oauth-protected-resource\/mcp", scope="api"$/,
     );
   }
+});
+
+test('account status reports the validated OAuth resource for A2A audience enforcement', async () => {
+  const authorization = await authorize(
+    'dashboard-valid',
+    'https://agent.spala.ai/a2a/jsonrpc',
+  );
+  const token = await responseJson(await redeem(
+    authorization.clientId,
+    authorization.code,
+    authorization.verifier,
+    'http://127.0.0.1:3939/callback',
+    'https://agent.spala.ai/a2a/jsonrpc',
+  ));
+  const response = await mcpRequest(
+    'account_status',
+    {},
+    `Bearer ${token.access_token as string}`,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(
+    (await toolBody(response)).oauthResource,
+    'https://agent.spala.ai/a2a/jsonrpc',
+  );
 });
 
 test('protected tools return an api-scope challenge when the platform rejects scope', async () => {

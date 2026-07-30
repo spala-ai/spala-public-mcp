@@ -36,6 +36,7 @@ type ToolResult = {
 
 export type RequestContext = {
   verifiedPrincipal?: SpalaPrincipal;
+  oauthResource?: string;
 };
 
 export const SUPPORTED_INSTALL_CLIENTS = [
@@ -409,13 +410,14 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
     {
       authenticated: BOOLEAN_OUTPUT,
       tokenStatus: STRING_OUTPUT,
+      oauthResource: STRING_OUTPUT,
       subject: STRING_OUTPUT,
       user: OBJECT_OUTPUT,
       organizations: ARRAY_OUTPUT,
       accountSetup: OBJECT_OUTPUT,
       next: STRING_OUTPUT,
     },
-    ['authenticated', 'tokenStatus', 'subject', 'user', 'organizations', 'accountSetup'],
+    ['authenticated', 'tokenStatus', 'oauthResource', 'subject', 'user', 'organizations', 'accountSetup'],
   ),
   account_setup: outputObject(
     'Completed account setup and the next protected startup action.',
@@ -1369,6 +1371,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     return json({
       authenticated: true,
       tokenStatus: 'active',
+      ...(ctx.oauthResource ? { oauthResource: ctx.oauthResource } : {}),
       subject: principal.subject,
       user: principal.user,
       organizations: principal.organizations,

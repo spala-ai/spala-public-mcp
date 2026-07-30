@@ -1332,6 +1332,7 @@ app.post('/mcp', async (req, res) => {
       const verifiedPrincipal = await requestApi.getPrincipal();
       const server = createSpalaPublicMcpServer(config, requestApi, {
         verifiedPrincipal,
+        oauthResource: delegatedAccess.resource,
       });
       let transport: StreamableHTTPServerTransport | null = null;
       try {
