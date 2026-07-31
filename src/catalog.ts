@@ -44,6 +44,13 @@ export const docsIndex = [
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
+    id: 'native-agent-integrations',
+    title: 'Official Spala agent integrations',
+    url: 'https://github.com/spala-ai/agent-integrations',
+    summary: 'The official reviewed integration repository packages Spala skills and the public MCP connection for Claude Code, Codex, Gemini CLI, Cursor, and Visual Studio Code. Use its client-specific native installation instructions; use @spala-ai/mcp-install as the universal fallback.',
+    keywords: ['agent integrations', 'plugin', 'extension', 'marketplace', 'claude code', 'codex', 'gemini cli', 'cursor', 'visual studio code', 'vscode', 'install spala'],
+  },
+  {
     id: 'project-mcp-resolution',
     title: 'Project MCP URL resolution',
     url: 'https://docs.spala.ai/agents/mcp',

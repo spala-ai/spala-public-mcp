@@ -22,6 +22,7 @@ https://mcp.spala.ai/mcp
 - OAuth authorization-server metadata: `https://mcp.spala.ai/.well-known/oauth-authorization-server`
 - Public profile: `https://spala.ai/mcp-profile/`
 - Smoke test: `https://spala.ai/mcp-smoke-test/`
+- Native agent integrations: `https://github.com/spala-ai/agent-integrations`
 - NPM installer: `https://www.npmjs.com/package/@spala-ai/mcp-install`
 - Postman workspace: `https://www.postman.com/paul-8c16afeb-1705125/spala-public-mcp/overview`
 - Postman documentation: `https://documenter.getpostman.com/view/54332390/2sBY4QtKjd`

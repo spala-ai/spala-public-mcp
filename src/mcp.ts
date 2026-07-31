@@ -48,6 +48,14 @@ export const SUPPORTED_INSTALL_CLIENTS = [
 ] as const;
 export const PROJECT_INSTALLER_VERSION = '0.1.16';
 export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
+export const AGENT_INTEGRATIONS_REPOSITORY = 'https://github.com/spala-ai/agent-integrations';
+export const AGENT_INTEGRATIONS_CLIENTS = [
+  'claude-code',
+  'codex',
+  'gemini-cli',
+  'cursor',
+  'vscode-copilot',
+] as const;
 
 export const PROJECT_INSTALL_EXECUTION = {
   method: 'process',
@@ -1144,6 +1152,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     'Use the project MCP for backend changes: models, endpoints, auth, logic, validation, publish, and review.',
     '',
     `Public MCP: ${config.publicBaseUrl}/mcp`,
+    `Native agent integrations: ${AGENT_INTEGRATIONS_REPOSITORY}`,
     'Agent start: https://spala.ai/agents.md',
     `Public MCP docs: ${config.docsUrl}`,
     `Dashboard: ${config.dashboardUrl}`,
@@ -1172,8 +1181,18 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'On the verified project MCP call spala_start, follow its mandatory inspections, and load only its focused skill when needed. Legacy onboarding and tool-map calls remain optional compatibility tools.',
     ],
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
+    agentIntegrations: {
+      repository: AGENT_INTEGRATIONS_REPOSITORY,
+      role: 'Preferred reviewed native integration package for supported coding-agent clients.',
+      clients: AGENT_INTEGRATIONS_CLIENTS,
+      includesPublicMcp: true,
+      includesReviewedSkills: true,
+      credentialsBundled: false,
+      projectMcpUrlsBundled: false,
+    },
     urls: {
       publicMcp: `${config.publicBaseUrl}/mcp`,
+      agentIntegrations: AGENT_INTEGRATIONS_REPOSITORY,
       agentStart: 'https://spala.ai/agents.md',
       mcpProfile: config.docsUrl,
       publicMcpDocs: config.docsUrl,
@@ -1218,6 +1237,12 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         forbidden: ['derived project slugs', 'guessed hosts'],
       },
       installer: {
+        nativeIntegrations: {
+          repository: AGENT_INTEGRATIONS_REPOSITORY,
+          clients: AGENT_INTEGRATIONS_CLIENTS,
+          preferredForInitialSetup: true,
+          purpose: 'Install the reviewed local Spala skills and configure the public MCP through each client native plugin or extension format.',
+        },
         package: '@spala-ai/mcp-install',
         version: PROJECT_INSTALLER_VERSION,
         spec: PROJECT_INSTALLER_SPEC,

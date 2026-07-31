@@ -1886,6 +1886,20 @@ test('authenticated spala_start is published in discovery capabilities and start
 test('install manifest exposes machine-readable 0.1.16 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
+  const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
+
+  assert.equal(agentIntegrations.repository, 'https://github.com/spala-ai/agent-integrations');
+  assert.equal(agentIntegrations.instructions, 'https://github.com/spala-ai/agent-integrations#readme');
+  assert.deepEqual(agentIntegrations.clients, [
+    'claude-code',
+    'codex',
+    'gemini-cli',
+    'cursor',
+    'vscode-copilot',
+  ]);
+  assert.equal(agentIntegrations.credentialsBundled, false);
+  assert.equal(agentIntegrations.projectMcpUrlsBundled, false);
+  assert.equal((manifest.links as Record<string, unknown>).agentIntegrations, agentIntegrations.repository);
 
   assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
   assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
@@ -1900,6 +1914,7 @@ test('install manifest exposes machine-readable 0.1.16 installer commands and se
   assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
   assert.equal(installer.version, '0.1.16');
+  assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
   assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.16']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',

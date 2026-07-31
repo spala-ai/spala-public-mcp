@@ -953,3 +953,29 @@ test('plan and payment failures include dashboard/pricing actions without invent
     assert.doesNotMatch(resultText(result), /checkout/i);
   });
 });
+
+test('public onboarding exposes the reviewed native integration repository', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const help = resultText(await client.callTool({ name: 'spala_help', arguments: {} }));
+    assert.match(help, /https:\/\/github\.com\/spala-ai\/agent-integrations/);
+
+    const onboarding = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: {} }));
+    const integrations = onboarding.agentIntegrations as Record<string, unknown>;
+    assert.equal(integrations.repository, 'https://github.com/spala-ai/agent-integrations');
+    assert.deepEqual(integrations.clients, [
+      'claude-code',
+      'codex',
+      'gemini-cli',
+      'cursor',
+      'vscode-copilot',
+    ]);
+    assert.equal((onboarding.urls as Record<string, unknown>).agentIntegrations, integrations.repository);
+
+    const toolMap = resultJson(await client.callTool({ name: 'spala_get_tool_map', arguments: {} }));
+    const publicMcp = toolMap.publicMcp as Record<string, unknown>;
+    const installer = publicMcp.installer as Record<string, unknown>;
+    const nativeIntegrations = installer.nativeIntegrations as Record<string, unknown>;
+    assert.equal(nativeIntegrations.repository, integrations.repository);
+    assert.equal(nativeIntegrations.preferredForInitialSetup, true);
+  });
+});

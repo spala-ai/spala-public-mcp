@@ -5,6 +5,8 @@ import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import {
+  AGENT_INTEGRATIONS_CLIENTS,
+  AGENT_INTEGRATIONS_REPOSITORY,
   createSpalaPublicMcpServer,
   directoryToolDefinitions,
   projectToolCapabilities,
@@ -237,6 +239,7 @@ function discoveryLinks() {
     publicMcp: publicMcpUrl(),
     mcpProfile: config.docsUrl,
     npmInstaller: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
+    agentIntegrations: AGENT_INTEGRATIONS_REPOSITORY,
     postmanWorkspace: 'https://www.postman.com/paul-8c16afeb-1705125/spala-public-mcp/overview',
     postmanDocumentation: 'https://documenter.getpostman.com/view/54332390/2sBY4QtKjd',
     installManifest: `${config.publicBaseUrl}/mcp/install-manifest`,
@@ -1233,8 +1236,19 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectHandoffExample: PROJECT_HANDOFF_EXAMPLE,
     projectHandoffStatus: PROJECT_HANDOFF_STATUS,
     supportedInstallerClients: SUPPORTED_INSTALL_CLIENTS,
+    agentIntegrations: {
+      repository: AGENT_INTEGRATIONS_REPOSITORY,
+      instructions: `${AGENT_INTEGRATIONS_REPOSITORY}#readme`,
+      role: 'Preferred reviewed native integration package for supported coding-agent clients.',
+      clients: AGENT_INTEGRATIONS_CLIENTS,
+      includesPublicMcp: true,
+      includesReviewedSkills: true,
+      credentialsBundled: false,
+      projectMcpUrlsBundled: false,
+    },
     installer: {
       package: '@spala-ai/mcp-install',
+      role: 'Project workspace binding installer and universal fallback for clients without a native public MCP integration.',
       version: PROJECT_INSTALLER_VERSION,
       spec: PROJECT_INSTALLER_SPEC,
       codexArgvPrefix: ['npx', '--yes', PROJECT_INSTALLER_SPEC],
