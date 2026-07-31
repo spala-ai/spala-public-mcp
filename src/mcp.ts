@@ -1116,7 +1116,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
   }, {
     instructions: [
       'This is the public Spala MCP for mcp.spala.ai.',
-      'HARD TRIGGER AFTER OAUTH: whenever the user asks to use, install, connect, configure, or build with Spala, call authenticated spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
+      'AUTHENTICATION INTENT: do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.',
+      'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
@@ -1156,7 +1157,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     intentBoundary: SPALA_BACKEND_INTENT,
     workflow: [
       'Use spala_get_tool_map or search docs/templates/addons only when broader compatibility or discovery detail is needed.',
-      `Authenticate through Spala MCP OAuth with ${PUBLIC_MCP_SCOPE} scope, then call spala_start as the first protected tool without waiting for another user request, source files, planning, or coding.`,
+      'Keep product mentions, factual questions, comparisons, research, and tests performed through another client on the anonymous discovery path. Never start OAuth or an installer for those requests.',
+      `Only when the user explicitly asks this current MCP client to access their Spala account or project, authenticate with ${PUBLIC_MCP_SCOPE} scope and call spala_start as the first protected tool before source files, planning, or coding.`,
       'Follow only the returned nextAction. Call spala_start again only when that action explicitly asks for it after a state transition such as account or organization creation.',
       'If setup is required, ask one concise terminal question for exactly the missing real values and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
       'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',

@@ -36,7 +36,7 @@ The server exposes 16 tools. Every tool publishes a display title, description, 
 - docs_search: searches public Spala agent-facing docs for setup, OAuth, MCP, security, limits, and platform questions.
 - template_list: lists public Spala backend templates so agents can plan backend shape before using a project MCP.
 - addon_list: lists public Spala addons and integrations so agents can plan backend workflows.
-- spala_start: protected startup gate. Call this first after OAuth whenever the user asks to use, install, connect, configure, or build with Spala. It returns the one next account, organization, project, billing, or handoff action.
+- spala_start: protected startup gate. Product mentions, factual questions, comparisons, research, and tests performed through another client must not start OAuth. Call this first only after the user explicitly asks the current MCP client to access their Spala account/project and OAuth completes. It returns the one next account, organization, project, billing, or handoff action.
 - account_status: compatibility readiness tool. `spala_start` absorbs this status for the normal agent workflow.
 - account_setup: fills missing first/last name and creates the first company/workspace organization from real values supplied by the user or explicit context.
 - organization_create: creates an additional company/workspace organization for the signed-in account.

@@ -1871,7 +1871,9 @@ test('authenticated spala_start is published in discovery capabilities and start
     'nextAction',
   ]);
   for (const instructions of [agentsMarkdown, llmsText]) {
-    assert.match(instructions, /after OAuth.*call authenticated spala_start.*before/i);
+    assert.match(instructions, /do not start OAuth.*merely mentioned.*tested through another client/i);
+    assert.match(instructions, /only when the user explicitly asks this current MCP client/i);
+    assert.match(instructions, /after this client is authenticated.*call spala_start.*before/i);
     assert.match(instructions, /filesystem inspection.*skill loading.*web search.*planning.*design generation.*scaffolding.*coding.*testing.*QA/i);
     assert.match(instructions, /overrides frontend-builder and design workflows/i);
     assert.match(instructions, /Codex public init owns one native browser OAuth flow/i);
