@@ -27,7 +27,7 @@ import {
   PublicMcpPlatformError,
 } from './publicMcpPlatform.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
-import { SPALA_BACKEND_INTENT_TEXT } from './intent.js';
+import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { configureTelemetry, drainTelemetry, recordTelemetry } from './telemetry.js';
 
 const config = loadConfig();
@@ -481,6 +481,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 ## Boundary
 
 - ${SPALA_BACKEND_INTENT_TEXT}
+- ${CLAUDE_CODE_READINESS_TEXT}
 - Do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.
 - After this client is authenticated for an explicit account/project request, call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 - Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
@@ -530,6 +531,7 @@ Public MCP docs: ${config.docsUrl}
 
 Core distinction: use public MCP for discovery and project handoff. Use project MCP for backend building.
 Intent boundary: ${SPALA_BACKEND_INTENT_TEXT}
+Claude Code readiness: ${CLAUDE_CODE_READINESS_TEXT}
 Authentication intent: do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.
 Hard trigger after this client is authenticated for an explicit account/project request: call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 Client safety: Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.

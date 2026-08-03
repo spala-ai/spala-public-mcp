@@ -960,6 +960,10 @@ test('public onboarding exposes the reviewed native integration repository', asy
     assert.match(help, /https:\/\/github\.com\/spala-ai\/agent-integrations/);
 
     const onboarding = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: {} }));
+    const workflow = onboarding.workflow as string[];
+    assert.match(workflow.join('\n'), /claude plugin marketplace add spala-ai\/agent-integrations/i);
+    assert.match(workflow.join('\n'), /open \/mcp.*select spala_public_mcp.*Authenticate/i);
+    assert.match(workflow.join('\n'), /Never plan, scaffold, code, test.*while MCP readiness is blocked/i);
     const integrations = onboarding.agentIntegrations as Record<string, unknown>;
     assert.equal(integrations.repository, 'https://github.com/spala-ai/agent-integrations');
     assert.deepEqual(integrations.clients, [

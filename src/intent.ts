@@ -5,3 +5,5 @@ export const SPALA_BACKEND_INTENT = {
 } as const;
 
 export const SPALA_BACKEND_INTENT_TEXT = Object.values(SPALA_BACKEND_INTENT).join(' ');
+
+export const CLAUDE_CODE_READINESS_TEXT = 'For Claude Code, check whether spala_public_mcp is already configured before doing application work. If it is absent, run `claude plugin marketplace add spala-ai/agent-integrations` and `claude plugin install spala@spala-marketplace`, then request /reload-plugins or a new session and stop. If it is present but requires authentication, do not reinstall it: ask the user to open /mcp, select spala_public_mcp, and complete Authenticate; Claude Code opens the browser or provides a copyable URL. Retry spala_start after approval. Never plan, scaffold, code, test, or ask the user to repeat an existing app brief while MCP readiness is blocked.';

@@ -1880,6 +1880,10 @@ test('authenticated spala_start is published in discovery capabilities and start
     assert.match(instructions, /If authorization later expires, run exactly one installer login command/i);
     assert.match(instructions, /Never inspect client credential stores, tokens, or browser storage/i);
     assert.match(instructions, /never hand-roll MCP HTTP\/JSON-RPC calls or helper scripts/i);
+    assert.match(instructions, /claude plugin marketplace add spala-ai\/agent-integrations/i);
+    assert.match(instructions, /claude plugin install spala@spala-marketplace/i);
+    assert.match(instructions, /open \/mcp.*select spala_public_mcp.*Authenticate/i);
+    assert.match(instructions, /Never plan, scaffold, code, test.*while MCP readiness is blocked/i);
   }
 });
 
