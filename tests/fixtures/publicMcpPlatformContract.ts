@@ -1,6 +1,6 @@
 const projectUrl = 'https://contract-project.example';
 const projectAccessToken = 'contract-project-access-token';
-const encodedProjectUrl = Buffer.from(projectUrl).toString('base64');
+const externalAuthHandoff = 'contract-external-auth-handoff-token';
 
 export const publicMcpPlatformContract = {
   responseFields: {
@@ -44,9 +44,10 @@ export const publicMcpPlatformContract = {
     manifestUrl: `${projectUrl}/mcp/install-manifest`,
   },
   accessUrl: {
-    url: `https://app.spala.ai/?url=${encodeURIComponent(encodedProjectUrl)}&auth_token=${projectAccessToken}`,
+    url: `https://app.spala.ai/?handoff=${externalAuthHandoff}&auth_token=${projectAccessToken}`,
   },
   projectUrl,
   projectAccessToken,
+  externalAuthHandoff,
   builderToken: 'contract-project-builder-token',
 } as const;

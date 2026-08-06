@@ -500,6 +500,7 @@ function validBearerToken(value: unknown): value is string {
 type ProjectAccess = {
   projectUrl: string;
   token: string;
+  externalAuthHandoff?: string;
 };
 
 function parseProjectBaseUrl(value: unknown): string | undefined {
@@ -543,15 +544,34 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
   ) return undefined;
   const entries = [...accessUrl.searchParams.entries()];
   if (entries.length !== 2 || new Set(entries.map(([key]) => key)).size !== 2) return undefined;
-  if (!accessUrl.searchParams.has('url') || !accessUrl.searchParams.has('auth_token')) return undefined;
+  const hasLegacyProjectUrl = accessUrl.searchParams.has('url');
+  const hasExternalAuthHandoff = accessUrl.searchParams.has('handoff');
+  if (
+    !accessUrl.searchParams.has('auth_token')
+    || hasLegacyProjectUrl === hasExternalAuthHandoff
+  ) return undefined;
+
+  const token = accessUrl.searchParams.get('auth_token');
+  if (!validBearerToken(token)) return undefined;
+  const expectedProjectUrl = parseProjectBaseUrl(expectedProjectUrlValue);
+  if (!expectedProjectUrl) return undefined;
+
+  if (hasExternalAuthHandoff) {
+    const externalAuthHandoff = accessUrl.searchParams.get('handoff');
+    if (!validBearerToken(externalAuthHandoff) || externalAuthHandoff.length < 16) return undefined;
+    return { projectUrl: expectedProjectUrl, token, externalAuthHandoff };
+  }
 
   const encodedProjectUrl = accessUrl.searchParams.get('url');
-  const token = accessUrl.searchParams.get('auth_token');
-  if (!encodedProjectUrl || !validBearerToken(token)) return undefined;
+  if (!encodedProjectUrl) return undefined;
   const projectUrl = parseProjectBaseUrl(decodeBase64Url(encodedProjectUrl));
-  const expectedProjectUrl = parseProjectBaseUrl(expectedProjectUrlValue);
   if (!projectUrl || !expectedProjectUrl || projectUrl !== expectedProjectUrl) return undefined;
   return { projectUrl, token };
+}
+
+function parseResolvedExternalAuthBackend(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  return parseProjectBaseUrl((raw as Record<string, unknown>)['backend']);
 }
 
 type AgentInstructionBootstrapParseResult =
@@ -742,6 +762,7 @@ export function createSpalaApiClient(
   const requestJson = async (method: 'GET' | 'POST' | 'PATCH', pathname: string, options?: {
     query?: Record<string, string>;
     body?: Record<string, unknown>;
+    sensitiveTokens?: string[];
   }): Promise<unknown> => {
     const url = new URL(pathname, config.spalaApiBaseUrl);
     for (const [key, value] of Object.entries(options?.query || {})) url.searchParams.set(key, value);
@@ -775,7 +796,11 @@ export function createSpalaApiClient(
       }
 
       if (!response.ok) {
-        const parsed = safeErrorPayload(payload, [publicMcpAccessToken, config.publicMcpPlatformServiceSecret]);
+        const parsed = safeErrorPayload(payload, [
+          publicMcpAccessToken,
+          config.publicMcpPlatformServiceSecret,
+          ...(options?.sensitiveTokens || []),
+        ]);
         const category = errorCategory(response.status, parsed.code, parsed.message);
         throw new SpalaApiError({
           category,
@@ -1068,6 +1093,30 @@ export function createSpalaApiClient(
           code: 'invalid_project_access_handoff',
           message: 'The Spala control plane returned an invalid project access handoff.',
         });
+      }
+
+      if (access.externalAuthHandoff) {
+        let resolvedBackend: string | undefined;
+        try {
+          const resolvedPayload = await requestJson(
+            'POST',
+            '/api/__internal/builder-auth/external-handoff/resolve',
+            {
+              body: { handoff: access.externalAuthHandoff },
+              sensitiveTokens: [access.externalAuthHandoff, access.token],
+            },
+          );
+          resolvedBackend = parseResolvedExternalAuthBackend(resolvedPayload);
+        } catch (error) {
+          rethrowProjectStage(error, 'invalid_project_access_handoff');
+        }
+        if (resolvedBackend !== access.projectUrl) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            code: 'invalid_project_access_handoff',
+            message: 'The Spala control plane returned an invalid project access handoff.',
+          });
+        }
       }
 
       let builderToken: string;

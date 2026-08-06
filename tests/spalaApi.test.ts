@@ -185,6 +185,10 @@ test('platform operation fixture matches principal, project, handoff, and access
     if (url.pathname.endsWith('/access-url')) {
       return jsonResponse(fixture.accessUrl);
     }
+    if (url.pathname === '/api/__internal/builder-auth/external-handoff/resolve') {
+      assert.deepEqual(JSON.parse(String(init.body)), { handoff: fixture.externalAuthHandoff });
+      return jsonResponse({ backend: fixture.projectUrl });
+    }
     if (url.origin === fixture.projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: fixture.builderToken });
     }
@@ -211,6 +215,76 @@ test('platform operation fixture matches principal, project, handoff, and access
     JSON.stringify([principal, projects, handoff, prepared]),
     new RegExp(fixture.projectAccessToken),
   );
+});
+
+test('signed external-auth handoff must resolve to the authoritative project backend', async () => {
+  const projectUrl = 'https://project.example';
+  const externalAuthHandoff = 'signed-external-auth-handoff-value';
+  const projectToken = 'temporary-project-token';
+  const builderToken = 'builder-project-token';
+  const projectCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname.endsWith('/access-url')) {
+      return jsonResponse({
+        url: `https://app.spala.ai/?handoff=${externalAuthHandoff}&auth_token=${projectToken}`,
+      });
+    }
+    if (url.pathname === '/api/__internal/builder-auth/external-handoff/resolve') {
+      assert.deepEqual(JSON.parse(String(init.body)), { handoff: externalAuthHandoff });
+      return jsonResponse({ backend: projectUrl });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      projectCalls.push(url.pathname);
+      assert.deepEqual(JSON.parse(String(init.body)), { token: projectToken });
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_signed_handoff/consume`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(prepared.projectUrl, projectUrl);
+  assert.deepEqual(projectCalls, [
+    '/api/__internal/builder-auth/external',
+    '/api/__internal/builder-auth/external',
+  ]);
+  assert.doesNotMatch(JSON.stringify(prepared), new RegExp(`${externalAuthHandoff}|${projectToken}|${builderToken}`));
+});
+
+test('signed external-auth handoff rejects a backend that differs from the authoritative project', async () => {
+  const externalAuthHandoff = 'signed-external-auth-handoff-value';
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      return jsonResponse(projectMcpHandoff('https://project.example'));
+    }
+    if (url.pathname.endsWith('/access-url')) {
+      return jsonResponse({
+        url: `https://app.spala.ai/?handoff=${externalAuthHandoff}&auth_token=temporary-project-token`,
+      });
+    }
+    if (url.pathname === '/api/__internal/builder-auth/external-handoff/resolve') {
+      return jsonResponse({ backend: 'https://other-project.example' });
+    }
+    return jsonResponse({ error: 'project request must not run' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'invalid_upstream_response');
+    assert.equal(error.code, 'invalid_project_access_handoff');
+    assert.doesNotMatch(error.message, new RegExp(externalAuthHandoff));
+    return true;
+  });
 });
 
 test('project handoff rejects unresolved template placeholders in every URL component', () => {
