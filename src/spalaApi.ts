@@ -1221,42 +1221,43 @@ export function createSpalaApiClient(
         });
       }
 
-      let runtimeBuilderToken: string;
-      try {
-        const runtimeExchangePayload = await requestProjectJson(
-          runtimeBuilderAuthUrl,
-          access.token,
-          'POST',
-          { token: access.token },
-          { authorization: false, sensitiveTokens: [builderToken, publicMcpAccessToken] },
+      const runtimeBase = runtimeBaseUrl.toString().replace(/\/$/, '');
+      let runtimeBuilderToken = builderToken;
+      if (runtimeBase !== access.projectUrl) {
+        try {
+          const runtimeExchangePayload = await requestProjectJson(
+            runtimeBuilderAuthUrl,
+            access.token,
+            'POST',
+            { token: access.token },
+            { authorization: false, sensitiveTokens: [builderToken, publicMcpAccessToken] },
+          );
+          const token = exchangedBuilderToken(runtimeExchangePayload, [
+            access.token,
+            publicMcpAccessToken,
+            builderToken,
+          ]);
+          if (!token) {
+            throw new SpalaApiError({
+              category: 'invalid_upstream_response',
+              code: 'invalid_project_runtime_builder_token',
+              message: 'The authoritative project runtime returned an invalid builder authentication response.',
+            });
+          }
+          runtimeBuilderToken = token;
+        } catch (error) {
+          rethrowProjectPreparation(error);
+        }
+        sensitiveTokens.push(runtimeBuilderToken);
+        const runtimeTokenInHandoff = Object.values(preparedHandoff).some(value =>
+          typeof value === 'string' && containsSensitiveToken(value, [runtimeBuilderToken])
         );
-        const runtimeBase = runtimeBaseUrl.toString().replace(/\/$/, '');
-        const disallowedTokens = [
-          access.token,
-          publicMcpAccessToken,
-          ...(runtimeBase === access.projectUrl ? [] : [builderToken]),
-        ];
-        const token = exchangedBuilderToken(runtimeExchangePayload, disallowedTokens);
-        if (!token) {
-          throw new SpalaApiError({
-            category: 'invalid_upstream_response',
-            code: 'invalid_project_runtime_builder_token',
-            message: 'The authoritative project runtime returned an invalid builder authentication response.',
+        if (runtimeTokenInHandoff) {
+          rejectInvalidProjectBootstrapMaterial(id, {
+            handoffMetadataContainsToken: true,
+            runtimeBuilderToken: 'present',
           });
         }
-        runtimeBuilderToken = token;
-      } catch (error) {
-        rethrowProjectPreparation(error);
-      }
-      sensitiveTokens.push(runtimeBuilderToken);
-      const runtimeTokenInHandoff = Object.values(preparedHandoff).some(value =>
-        typeof value === 'string' && containsSensitiveToken(value, [runtimeBuilderToken])
-      );
-      if (runtimeTokenInHandoff) {
-        rejectInvalidProjectBootstrapMaterial(id, {
-          handoffMetadataContainsToken: true,
-          runtimeBuilderToken: 'present',
-        });
       }
 
       let instructionSession: unknown;

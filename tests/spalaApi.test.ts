@@ -217,7 +217,7 @@ test('platform operation fixture matches principal, project, handoff, and access
   );
 });
 
-test('signed external-auth handoff must resolve to the authoritative project backend', async () => {
+test('signed external-auth handoff resolves the backend and consumes its one-time token once', async () => {
   const projectUrl = 'https://project.example';
   const externalAuthHandoff = 'signed-external-auth-handoff-value';
   const projectToken = 'temporary-project-token';
@@ -238,6 +238,9 @@ test('signed external-auth handoff must resolve to the authoritative project bac
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       projectCalls.push(url.pathname);
+      if (projectCalls.length > 1) {
+        return jsonResponse({ error: 'token_already_used' }, 401);
+      }
       assert.deepEqual(JSON.parse(String(init.body)), { token: projectToken });
       return jsonResponse({ token: builderToken });
     }
@@ -254,10 +257,7 @@ test('signed external-auth handoff must resolve to the authoritative project bac
 
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
   assert.equal(prepared.projectUrl, projectUrl);
-  assert.deepEqual(projectCalls, [
-    '/api/__internal/builder-auth/external',
-    '/api/__internal/builder-auth/external',
-  ]);
+  assert.deepEqual(projectCalls, ['/api/__internal/builder-auth/external']);
   assert.doesNotMatch(JSON.stringify(prepared), new RegExp(`${externalAuthHandoff}|${projectToken}|${builderToken}`));
 });
 
@@ -327,7 +327,7 @@ test('project handoff rejects unresolved template placeholders in every URL comp
   }
 });
 
-test('authenticated client re-exchanges dashboard project access before preparing MCP on the runtime', async () => {
+test('authenticated client reuses the first builder session when the project and MCP runtime match', async () => {
   const token = 'opaque-valid-token';
   const projectToken = 'temporary-project-token';
   const builderToken = 'builder-project-token';
@@ -437,25 +437,23 @@ test('authenticated client re-exchanges dashboard project access before preparin
   assert.deepEqual(projectCalls.map(call => `${call.init.method} ${call.url.pathname}`), [
     'POST /api/__internal/builder-auth/external',
     'POST /api/__internal/project/config',
-    'POST /api/__internal/builder-auth/external',
     'POST /mcp/agent-instructions',
   ]);
-  for (const exchangeCall of [projectCalls[0]!, projectCalls[2]!]) {
-    assert.equal(new Headers(exchangeCall.init.headers).get('authorization'), null);
-    assert.equal(new Headers(exchangeCall.init.headers).get('x-spala-public-mcp-service-secret'), null);
-    assert.equal(exchangeCall.init.body, JSON.stringify({ token: projectToken }));
-    assert.doesNotMatch(String(exchangeCall.init.body), /opaque-valid-token/);
-  }
+  const exchangeCall = projectCalls[0]!;
+  assert.equal(new Headers(exchangeCall.init.headers).get('authorization'), null);
+  assert.equal(new Headers(exchangeCall.init.headers).get('x-spala-public-mcp-service-secret'), null);
+  assert.equal(exchangeCall.init.body, JSON.stringify({ token: projectToken }));
+  assert.doesNotMatch(String(exchangeCall.init.body), /opaque-valid-token/);
   assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), true);
   assert.equal(projectCalls[1]?.init.body, JSON.stringify({
     securityConfig: { mcpEnabled: true },
   }));
-  assert.equal(projectCalls[3]?.init.body, JSON.stringify({
+  assert.equal(projectCalls[2]?.init.body, JSON.stringify({
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
   }));
-  for (const call of [projectCalls[1]!, projectCalls[3]!]) {
+  for (const call of projectCalls.slice(1)) {
     assert.equal(new Headers(call.init.headers).get('authorization'), `Bearer ${builderToken}`);
     assert.doesNotMatch(call.url.toString(), new RegExp(`${projectToken}|${builderToken}`));
     assert.doesNotMatch(String(call.init.body || ''), new RegExp(`${projectToken}|${builderToken}`));
@@ -503,7 +501,6 @@ test('project preparation trusts the exact custom-domain access origin and path'
   assert.deepEqual(projectCalls.map(url => url.pathname), [
     '/apps/project-one/api/__internal/builder-auth/external',
     '/apps/project-one/api/__internal/project/config',
-    '/apps/project-one/api/__internal/builder-auth/external',
     '/apps/project-one/mcp/agent-instructions',
   ]);
 });
