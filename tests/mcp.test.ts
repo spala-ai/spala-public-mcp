@@ -722,6 +722,48 @@ test('project_connect, compatibility select, and manifest send the client and ke
   });
 });
 
+test('Claude Code project connections use direct workspace binding without an unavailable process-stdin step', async () => {
+  const api = apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp() {
+      return handoff;
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const connected = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: project.id, client: 'claude-code' },
+    });
+    assert.notEqual(connected.isError, true);
+    const body = resultJson(connected);
+    const plan = body.installPlan as Record<string, unknown> & {
+      argv: string[];
+      execution: Record<string, unknown>;
+    };
+    const bootstrap = body.bootstrap as Record<string, unknown>;
+
+    assert.equal(plan.argv.includes('--bootstrap-stdin'), false);
+    assert.equal(plan.argv.includes('--bootstrap-url'), false);
+    assert.equal(plan.argv.includes(handoff.bootstrapConsumeUrl), false);
+    assert.equal(plan.projectOAuthRequired, true);
+    assert.equal(plan.credentialMode, 'native_project_oauth');
+    assert.equal(plan.oneTimeBootstrap, false);
+    assert.equal(plan.execution.stdin, null);
+    assert.equal(plan.execution.tty, false);
+    assert.equal(bootstrap.oneTime, false);
+    assert.equal(bootstrap.immediateConsumptionRequired, false);
+    assert.equal(bootstrap.consumeUrl, undefined);
+    assert.equal(bootstrap.projectOAuthRequired, true);
+    assert.equal(body.bootstrapPreparedByProjectBackend, false);
+    assert.equal(JSON.stringify(body).includes(handoff.bootstrapConsumeUrl), false);
+    assert.match((body.nextSteps as string[]).join('\n'), /No bootstrap input or process-stdin tool is required/i);
+    assert.match((body.nextSteps as string[]).join('\n'), /Open \/mcp.*complete.*authentication/i);
+  });
+});
+
 test('raw project IDs are verified against every request-principal organization before project preparation', async () => {
   const accountA: SpalaPrincipal = {
     subject: 'account-a',

@@ -99,6 +99,22 @@ export const PROJECT_INSTALL_EXECUTION = {
   ],
 } as const;
 
+export const PROJECT_DIRECT_INSTALL_EXECUTION = {
+  method: 'process',
+  shell: false,
+  tty: false,
+  waitForRunningProcess: false,
+  stdin: null,
+  sequence: [
+    {
+      order: 1,
+      action: 'run_process',
+      argvSource: 'installPlan.argv',
+      shell: false,
+    },
+  ],
+} as const;
+
 type SupportedInstallClient = typeof SUPPORTED_INSTALL_CLIENTS[number];
 
 const PROJECT_SELECTOR_SCHEMA = {
@@ -1032,6 +1048,44 @@ function projectMcpInstallPlan(
   const runnerArgv = client === 'roo'
     ? ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC]
     : ['npx', '--yes', PROJECT_INSTALLER_SPEC];
+  if (client === 'claude-code') {
+    return {
+      argv: [
+        ...runnerArgv, 'project', 'bind',
+        '--project-id', handoff.projectId,
+        '--project-url', handoff.projectUrl,
+        '--url', handoff.mcpUrl,
+        '--name', serverName,
+        '--client', client,
+        '--install-scope', 'workspace',
+        '--exact-url', '--yes', '--json',
+      ],
+      command: 'project bind',
+      client,
+      projectId: handoff.projectId,
+      projectUrl: handoff.projectUrl,
+      mcpUrl: handoff.mcpUrl,
+      serverName,
+      exactUrl: true,
+      scopeHandling: 'preserved_from_exact_mcp_url',
+      workspaceOnly: true,
+      workspaceScope: 'workspace',
+      installScope: 'workspace',
+      bindingFile: '.spala/project.json',
+      globalInstall: false,
+      oneTimeBootstrap: false,
+      immediateConsumptionRequired: false,
+      bootstrapInput: null,
+      bootstrapExposedInArgv: false,
+      execution: PROJECT_DIRECT_INSTALL_EXECUTION,
+      projectOAuthRequired: true,
+      credentialMode: 'native_project_oauth',
+      shell: false,
+      urlSource: 'exact_authenticated_handoff',
+      remoteManifestFetch: false,
+      expectedOutput: 'JSON confirming the exact project MCP workspace binding; authenticate that MCP after reloading Claude Code.',
+    } as const;
+  }
   return {
     argv: [
       ...runnerArgv, 'project', 'bind',
@@ -1079,6 +1133,16 @@ const PROJECT_MCP_INSTALL_NEXT_STEPS = [
   'Do not start native or manual project OAuth for this agentic flow. Manual UI OAuth is separate.',
   'Call mcp_get_onboarding on the newly added project MCP.',
   'Follow the installer JSON reload instruction for the selected client.',
+  SPALA_BACKEND_INTENT.setupOnly,
+  SPALA_BACKEND_INTENT.buildRequest,
+] as const;
+
+const CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS = [
+  'Run installPlan.argv as a direct process from the intended local project root. No bootstrap input or process-stdin tool is required.',
+  'Confirm the installer created or updated .spala/project.json and did not install this project MCP globally.',
+  'Reload Claude Code so the workspace project MCP becomes available.',
+  'Open /mcp, select the newly added project MCP, and complete its browser authentication.',
+  'Call spala_start on the newly added project MCP after authentication.',
   SPALA_BACKEND_INTENT.setupOnly,
   SPALA_BACKEND_INTENT.buildRequest,
 ] as const;
@@ -1578,6 +1642,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       }
       const installPlan = projectMcpInstallPlan(handoff, client);
       const serverSideA2a = client === 'a2a';
+      const nativeProjectOAuth = client === 'claude-code';
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
       const responseHandoff = serverSideA2a
         ? { ...publicHandoff, mcpUrl: installPlan.mcpUrl }
@@ -1590,19 +1655,19 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         preparedByProjectBackend: true,
-        bootstrapPreparedByProjectBackend: true,
+        bootstrapPreparedByProjectBackend: !nativeProjectOAuth,
         workspaceOnly: !serverSideA2a,
         connectionMode: serverSideA2a ? 'server_side_a2a' : 'workspace_install',
         compatibilityAlias: tool === 'project_select' ? 'project_connect' : undefined,
         installPlan,
         bootstrap: {
-          oneTime: true,
-          immediateConsumptionRequired: true,
-          consumeUrl: handoff.bootstrapConsumeUrl,
-          input: 'stdin_single_line',
+          oneTime: !nativeProjectOAuth,
+          immediateConsumptionRequired: !nativeProjectOAuth,
+          ...(!nativeProjectOAuth ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
+          input: nativeProjectOAuth ? null : 'stdin_single_line',
           exposedInInstallArgv: false,
           publicMcpFetchesUrl: false,
-          projectOAuthRequired: false,
+          projectOAuthRequired: nativeProjectOAuth,
         },
         nextSteps: serverSideA2a
           ? [
@@ -1610,7 +1675,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
               'Use only the exact returned mcpUrl for this authorized project session.',
               'Never expose, persist, print, or return the bootstrap URL or exchanged credential.',
             ]
-          : PROJECT_MCP_INSTALL_NEXT_STEPS,
+          : nativeProjectOAuth
+            ? CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS
+            : PROJECT_MCP_INSTALL_NEXT_STEPS,
         intentBoundary: SPALA_BACKEND_INTENT,
         rule: serverSideA2a
           ? 'Consume the one-time bootstrap server-side and use the exact mcpUrl only for this authorized A2A project session.'
@@ -1661,6 +1728,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         }, true);
       }
       const installPlan = projectMcpInstallPlan(handoff, client);
+      const nativeProjectOAuth = client === 'claude-code';
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
       return json({
         schemaVersion: 1,
@@ -1671,21 +1739,23 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         manifestUrl: handoff.manifestUrl,
         serverName: installPlan.serverName,
         transport: 'streamable-http',
-        auth: 'local_credential_proxy_after_bootstrap',
+        auth: nativeProjectOAuth ? 'native_project_oauth' : 'local_credential_proxy_after_bootstrap',
         preparedByProjectBackend: true,
-        bootstrapPreparedByProjectBackend: true,
+        bootstrapPreparedByProjectBackend: !nativeProjectOAuth,
         workspaceOnly: true,
         installPlan,
         bootstrap: {
-          oneTime: true,
-          immediateConsumptionRequired: true,
-          consumeUrl: handoff.bootstrapConsumeUrl,
-          input: 'stdin_single_line',
+          oneTime: !nativeProjectOAuth,
+          immediateConsumptionRequired: !nativeProjectOAuth,
+          ...(!nativeProjectOAuth ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
+          input: nativeProjectOAuth ? null : 'stdin_single_line',
           exposedInInstallArgv: false,
           publicMcpFetchesUrl: false,
-          projectOAuthRequired: false,
+          projectOAuthRequired: nativeProjectOAuth,
         },
-        nextSteps: PROJECT_MCP_INSTALL_NEXT_STEPS,
+        nextSteps: nativeProjectOAuth
+          ? CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS
+          : PROJECT_MCP_INSTALL_NEXT_STEPS,
         intentBoundary: SPALA_BACKEND_INTENT,
         manifestNote: 'manifestUrl is informational. Do not fetch or pass a remote manifest to the installer; install with the exact mcpUrl in installPlan.argv.',
         rule: 'Use this exact mcpUrl for project MCP. Do not derive a URL from the project subdomain or host.',
