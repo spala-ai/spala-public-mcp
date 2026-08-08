@@ -46,6 +46,11 @@ export type PreparedProjectMcpHandoff = ProjectMcpHandoff & {
   bootstrapConsumeUrl?: string;
 };
 
+export type ProjectBootstrapProof = {
+  requestId: string;
+  challenge: string;
+};
+
 export type ProjectOrganizationInput = {
   organizationId?: string;
 };
@@ -78,7 +83,11 @@ export type SpalaApiClient = {
   listProjects(input?: ProjectOrganizationInput): Promise<{ organization: SpalaOrganization; projects: SpalaProject[] }>;
   createProject(input: CreateProjectInput): Promise<{ organization: SpalaOrganization; project: SpalaProject }>;
   getProjectHandoff(projectId: string): Promise<ProjectMcpHandoff>;
-  prepareProjectMcp(projectId: string, client: 'codex' | 'roo' | 'claude-code' | 'cursor' | 'a2a'): Promise<PreparedProjectMcpHandoff>;
+  prepareProjectMcp(
+    projectId: string,
+    client: 'codex' | 'roo' | 'claude-code' | 'cursor' | 'a2a',
+    bootstrapProof?: ProjectBootstrapProof,
+  ): Promise<PreparedProjectMcpHandoff>;
 };
 
 export const DEFAULT_PROJECT_MCP_SCOPE = 'builder,project,data';
@@ -671,6 +680,7 @@ function parseAgentInstructionBootstrap(
   raw: unknown,
   mcpUrl: string,
   authorizedScope: string,
+  expectedDeliveryMode: 'one-time' | 'one-time-pkce' = 'one-time',
 ): AgentInstructionBootstrapParseResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { reason: 'invalid_shape' };
   const record = raw as Record<string, unknown>;
@@ -682,7 +692,7 @@ function parseAgentInstructionBootstrap(
   if (!sessionScope || !sameProjectScope(sessionScope, authorizedScope)) {
     return { reason: 'scope_mismatch' };
   }
-  if (record['deliveryMode'] !== 'one-time') return { reason: 'invalid_delivery_mode' };
+  if (record['deliveryMode'] !== expectedDeliveryMode) return { reason: 'invalid_delivery_mode' };
 
   const consumeUrlValue = stringField(record, 'consumeUrl', 4_096);
   const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
@@ -1070,7 +1080,7 @@ export function createSpalaApiClient(
       return verifiedProjectHandoff(payload, id);
     },
 
-    async prepareProjectMcp(projectIdValue, client) {
+    async prepareProjectMcp(projectIdValue, client, bootstrapProof) {
       const id = normalizeProjectId(projectIdValue);
       let projectHandoff: ProjectMcpHandoff;
       try {
@@ -1270,10 +1280,9 @@ export function createSpalaApiClient(
         });
       }
 
-      // Claude Code binds the exact remote MCP directly and completes native
-      // browser OAuth after reload. Do not create a one-time instruction
-      // session for a credential that this client cannot and does not consume.
-      if (client === 'claude-code') {
+      // Claude Code first prepares its verifier locally. The second call carries
+      // only the S256 challenge and creates the claim that installer can redeem.
+      if (client === 'claude-code' && !bootstrapProof) {
         return {
           projectId: preparedHandoff.projectId,
           projectName: preparedHandoff.projectName,
@@ -1286,6 +1295,14 @@ export function createSpalaApiClient(
       }
 
       let instructionSession: unknown;
+      const verifierBoundClaim = client === 'claude-code';
+      if (verifierBoundClaim && !/^[A-Za-z0-9_-]{43}$/.test(bootstrapProof?.challenge || '')) {
+        throw new SpalaApiError({
+          category: 'invalid_upstream_response',
+          code: 'invalid_project_bootstrap_proof',
+          message: 'The local installer returned an invalid project authorization challenge.',
+        });
+      }
       try {
         instructionSession = await requestProjectJson(
           agentInstructionUrl,
@@ -1294,14 +1311,20 @@ export function createSpalaApiClient(
           {
             scope: authorizedScope,
             clientName: `Spala ${client} agent`,
-            deliveryMode: 'one-time',
+            deliveryMode: verifierBoundClaim ? 'one-time-pkce' : 'one-time',
+            ...(verifierBoundClaim ? { codeChallenge: bootstrapProof!.challenge } : {}),
           },
           { sensitiveTokens: [access.token, builderToken, publicMcpAccessToken] },
         );
       } catch (error) {
         rethrowProjectStage(error, 'project_agent_instruction_failed');
       }
-      const bootstrapResult = parseAgentInstructionBootstrap(instructionSession, mcpUrl, authorizedScope);
+      const bootstrapResult = parseAgentInstructionBootstrap(
+        instructionSession,
+        mcpUrl,
+        authorizedScope,
+        verifierBoundClaim ? 'one-time-pkce' : 'one-time',
+      );
       const bootstrapConsumeUrl = 'consumeUrl' in bootstrapResult ? bootstrapResult.consumeUrl : undefined;
       const consumeUrlContainsToken = bootstrapConsumeUrl
         ? containsSensitiveToken(bootstrapConsumeUrl, sensitiveTokens)

@@ -252,6 +252,46 @@ test('Claude Code preparation skips the one-time instruction session used by boo
   ]);
 });
 
+test('Claude Code preparation binds its delegated claim to the local installer challenge', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-project-token';
+  const builderToken = 'builder-project-token';
+  const challenge = 'c'.repeat(43);
+  let instructionBody: Record<string, unknown> | undefined;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionBody = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      return jsonResponse({
+        consumeUrl: `${projectUrl}/mcp/agent-instructions/mcp_agent_pkce/consume`,
+        scopes: ['builder', 'project', 'data'],
+        deliveryMode: 'one-time-pkce',
+      }, 201);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'claude-code', {
+    requestId: `claim_${'r'.repeat(24)}`,
+    challenge,
+  });
+
+  assert.equal(prepared.bootstrapConsumeUrl, `${projectUrl}/mcp/agent-instructions/mcp_agent_pkce/consume`);
+  assert.deepEqual(instructionBody, {
+    scope: 'builder,project,data',
+    clientName: 'Spala claude-code agent',
+    deliveryMode: 'one-time-pkce',
+    codeChallenge: challenge,
+  });
+});
+
 test('signed external-auth handoff resolves the backend and consumes its one-time token once', async () => {
   const projectUrl = 'https://project.example';
   const externalAuthHandoff = 'signed-external-auth-handoff-value';

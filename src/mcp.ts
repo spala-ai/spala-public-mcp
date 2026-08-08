@@ -51,7 +51,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'cursor',
   'a2a',
 ] as const;
-export const PROJECT_INSTALLER_VERSION = '0.1.16';
+export const PROJECT_INSTALLER_VERSION = '0.1.17';
 export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
 export const AGENT_INTEGRATIONS_REPOSITORY = 'https://github.com/spala-ai/agent-integrations';
 export const AGENT_INTEGRATIONS_CLIENTS = [
@@ -126,6 +126,8 @@ const PROJECT_SELECTOR_SCHEMA = {
 const PROJECT_INSTALL_SELECTOR_SCHEMA = {
   ...PROJECT_SELECTOR_SCHEMA,
   client: z.enum(SUPPORTED_INSTALL_CLIENTS).optional(),
+  bootstrapRequestId: z.string().regex(/^claim_[A-Za-z0-9_-]{20,80}$/).optional(),
+  bootstrapChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 };
 
 const PROJECT_SELECTOR_JSON_SCHEMA = {
@@ -192,16 +194,30 @@ const INSTALL_CLIENT_JSON_SCHEMA = {
   description: 'Target MCP client for @spala-ai/mcp-install. Omit to receive client_selection_required without an executable mutation plan.',
 } as const;
 
+const BOOTSTRAP_REQUEST_JSON_SCHEMA = {
+  bootstrapRequestId: {
+    type: 'string',
+    pattern: '^claim_[A-Za-z0-9_-]{20,80}$',
+    description: 'Non-secret local request ID returned by project prepare. Claude Code only.',
+  },
+  bootstrapChallenge: {
+    type: 'string',
+    pattern: '^[A-Za-z0-9_-]{43}$',
+    description: 'S256 challenge returned by project prepare. The verifier remains only in the local credential store.',
+  },
+} as const;
+
 const PROJECT_INSTALL_SELECTOR_JSON_SCHEMA = {
   ...PROJECT_SELECTOR_JSON_SCHEMA,
   description: 'Provide exactly one project selector and a supported agentic workspace client (codex, roo, claude-code, or cursor) to receive executable installer argv.',
   oneOf: PROJECT_SELECTOR_JSON_SCHEMA.oneOf.map(branch => ({
     ...branch,
-    properties: { ...branch.properties, client: INSTALL_CLIENT_JSON_SCHEMA },
+    properties: { ...branch.properties, client: INSTALL_CLIENT_JSON_SCHEMA, ...BOOTSTRAP_REQUEST_JSON_SCHEMA },
   })),
   properties: {
     ...PROJECT_SELECTOR_JSON_SCHEMA.properties,
     client: INSTALL_CLIENT_JSON_SCHEMA,
+    ...BOOTSTRAP_REQUEST_JSON_SCHEMA,
   },
 } as const;
 
@@ -611,7 +627,7 @@ const TOOL_DESCRIPTIONS = {
   projectConnect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible Spala project for agent access.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
-    'Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; direct binding plus native project OAuth for Claude Code.',
+    'Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
   ].join(' '),
   projectSelect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Compatibility alias for project_connect.',
@@ -631,6 +647,8 @@ type ProjectSelector = {
   subdomain?: string;
   organizationId?: string;
   client?: SupportedInstallClient;
+  bootstrapRequestId?: string;
+  bootstrapChallenge?: string;
 };
 
 type ListToolsHandler = (request: unknown, extra: unknown) => Promise<unknown> | unknown;
@@ -923,6 +941,8 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
   const subdomain = input.subdomain?.trim();
   const organizationId = input.organizationId?.trim();
   const client = input.client;
+  const bootstrapRequestId = input.bootstrapRequestId?.trim();
+  const bootstrapChallenge = input.bootstrapChallenge?.trim();
   if (Number(projectId !== undefined) + Number(subdomain !== undefined) !== 1) {
     return json({
       error: 'invalid_project_selector',
@@ -935,9 +955,24 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
       message: 'organizationId is allowed only with subdomain; projectId handoff authorization is enforced upstream.',
     }, true);
   }
+  if (Boolean(bootstrapRequestId) !== Boolean(bootstrapChallenge)) {
+    return json({
+      error: 'invalid_project_bootstrap_proof',
+      message: 'Provide bootstrapRequestId and bootstrapChallenge together.',
+    }, true);
+  }
+  if (bootstrapRequestId && client !== 'claude-code') {
+    return json({
+      error: 'invalid_project_bootstrap_proof',
+      message: 'Local verifier binding is supported only for Claude Code.',
+    }, true);
+  }
+  const bootstrap = bootstrapRequestId && bootstrapChallenge
+    ? { bootstrapRequestId, bootstrapChallenge }
+    : {};
   return projectId !== undefined
-    ? { projectId, ...(client ? { client } : {}) }
-    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}) };
+    ? { projectId, ...(client ? { client } : {}), ...bootstrap }
+    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}), ...bootstrap };
 }
 
 function requireInstallClient(selector: ProjectSelector): SupportedInstallClient | ToolResult {
@@ -1015,6 +1050,7 @@ function projectServerName(projectId: string): string {
 function projectMcpInstallPlan(
   handoff: Awaited<ReturnType<SpalaApiClient['prepareProjectMcp']>>,
   client: SupportedInstallClient,
+  bootstrapProof?: { requestId: string; challenge: string },
 ) {
   if (!handoff.mcpUrl) throw new Error('Prepared project MCP URL is missing.');
   if (!new URL(handoff.mcpUrl).searchParams.get('scope')) {
@@ -1049,18 +1085,26 @@ function projectMcpInstallPlan(
     ? ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC]
     : ['npx', '--yes', PROJECT_INSTALLER_SPEC];
   if (client === 'claude-code') {
+    const verifierPrepared = Boolean(bootstrapProof && handoff.bootstrapConsumeUrl);
     return {
       argv: [
-        ...runnerArgv, 'project', 'bind',
+        ...runnerArgv, 'project', verifierPrepared ? 'bind' : 'prepare',
         '--project-id', handoff.projectId,
         '--project-url', handoff.projectUrl,
         '--url', handoff.mcpUrl,
         '--name', serverName,
+        ...(verifierPrepared
+          ? [
+              '--bootstrap-claim', handoff.bootstrapConsumeUrl!,
+              '--bootstrap-request-id', bootstrapProof!.requestId,
+            ]
+          : []),
         '--client', client,
         '--install-scope', 'workspace',
         '--exact-url', '--yes', '--json',
       ],
-      command: 'project bind',
+      command: verifierPrepared ? 'project bind' : 'project prepare',
+      phase: verifierPrepared ? 'redeem_verifier_bound_claim' : 'prepare_local_verifier',
       client,
       projectId: handoff.projectId,
       projectUrl: handoff.projectUrl,
@@ -1073,17 +1117,20 @@ function projectMcpInstallPlan(
       installScope: 'workspace',
       bindingFile: '.spala/project.json',
       globalInstall: false,
-      oneTimeBootstrap: false,
-      immediateConsumptionRequired: false,
-      bootstrapInput: null,
-      bootstrapExposedInArgv: false,
+      oneTimeBootstrap: verifierPrepared,
+      immediateConsumptionRequired: verifierPrepared,
+      bootstrapInput: verifierPrepared ? 'pkce_claim_argv' : null,
+      bootstrapExposedInArgv: verifierPrepared,
+      verifierExposedInArgv: false,
       execution: PROJECT_DIRECT_INSTALL_EXECUTION,
-      projectOAuthRequired: true,
-      credentialMode: 'native_project_oauth',
+      projectOAuthRequired: false,
+      credentialMode: verifierPrepared ? 'local_proxy_after_pkce_claim' : 'local_pkce_prepare',
       shell: false,
       urlSource: 'exact_authenticated_handoff',
       remoteManifestFetch: false,
-      expectedOutput: 'JSON confirming the exact project MCP workspace binding; authenticate that MCP after reloading Claude Code.',
+      expectedOutput: verifierPrepared
+        ? 'JSON confirming verifier-bound claim consumption, local credential proxy setup, and workspace binding.'
+        : 'JSON containing a non-secret request ID and S256 challenge for the second project_connect call.',
     } as const;
   }
   if (!handoff.bootstrapConsumeUrl) {
@@ -1140,15 +1187,22 @@ const PROJECT_MCP_INSTALL_NEXT_STEPS = [
   SPALA_BACKEND_INTENT.buildRequest,
 ] as const;
 
-const CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS = [
-  'Run installPlan.argv as a direct process from the intended local project root. No bootstrap input or process-stdin tool is required.',
-  'Confirm the installer created or updated .spala/project.json and did not install this project MCP globally.',
-  'Reload Claude Code so the workspace project MCP becomes available.',
-  'Open /mcp, select the newly added project MCP, and complete its browser authentication.',
-  'Call spala_start on the newly added project MCP after authentication.',
-  SPALA_BACKEND_INTENT.setupOnly,
-  SPALA_BACKEND_INTENT.buildRequest,
-] as const;
+function claudeCodeProjectMcpNextSteps(verifierPrepared: boolean): readonly string[] {
+  return verifierPrepared
+    ? [
+        'Run installPlan.argv as a direct process from the intended local project root. The claim is verifier-bound; no process stdin or browser OAuth is required.',
+        'Confirm the installer consumed the claim, configured its local credential proxy, and created .spala/project.json without storing the claim or verifier there.',
+        'Reload Claude Code so the workspace project MCP becomes available.',
+        'Call spala_start on the newly added project MCP. Do not start native or manual project OAuth.',
+        SPALA_BACKEND_INTENT.setupOnly,
+        SPALA_BACKEND_INTENT.buildRequest,
+      ]
+    : [
+        'Run installPlan.argv as a direct process from the intended local project root. It stores a verifier locally and returns only a non-secret request ID and S256 challenge.',
+        'Call project_connect again with the same project and client plus authorizationRequest.requestId as bootstrapRequestId and authorizationRequest.challenge as bootstrapChallenge.',
+        'Do not reload Claude Code or start project OAuth until the verifier-bound bind command from the second response succeeds.',
+      ];
+}
 
 async function resolveProjectId(
   api: SpalaApiClient,
@@ -1186,7 +1240,13 @@ async function prepareHandoff(
 ): Promise<{ project?: SpalaProject; handoff: Awaited<ReturnType<SpalaApiClient['prepareProjectMcp']>> } | null> {
   const resolved = await resolveProjectId(api, selector, verifiedPrincipal);
   if (!resolved) return null;
-  return { project: resolved.project, handoff: await api.prepareProjectMcp(resolved.projectId, client) };
+  const bootstrapProof = selector.bootstrapRequestId && selector.bootstrapChallenge
+    ? { requestId: selector.bootstrapRequestId, challenge: selector.bootstrapChallenge }
+    : undefined;
+  return {
+    project: resolved.project,
+    handoff: await api.prepareProjectMcp(resolved.projectId, client, bootstrapProof),
+  };
 }
 
 export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClient, ctx: RequestContext = {}): McpServer {
@@ -1201,7 +1261,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
-      'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap clients receive a one-time opaque URL only for the local installer; Claude Code receives no bootstrap.',
+      'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap credentials are one-time and consumed only by the local installer; Claude Code uses an installer-held verifier and does not require project OAuth.',
       'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
       'After account setup, follow the single nextAction. Automatically reuse only a valid project binding from the current workspace; otherwise present existing projects or ask for a new project name. Never silently choose an existing project.',
       SPALA_BACKEND_INTENT_TEXT,
@@ -1248,8 +1308,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
       'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares the authentication mode required by that client on the exact project backend.',
-      'Run installPlan.argv from the intended project root and follow its returned execution contract. Codex, Roo, and Cursor use process stdin for bootstrap; Claude Code does not.',
-      'Follow the returned authentication mode. Bootstrap clients use the local credential proxy; Claude Code completes native project OAuth after reload.',
+      'Run installPlan.argv from the intended project root and follow its returned execution contract. Codex, Roo, and Cursor use process stdin; Claude Code prepares a local verifier, then calls project_connect again to redeem a verifier-bound claim.',
+      'All supported clients use a project-scoped local credential proxy after delegated connection. Do not start native project OAuth for this agentic flow.',
       'Follow the installer JSON reload instruction for the selected client.',
       'If the user asked only to install, connect, configure, or set up Spala, stop after verifying the project MCP connection. Do not write application code or mutate project resources.',
       'Only continue when the user separately requested implementation, and only after account setup and project MCP verification are complete. Keep all backend work in Spala project MCP; do not scaffold a competing local backend.',
@@ -1339,11 +1399,11 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           claudeCode: {
             clients: ['claude-code'],
             execution: PROJECT_DIRECT_INSTALL_EXECUTION,
-            credentialMode: 'native_project_oauth',
-            projectOAuthRequired: true,
+            credentialMode: 'local_proxy_after_pkce_claim',
+            projectOAuthRequired: false,
           },
         },
-        bootstrapHandling: 'For Codex, Roo, and Cursor only: opaque, short-lived, and one-time through process stdin. Never place it in argv or shell text. Claude Code receives no bootstrap.',
+        bootstrapHandling: 'Codex, Roo, and Cursor consume an opaque one-time claim through process stdin. Claude Code creates a local verifier first, then redeems a verifier-bound one-time claim without browser OAuth; the verifier never appears in argv.',
         exactUrlBehavior: 'Pass the exact clean mcpUrl with --exact-url so the installer never injects or changes scope.',
       },
       projectCreate: 'Creates a real Spala project through the authenticated platform API.',
@@ -1654,9 +1714,13 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           action: { type: 'retry_tool', tool, arguments: input },
         }, true);
       }
-      const installPlan = projectMcpInstallPlan(handoff, client);
+      const bootstrapProof = selector.bootstrapRequestId && selector.bootstrapChallenge
+        ? { requestId: selector.bootstrapRequestId, challenge: selector.bootstrapChallenge }
+        : undefined;
+      const installPlan = projectMcpInstallPlan(handoff, client, bootstrapProof);
       const serverSideA2a = client === 'a2a';
-      const nativeProjectOAuth = client === 'claude-code';
+      const claudeCode = client === 'claude-code';
+      const claudeVerifierPrepared = claudeCode && Boolean(bootstrapProof && handoff.bootstrapConsumeUrl);
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
       const responseHandoff = serverSideA2a
         ? { ...publicHandoff, mcpUrl: installPlan.mcpUrl }
@@ -1669,19 +1733,22 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         preparedByProjectBackend: true,
-        bootstrapPreparedByProjectBackend: !nativeProjectOAuth,
+        bootstrapPreparedByProjectBackend: Boolean(handoff.bootstrapConsumeUrl),
         workspaceOnly: !serverSideA2a,
         connectionMode: serverSideA2a ? 'server_side_a2a' : 'workspace_install',
         compatibilityAlias: tool === 'project_select' ? 'project_connect' : undefined,
         installPlan,
         bootstrap: {
-          oneTime: !nativeProjectOAuth,
-          immediateConsumptionRequired: !nativeProjectOAuth,
-          ...(!nativeProjectOAuth ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
-          input: nativeProjectOAuth ? null : 'stdin_single_line',
-          exposedInInstallArgv: false,
+          oneTime: claudeCode ? claudeVerifierPrepared : true,
+          immediateConsumptionRequired: claudeCode ? claudeVerifierPrepared : true,
+          ...(!claudeCode ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
+          input: claudeCode
+            ? (claudeVerifierPrepared ? 'verifier_bound_claim_argv' : 'local_verifier_prepare')
+            : 'stdin_single_line',
+          exposedInInstallArgv: claudeVerifierPrepared,
+          verifierExposedInInstallArgv: false,
           publicMcpFetchesUrl: false,
-          projectOAuthRequired: nativeProjectOAuth,
+          projectOAuthRequired: false,
         },
         nextSteps: serverSideA2a
           ? [
@@ -1689,8 +1756,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
               'Use only the exact returned mcpUrl for this authorized project session.',
               'Never expose, persist, print, or return the bootstrap URL or exchanged credential.',
             ]
-          : nativeProjectOAuth
-            ? CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS
+          : claudeCode
+            ? claudeCodeProjectMcpNextSteps(claudeVerifierPrepared)
             : PROJECT_MCP_INSTALL_NEXT_STEPS,
         intentBoundary: SPALA_BACKEND_INTENT,
         rule: serverSideA2a
@@ -1741,8 +1808,12 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           action: { type: 'retry_tool', tool: 'project_get_mcp_manifest', arguments: input },
         }, true);
       }
-      const installPlan = projectMcpInstallPlan(handoff, client);
-      const nativeProjectOAuth = client === 'claude-code';
+      const bootstrapProof = selector.bootstrapRequestId && selector.bootstrapChallenge
+        ? { requestId: selector.bootstrapRequestId, challenge: selector.bootstrapChallenge }
+        : undefined;
+      const installPlan = projectMcpInstallPlan(handoff, client, bootstrapProof);
+      const claudeCode = client === 'claude-code';
+      const claudeVerifierPrepared = claudeCode && Boolean(bootstrapProof && handoff.bootstrapConsumeUrl);
       const { bootstrapConsumeUrl: _bootstrapConsumeUrl, ...publicHandoff } = handoff;
       return json({
         schemaVersion: 1,
@@ -1753,22 +1824,25 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         manifestUrl: handoff.manifestUrl,
         serverName: installPlan.serverName,
         transport: 'streamable-http',
-        auth: nativeProjectOAuth ? 'native_project_oauth' : 'local_credential_proxy_after_bootstrap',
+        auth: claudeCode ? 'local_credential_proxy_after_pkce_claim' : 'local_credential_proxy_after_bootstrap',
         preparedByProjectBackend: true,
-        bootstrapPreparedByProjectBackend: !nativeProjectOAuth,
+        bootstrapPreparedByProjectBackend: Boolean(handoff.bootstrapConsumeUrl),
         workspaceOnly: true,
         installPlan,
         bootstrap: {
-          oneTime: !nativeProjectOAuth,
-          immediateConsumptionRequired: !nativeProjectOAuth,
-          ...(!nativeProjectOAuth ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
-          input: nativeProjectOAuth ? null : 'stdin_single_line',
-          exposedInInstallArgv: false,
+          oneTime: claudeCode ? claudeVerifierPrepared : true,
+          immediateConsumptionRequired: claudeCode ? claudeVerifierPrepared : true,
+          ...(!claudeCode ? { consumeUrl: handoff.bootstrapConsumeUrl } : {}),
+          input: claudeCode
+            ? (claudeVerifierPrepared ? 'verifier_bound_claim_argv' : 'local_verifier_prepare')
+            : 'stdin_single_line',
+          exposedInInstallArgv: claudeVerifierPrepared,
+          verifierExposedInInstallArgv: false,
           publicMcpFetchesUrl: false,
-          projectOAuthRequired: nativeProjectOAuth,
+          projectOAuthRequired: false,
         },
-        nextSteps: nativeProjectOAuth
-          ? CLAUDE_CODE_PROJECT_MCP_INSTALL_NEXT_STEPS
+        nextSteps: claudeCode
+          ? claudeCodeProjectMcpNextSteps(claudeVerifierPrepared)
           : PROJECT_MCP_INSTALL_NEXT_STEPS,
         intentBoundary: SPALA_BACKEND_INTENT,
         manifestNote: 'manifestUrl is informational. Do not fetch or pass a remote manifest to the installer; install with the exact mcpUrl in installPlan.argv.',

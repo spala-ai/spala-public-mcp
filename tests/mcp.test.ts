@@ -190,7 +190,9 @@ test('tools/list advertises authenticated status and honest project preparation 
       const installs = name !== 'project_get_public_context';
       assert.deepEqual(
         Object.keys(tool.inputSchema.properties || {}).sort(),
-        installs ? ['client', 'organizationId', 'projectId', 'subdomain'] : ['organizationId', 'projectId', 'subdomain'],
+        installs
+          ? ['bootstrapChallenge', 'bootstrapRequestId', 'client', 'organizationId', 'projectId', 'subdomain']
+          : ['organizationId', 'projectId', 'subdomain'],
       );
       if (installs) {
         assert.deepEqual(
@@ -646,7 +648,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.17', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -674,6 +676,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
       consumeUrl: handoff.bootstrapConsumeUrl,
       input: 'stdin_single_line',
       exposedInInstallArgv: false,
+      verifierExposedInInstallArgv: false,
       publicMcpFetchesUrl: false,
       projectOAuthRequired: false,
     });
@@ -703,7 +706,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.17', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -722,45 +725,63 @@ test('project_connect, compatibility select, and manifest send the client and ke
   });
 });
 
-test('Claude Code project connections use direct workspace binding without an unavailable process-stdin step', async () => {
+test('Claude Code project connections use a verifier-bound delegated claim without project OAuth', async () => {
   const api = apiStub({
     async listProjects() {
       return { organization: principal.organizations[0]!, projects: [project] };
     },
-    async prepareProjectMcp() {
-      return handoff;
+    async prepareProjectMcp(_projectId, _client, bootstrapProof) {
+      return bootstrapProof
+        ? handoff
+        : { ...handoff, bootstrapConsumeUrl: undefined };
     },
   });
 
   await withVerifiedClient(api, async client => {
-    const connected = await client.callTool({
+    const prepared = await client.callTool({
       name: 'project_connect',
       arguments: { projectId: project.id, client: 'claude-code' },
     });
-    assert.notEqual(connected.isError, true);
-    const body = resultJson(connected);
-    const plan = body.installPlan as Record<string, unknown> & {
+    assert.notEqual(prepared.isError, true);
+    const preparedBody = resultJson(prepared);
+    const preparedPlan = preparedBody.installPlan as Record<string, unknown> & {
       argv: string[];
       execution: Record<string, unknown>;
     };
-    const bootstrap = body.bootstrap as Record<string, unknown>;
+    assert.deepEqual(preparedPlan.argv.slice(3, 5), ['project', 'prepare']);
+    assert.equal(preparedPlan.projectOAuthRequired, false);
+    assert.equal(preparedPlan.credentialMode, 'local_pkce_prepare');
+    assert.equal(preparedPlan.argv.includes('--bootstrap-stdin'), false);
+    assert.equal(preparedBody.bootstrapPreparedByProjectBackend, false);
+    assert.match((preparedBody.nextSteps as string[]).join('\n'), /project_connect again.*bootstrapRequestId.*bootstrapChallenge/i);
 
-    assert.equal(plan.argv.includes('--bootstrap-stdin'), false);
-    assert.equal(plan.argv.includes('--bootstrap-url'), false);
-    assert.equal(plan.argv.includes(handoff.bootstrapConsumeUrl), false);
-    assert.equal(plan.projectOAuthRequired, true);
-    assert.equal(plan.credentialMode, 'native_project_oauth');
-    assert.equal(plan.oneTimeBootstrap, false);
-    assert.equal(plan.execution.stdin, null);
-    assert.equal(plan.execution.tty, false);
-    assert.equal(bootstrap.oneTime, false);
-    assert.equal(bootstrap.immediateConsumptionRequired, false);
-    assert.equal(bootstrap.consumeUrl, undefined);
-    assert.equal(bootstrap.projectOAuthRequired, true);
-    assert.equal(body.bootstrapPreparedByProjectBackend, false);
-    assert.equal(JSON.stringify(body).includes(handoff.bootstrapConsumeUrl), false);
-    assert.match((body.nextSteps as string[]).join('\n'), /No bootstrap input or process-stdin tool is required/i);
-    assert.match((body.nextSteps as string[]).join('\n'), /Open \/mcp.*complete.*authentication/i);
+    const requestId = `claim_${'r'.repeat(24)}`;
+    const challenge = 'c'.repeat(43);
+    const connected = await client.callTool({
+      name: 'project_connect',
+      arguments: {
+        projectId: project.id,
+        client: 'claude-code',
+        bootstrapRequestId: requestId,
+        bootstrapChallenge: challenge,
+      },
+    });
+    assert.notEqual(connected.isError, true);
+    const body = resultJson(connected);
+    const plan = body.installPlan as Record<string, unknown> & { argv: string[] };
+    const bootstrap = body.bootstrap as Record<string, unknown>;
+    assert.deepEqual(plan.argv.slice(3, 5), ['project', 'bind']);
+    assert.equal(plan.argv.includes('--bootstrap-claim'), true);
+    assert.equal(plan.argv.includes(handoff.bootstrapConsumeUrl), true);
+    assert.equal(plan.argv.includes('--bootstrap-request-id'), true);
+    assert.equal(plan.argv.includes(requestId), true);
+    assert.equal(plan.argv.includes(challenge), false);
+    assert.equal(plan.projectOAuthRequired, false);
+    assert.equal(plan.credentialMode, 'local_proxy_after_pkce_claim');
+    assert.equal(bootstrap.projectOAuthRequired, false);
+    assert.equal(bootstrap.verifierExposedInInstallArgv, false);
+    assert.equal(body.bootstrapPreparedByProjectBackend, true);
+    assert.match((body.nextSteps as string[]).join('\n'), /no process stdin or browser OAuth is required/i);
   });
 });
 

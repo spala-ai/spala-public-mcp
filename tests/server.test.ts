@@ -67,6 +67,7 @@ const bootstrapConsumeUrl = `${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/age
 const installerProjectAccessToken = 'installer-only-project-access-token';
 const installerProjectAccessExpiresAt = '2099-10-01T00:00:00.000Z';
 let bootstrapConsumeCount = 0;
+let bootstrapExpectedChallenge: string | undefined;
 let newAccountProfile: { firstName: string; lastName: string } | undefined;
 let newAccountOrganization: { id: string; name: string } | undefined;
 let credentialSequence = 0;
@@ -210,6 +211,14 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       if (authorization) {
         return Response.json({ error: 'authorization_must_be_absent' }, { status: 400 });
       }
+      if (bootstrapExpectedChallenge) {
+        const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+        const verifier = typeof body['codeVerifier'] === 'string' ? body['codeVerifier'] : '';
+        const actualChallenge = createHash('sha256').update(verifier).digest('base64url');
+        if (actualChallenge !== bootstrapExpectedChallenge) {
+          return Response.json({ error: 'invalid_grant' }, { status: 403 });
+        }
+      }
       bootstrapConsumeCount += 1;
       if (bootstrapConsumeCount > 1) {
         return Response.json({ error: 'bootstrap_already_consumed' }, { status: 410 });
@@ -259,16 +268,19 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         return Response.json({ error: 'invalid_project_token' }, { status: 401 });
       }
       const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      const verifierBound = body['deliveryMode'] === 'one-time-pkce';
       if (
         body['scope'] !== authorizedProjectScope
-        || body['deliveryMode'] !== 'one-time'
+        || (!verifierBound && body['deliveryMode'] !== 'one-time')
+        || (verifierBound && !/^[A-Za-z0-9_-]{43}$/.test(String(body['codeChallenge'] || '')))
       ) {
         return Response.json({ error: 'bootstrap_binding_mismatch' }, { status: 400 });
       }
+      bootstrapExpectedChallenge = verifierBound ? String(body['codeChallenge']) : undefined;
       return Response.json({
         consumeUrl: bootstrapConsumeUrl,
         scopes: authorizedProjectScope.split(','),
-        deliveryMode: 'one-time',
+        deliveryMode: verifierBound ? 'one-time-pkce' : 'one-time',
       }, { status: 201 });
     }
     return Response.json({ error: 'not_found' }, { status: 404 });
@@ -834,7 +846,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.17', 'project', 'bind']);
   assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
@@ -944,8 +956,9 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(entryTokenAtSharedMount.status, 401, 'the projectUrl builder token must not authenticate at the shared mount');
 
   bootstrapConsumeCount = 0;
+  bootstrapExpectedChallenge = undefined;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
-  assert.equal(wrongMethod.status, 405, 'installer 0.1.16 must consume the capability with POST');
+  assert.equal(wrongMethod.status, 405, 'installer 0.1.17 must consume the capability with POST');
   assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
 
   const installerResponse = await fetch(bootstrapConsumeUrl, {
@@ -1061,15 +1074,20 @@ test('generated project bind plan and bootstrap run against the local installer 
   assert.equal(connected.status, 200);
   const connectedBody = await toolBody(connected);
   const plan = connectedBody.installPlan as { argv: string[]; mcpUrl: string };
-  const consumeUrl = (connectedBody.bootstrap as { consumeUrl: string }).consumeUrl;
   assert.deepEqual(plan.argv.slice(0, 3), [
     'npx',
     '--yes',
-    '@spala-ai/mcp-install@0.1.16',
+    '@spala-ai/mcp-install@0.1.17',
   ]);
 
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
   const credentialHome = mkdtempSync(join(tmpdir(), 'spala-public-mcp-credentials-smoke-'));
+  const installerProjectUrl = 'https://shared.spala.ai/p123';
+  const installerMcpUrl = `${installerProjectUrl}/mcp?scope=builder%2Cproject`;
+  const installerConsumeUrl = `${installerProjectUrl}/mcp/agent-instructions/mcp_agent_test/consume`;
+  const installerArgv = plan.argv.slice(3);
+  installerArgv[installerArgv.indexOf('--project-url') + 1] = installerProjectUrl;
+  installerArgv[installerArgv.indexOf('--url') + 1] = installerMcpUrl;
   let stdout = '';
   let stderr = '';
   try {
@@ -1077,17 +1095,27 @@ test('generated project bind plan and bootstrap run against the local installer 
     mkdirSync(join(workspace, '.codex'), { recursive: true });
     writeFileSync(join(workspace, '.codex', 'config.toml'), '[projects]\ntrust_level = "trusted"\n');
     bootstrapConsumeCount = 0;
+    bootstrapExpectedChallenge = undefined;
 
     await installer.runCli(
-      plan.argv.slice(3),
+      installerArgv,
       { ...process.env, SPALA_MCP_CREDENTIAL_HOME: credentialHome },
       workspace,
       {
-        stdin: Readable.from([`${consumeUrl}\n`]),
+        stdin: Readable.from([`${installerConsumeUrl}\n`]),
         stdout: { write: chunk => { stdout += chunk; } },
         stderr: { write: chunk => { stderr += chunk; } },
       },
-      { fetch: async (input, init) => fetch(input, init) },
+      {
+        fetch: async (_input, init) => {
+          const upstream = await fetch(bootstrapConsumeUrl, init);
+          const payload = await responseJson(upstream);
+          return Response.json({ ...payload, mcp_url: installerMcpUrl }, {
+            status: upstream.status,
+            headers: upstream.headers,
+          });
+        },
+      },
     );
 
     const result = JSON.parse(stdout) as Record<string, unknown>;
@@ -1097,9 +1125,9 @@ test('generated project bind plan and bootstrap run against the local installer 
     assert.equal(result['ok'], true);
     assert.equal(result['outcome'], 'bound');
     assert.equal(binding['projectId'], 'project-1');
-    assert.equal(binding['projectUrl'], projectUrl);
+    assert.equal(binding['projectUrl'], installerProjectUrl);
     const installedMcpUrl = new URL(String(binding['mcpUrl']));
-    const plannedMcpUrl = new URL(plan.mcpUrl);
+    const plannedMcpUrl = new URL(installerMcpUrl);
     assert.equal(installedMcpUrl.origin, plannedMcpUrl.origin);
     assert.equal(installedMcpUrl.pathname, plannedMcpUrl.pathname.replace(/\/+$/, ''));
     assert.equal(installedMcpUrl.searchParams.get('scope'), plannedMcpUrl.searchParams.get('scope'));
@@ -1110,7 +1138,7 @@ test('generated project bind plan and bootstrap run against the local installer 
       /mcp_agent_test|installer-only-project-access-token/,
     );
 
-    const consumedAgain = await fetch(consumeUrl, { method: 'POST' });
+    const consumedAgain = await fetch(bootstrapConsumeUrl, { method: 'POST' });
     assert.equal(consumedAgain.status, 410, 'the local installer must consume a one-time session');
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -1118,7 +1146,7 @@ test('generated project bind plan and bootstrap run against the local installer 
   }
 });
 
-test('generated Claude Code plan binds through the local installer without bootstrap stdin', {
+test('generated Claude Code plan binds through the local installer without project OAuth', {
   skip: !localInstallerRoot,
 }, async () => {
   const installerCliPath = join(localInstallerRoot!, 'src/cli.js');
@@ -1143,56 +1171,107 @@ test('generated Claude Code plan binds through the local installer without boots
     authorization.verifier,
   ));
   bootstrapConsumeCount = 0;
-  const connected = await mcpRequest(
+  bootstrapExpectedChallenge = undefined;
+  const prepared = await mcpRequest(
     'project_connect',
     { projectId: 'project-1', client: 'claude-code' },
     `Bearer ${token.access_token as string}`,
   );
-  assert.equal(connected.status, 200);
-  const connectedBody = await toolBody(connected);
-  const plan = connectedBody.installPlan as { argv: string[]; mcpUrl: string };
-  assert.equal(plan.argv.includes('--bootstrap-stdin'), false);
-  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, undefined);
+  assert.equal(prepared.status, 200);
+  const preparedBody = await toolBody(prepared);
+  const preparePlan = preparedBody.installPlan as { argv: string[]; mcpUrl: string };
+  assert.deepEqual(preparePlan.argv.slice(3, 5), ['project', 'prepare']);
+  assert.equal(preparePlan.argv.includes('--bootstrap-stdin'), false);
+  assert.equal(preparePlan['projectOAuthRequired'], false);
   // The server suite uses reserved .example origins. Substitute a valid,
   // same-origin Spala project URL only for the installer's host-boundary
   // validation; the response assertions above still cover the generated URLs.
   const installerProjectUrl = 'https://shared.spala.ai/p123';
   const installerMcpUrl = `${installerProjectUrl}/mcp?scope=builder%2Cproject`;
-  const installerArgv = plan.argv.slice(3);
-  installerArgv[installerArgv.indexOf('--project-url') + 1] = installerProjectUrl;
-  installerArgv[installerArgv.indexOf('--url') + 1] = installerMcpUrl;
-
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-smoke-'));
-  let stdout = '';
+  const credentialHome = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-credentials-'));
+  const installerEnv = { ...process.env, SPALA_MCP_CREDENTIAL_HOME: credentialHome };
   let stderr = '';
   try {
     mkdirSync(join(workspace, '.git'));
     mkdirSync(join(workspace, '.claude'));
+    const prepareArgv = preparePlan.argv.slice(3);
+    prepareArgv[prepareArgv.indexOf('--project-url') + 1] = installerProjectUrl;
+    prepareArgv[prepareArgv.indexOf('--url') + 1] = installerMcpUrl;
+    let prepareStdout = '';
     await installer.runCli(
-      installerArgv,
-      process.env,
+      prepareArgv,
+      installerEnv,
       workspace,
       {
         stdin: Readable.from([]),
-        stdout: { write: chunk => { stdout += chunk; } },
+        stdout: { write: chunk => { prepareStdout += chunk; } },
         stderr: { write: chunk => { stderr += chunk; } },
       },
       { fetch: async (input, init) => fetch(input, init) },
     );
+    const authorizationRequest = (JSON.parse(prepareStdout) as {
+      authorizationRequest: { requestId: string; challenge: string };
+    }).authorizationRequest;
 
-    const result = JSON.parse(stdout) as Record<string, unknown>;
+    const connected = await mcpRequest(
+      'project_connect',
+      {
+        projectId: 'project-1',
+        client: 'claude-code',
+        bootstrapRequestId: authorizationRequest.requestId,
+        bootstrapChallenge: authorizationRequest.challenge,
+      },
+      `Bearer ${token.access_token as string}`,
+    );
+    assert.equal(connected.status, 200);
+    const connectedBody = await toolBody(connected);
+    const bindPlan = connectedBody.installPlan as { argv: string[]; mcpUrl: string; projectOAuthRequired: boolean };
+    assert.deepEqual(bindPlan.argv.slice(3, 5), ['project', 'bind']);
+    assert.equal(bindPlan.projectOAuthRequired, false);
+    assert.equal(bindPlan.argv.includes('--bootstrap-claim'), true);
+    assert.equal(bindPlan.argv.includes(authorizationRequest.challenge), false);
+
+    const bindArgv = bindPlan.argv.slice(3);
+    bindArgv[bindArgv.indexOf('--project-url') + 1] = installerProjectUrl;
+    bindArgv[bindArgv.indexOf('--url') + 1] = installerMcpUrl;
+    bindArgv[bindArgv.indexOf('--bootstrap-claim') + 1] = `${installerProjectUrl}/mcp/agent-instructions/mcp_agent_test/consume`;
+    let bindStdout = '';
+    await installer.runCli(
+      bindArgv,
+      installerEnv,
+      workspace,
+      {
+        stdin: Readable.from([]),
+        stdout: { write: chunk => { bindStdout += chunk; } },
+        stderr: { write: chunk => { stderr += chunk; } },
+      },
+      {
+        fetch: async (_input, init) => {
+          const upstream = await fetch(bootstrapConsumeUrl, init);
+          const payload = await responseJson(upstream);
+          return Response.json({ ...payload, mcp_url: installerMcpUrl }, {
+            status: upstream.status,
+            headers: upstream.headers,
+          });
+        },
+      },
+    );
+
+    const result = JSON.parse(bindStdout) as Record<string, unknown>;
     const binding = JSON.parse(
       readFileSync(join(workspace, '.spala', 'project.json'), 'utf8'),
     ) as Record<string, unknown>;
     assert.equal(result['ok'], true);
-    assert.equal(result['agenticCredentialConfigured'], false);
+    assert.equal(result['agenticCredentialConfigured'], true);
     assert.equal(binding['projectId'], 'project-1');
     assert.equal(binding['projectUrl'], installerProjectUrl);
     assert.equal(binding['mcpUrl'], installerMcpUrl);
-    assert.equal(bootstrapConsumeCount, 0, 'Claude Code direct binding must not create or consume a bootstrap session');
+    assert.equal(bootstrapConsumeCount, 1, 'Claude Code must redeem exactly one verifier-bound claim');
     assert.equal(stderr, '');
   } finally {
     rmSync(workspace, { recursive: true, force: true });
+    rmSync(credentialHome, { recursive: true, force: true });
   }
 });
 
@@ -1978,7 +2057,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.16 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 0.1.17 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
   const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
@@ -1996,21 +2075,21 @@ test('install manifest exposes machine-readable 0.1.16 installer commands and se
   assert.equal(agentIntegrations.projectMcpUrlsBundled, false);
   assert.equal((manifest.links as Record<string, unknown>).agentIntegrations, agentIntegrations.repository);
 
-  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
-  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.16 init --client <client> --yes --json');
+  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.17 init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.17 init --client <client> --yes --json');
   assert.deepEqual(commands.installerNpmArgv, {
-    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.16', 'status', '--client', '<client>', '--json'],
+    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.17', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.17', 'status', '--client', '<client>', '--json'],
   });
   assert.deepEqual(commands.installerPnpmArgv, {
-    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.16', 'status', '--client', '<client>', '--json'],
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.17', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.17', 'status', '--client', '<client>', '--json'],
   });
-  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.16 init --client codex --yes --json');
+  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.17 init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
-  assert.equal(installer.version, '0.1.16');
+  assert.equal(installer.version, '0.1.17');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.16']);
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.17']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',

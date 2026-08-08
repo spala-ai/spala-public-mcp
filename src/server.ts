@@ -151,7 +151,7 @@ const PROJECT_HANDOFF_STATUS = {
   code: 'enabled',
   authValidation: `The public MCP securely validates ${PUBLIC_MCP_SCOPE}-scoped access before authenticated project operations.`,
   reason: 'Authenticated project connect prepares MCP server-side and returns an exact client-specific workspace binding plan.',
-  installerScopeHandling: 'Codex, Roo, and Cursor use immediate one-time bootstrap consumption through a local credential proxy. Claude Code uses a direct workspace binding plus native project OAuth after reload. No project MCP is installed globally.',
+  installerScopeHandling: 'Codex, Roo, and Cursor use immediate one-time bootstrap consumption through a local credential proxy. Claude Code uses a verifier-bound delegated claim through the same project-scoped proxy without a second browser login. No project MCP is installed globally.',
 };
 const PROJECT_AUTH_FAILURE_HINT = `Missing or invalid bearer returns HTTP 401 OAuth metadata; missing ${PUBLIC_MCP_SCOPE} scope returns HTTP 403 insufficient_scope; temporary service failures return HTTP 503.`;
 
@@ -493,7 +493,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - spala_start absorbs account_status and organization/project discovery. Follow exactly its one nextAction. Call spala_start again only when that action explicitly requests it after a state transition. If setup is required, use companyName when no organization exists. Never invent placeholder profile, company, or project names, and never silently choose an existing project without a valid local binding.
 - Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
 - Run project bind plans from the intended workspace. Project MCP must never be installed globally.
-- Follow the returned installPlan exactly. Codex, Roo, and Cursor send bootstrap.consumeUrl as the installer stdin line and use a local credential proxy. Claude Code receives no bootstrap and completes native project OAuth after reloading the workspace binding.
+- Follow the returned installPlan exactly. Codex, Roo, and Cursor send bootstrap.consumeUrl as the installer stdin line. Claude Code runs the prepare plan, calls project_connect again with the returned non-secret request ID and challenge, then runs the bind plan. All use a local project-scoped credential proxy without project OAuth.
 - Never put a returned bootstrap capability in argv or shell text, and do not inspect, log, store, or reuse it.
 - Canonical agent start URL: ${AGENT_START_URL}
 - Public MCP docs: ${config.docsUrl}
@@ -537,7 +537,7 @@ Authentication intent: do not start OAuth, call authenticated tools, or run an i
 Hard trigger after this client is authenticated for an explicit account/project request: call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
 Client safety: Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
-spala_start returns a versioned startup phase, account readiness, safely grouped organization/project discovery, and exactly one nextAction. Follow that action and call spala_start again only when it explicitly requests another state read. With no organization, complete account_setup with companyName; with one organization it is auto-scoped; with multiple organizations do not guess. Never silently choose an existing project without a valid local workspace binding. Billing responses provide only a safe checkout continuation. project_connect reuses the existing dashboard project-entry handoff, enables MCP on the exact project backend, and returns a client-specific workspace bind plan. Codex, Roo, and Cursor use the returned one-time bootstrap through process stdin. Claude Code binds directly and completes native project OAuth after reload.
+spala_start returns a versioned startup phase, account readiness, safely grouped organization/project discovery, and exactly one nextAction. Follow that action and call spala_start again only when it explicitly requests another state read. With no organization, complete account_setup with companyName; with one organization it is auto-scoped; with multiple organizations do not guess. Never silently choose an existing project without a valid local workspace binding. Billing responses provide only a safe checkout continuation. project_connect reuses the existing dashboard project-entry handoff, enables MCP on the exact project backend, and returns a client-specific workspace bind plan. Codex, Roo, and Cursor use the returned one-time bootstrap through process stdin. Claude Code uses a two-call verifier-bound delegated claim and does not require project OAuth.
 
 Public tools: ${PUBLIC_TOOLS.join(', ')}
 Authenticated tools: ${AUTHENTICATED_TOOLS.join(', ')}
@@ -1206,7 +1206,7 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectMcpResolution: {
       source: 'The authenticated project handoff returned by Spala.',
       rule: 'Call project_connect and execute its client-specific workspace-only project bind plan with the exact clean mcpUrl.',
-      note: 'Codex, Roo, and Cursor follow the protected bootstrap instructions. Claude Code follows the returned direct-bind and native project OAuth instructions. Agents must not derive project URLs, expose credentials, or install a project MCP globally.',
+      note: 'Codex, Roo, and Cursor follow the protected bootstrap instructions. Claude Code follows the returned verifier preparation and delegated claim instructions without project OAuth. Agents must not derive project URLs, expose credentials, or install a project MCP globally.',
       execution: {
         bootstrapClients: PROJECT_INSTALL_EXECUTION,
         claudeCode: PROJECT_DIRECT_INSTALL_EXECUTION,

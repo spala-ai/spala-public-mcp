@@ -40,7 +40,7 @@ export const docsIndex = [
     id: 'public-mcp-install-command',
     title: 'Install Spala Public MCP with npm',
     url: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
-    summary: 'For Codex use npx --yes @spala-ai/mcp-install@0.1.16 init --client codex --yes --json, then run npx --yes @spala-ai/mcp-install@0.1.16 status --client codex --json and follow the exact JSON steps. After authentication, call project_connect once for workspace binding. Codex, Roo, and Cursor start the returned plan with tty:true and shell:false, then send bootstrap.consumeUrl through the process stdin tool. Claude Code receives a direct workspace bind and completes native project OAuth after reload. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
+    summary: 'For Codex use npx --yes @spala-ai/mcp-install@0.1.17 init --client codex --yes --json, then run npx --yes @spala-ai/mcp-install@0.1.17 status --client codex --json and follow the exact JSON steps. After authentication, call project_connect for workspace binding. Codex, Roo, and Cursor start the returned plan with tty:true and shell:false, then send bootstrap.consumeUrl through the process stdin tool. Claude Code prepares a local verifier, calls project_connect again with its non-secret request ID and challenge, and redeems the returned claim without project OAuth. Legacy flags remain compatibility-only; project MCP must never be installed globally.',
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
@@ -54,7 +54,7 @@ export const docsIndex = [
     id: 'project-mcp-resolution',
     title: 'Project MCP URL resolution',
     url: 'https://docs.spala.ai/agents/mcp',
-    summary: 'Agents choose Codex, Roo, Claude Code, or Cursor. project_connect prepares MCP server-side and returns workspace-only project bind argv. Codex, Roo, and Cursor receive a separate short-lived capability consumed through process stdin. Claude Code binds the exact remote MCP directly and completes native project OAuth after reload.',
+    summary: 'Agents choose Codex, Roo, Claude Code, or Cursor. project_connect prepares MCP server-side and returns workspace-only project bind argv. Codex, Roo, and Cursor receive a separate short-lived capability consumed through process stdin. Claude Code redeems a short-lived verifier-bound claim using an installer-held verifier, without a second browser login.',
     keywords: ['project mcp', 'access-url', 'access url', 'project handoff', 'mcp url', 'runtime', 'shared runtime', 'slug', 'project slug'],
   },
   {
