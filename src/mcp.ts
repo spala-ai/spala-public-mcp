@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
+import { PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
@@ -51,8 +52,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'cursor',
   'a2a',
 ] as const;
-export const PROJECT_INSTALLER_VERSION = '0.1.17';
-export const PROJECT_INSTALLER_SPEC = `@spala-ai/mcp-install@${PROJECT_INSTALLER_VERSION}`;
+export { PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
 export const AGENT_INTEGRATIONS_REPOSITORY = 'https://github.com/spala-ai/agent-integrations';
 export const AGENT_INTEGRATIONS_CLIENTS = [
   'claude-code',
