@@ -31,6 +31,11 @@ const API_ERROR_CODES = [
   'not_found',
   'rate_limited',
   'upstream_unavailable',
+  'invalid_project_mcp_handoff',
+  'project_token_exchange_failed',
+  'project_mcp_enable_failed',
+  'project_mcp_preparation_failed',
+  'project_agent_instruction_failed',
   'other',
 ] as const;
 

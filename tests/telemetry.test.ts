@@ -39,12 +39,19 @@ test('events are schema-filtered: only declared enum fields survive, adversarial
       token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig',
       path: '/Users/someone/secret',
     });
+    recordTelemetry('project_connect', {
+      ok: false,
+      outcome: 'error',
+      client: 'other',
+      tool: 'project_connect',
+      code: 'project_token_exchange_failed',
+    });
     recordTelemetry('oauth_token', { ok: false, grant: 'evil_grant_type', code: 'access_denied' });
     recordTelemetry('made_up_event', { ok: true });
     await drainTelemetry();
 
     const lines = eventLines(join(directory, 'nested'));
-    assert.equal(lines.length, 2, 'unknown events are dropped');
+    assert.equal(lines.length, 3, 'unknown events are dropped');
     const serialized = lines.join('\n');
     assert.doesNotMatch(serialized, /example\.com|203\.0\.113|eyJ|\/Users\//, 'no identifier-like value reaches disk');
 
@@ -53,7 +60,10 @@ test('events are schema-filtered: only declared enum fields survive, adversarial
     assert.equal(connect.code, 'other', 'out-of-enum value collapses to fallback');
     assert.equal(connect.client, 'claude-code');
 
-    const token = JSON.parse(lines[1]!);
+    const failedConnect = JSON.parse(lines[1]!);
+    assert.equal(failedConnect.code, 'project_token_exchange_failed');
+
+    const token = JSON.parse(lines[2]!);
     assert.equal(token.grant, 'other', 'caller-controlled grant_type collapses to fallback');
     assert.equal(token.code, 'access_denied');
   } finally {
