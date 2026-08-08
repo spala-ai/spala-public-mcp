@@ -611,14 +611,14 @@ const TOOL_DESCRIPTIONS = {
   projectConnect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible Spala project for agent access.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
-    'Returns a protected one-time bootstrap capability and a workspace-scoped project binding plan without exposing bearer credentials.',
+    'Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; direct binding plus native project OAuth for Claude Code.',
   ].join(' '),
   projectSelect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Compatibility alias for project_connect.',
-    'Prepares one accessible project and returns its protected one-time bootstrap capability and workspace-scoped binding plan.',
+    'Prepares one accessible project and returns the same client-specific workspace binding contract as project_connect.',
   ].join(' '),
   projectManifest: [
-    'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible project and returns its exact platform-provided project MCP manifest URL, MCP URL, protected bootstrap capability, and workspace binding plan.',
+    'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible project and returns its exact platform-provided project MCP manifest URL, MCP URL, and client-specific workspace binding plan.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
   ].join(' '),
   projectPublicContext: [
@@ -1086,6 +1086,9 @@ function projectMcpInstallPlan(
       expectedOutput: 'JSON confirming the exact project MCP workspace binding; authenticate that MCP after reloading Claude Code.',
     } as const;
   }
+  if (!handoff.bootstrapConsumeUrl) {
+    throw new Error(`Project MCP bootstrap was not prepared for ${client}.`);
+  }
   return {
     argv: [
       ...runnerArgv, 'project', 'bind',
@@ -1198,7 +1201,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
-      'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs; a one-time opaque bootstrap URL is passed only to the local installer.',
+      'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap clients receive a one-time opaque URL only for the local installer; Claude Code receives no bootstrap.',
       'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
       'After account setup, follow the single nextAction. Automatically reuse only a valid project binding from the current workspace; otherwise present existing projects or ask for a new project name. Never silently choose an existing project.',
       SPALA_BACKEND_INTENT_TEXT,
@@ -1244,9 +1247,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'If setup is required, ask one concise terminal question for exactly the missing real values and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
       'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
-      'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares agent instructions directly on that exact project backend.',
-      'Run installPlan.argv immediately as a direct process from the intended project root with tty:true and shell:false. Wait for the running process, then use the process stdin tool to send bootstrap.consumeUrl plus a newline; never place it in shell text or argv.',
-      'The installer configures a local credential proxy after bootstrap. Do not start native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated.',
+      'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares the authentication mode required by that client on the exact project backend.',
+      'Run installPlan.argv from the intended project root and follow its returned execution contract. Codex, Roo, and Cursor use process stdin for bootstrap; Claude Code does not.',
+      'Follow the returned authentication mode. Bootstrap clients use the local credential proxy; Claude Code completes native project OAuth after reload.',
       'Follow the installer JSON reload instruction for the selected client.',
       'If the user asked only to install, connect, configure, or set up Spala, stop after verifying the project MCP connection. Do not write application code or mutate project resources.',
       'Only continue when the user separately requested implementation, and only after account setup and project MCP verification are complete. Keep all backend work in Spala project MCP; do not scaffold a competing local backend.',
@@ -1298,7 +1301,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       projectHandoffStatus: {
         available: true,
         code: 'enabled',
-        reason: 'Project connect prepares MCP server-side and returns exact workspace-only handoff URLs plus one-time installer bootstrap.',
+        reason: 'Project connect prepares MCP server-side and returns exact workspace-only URLs plus a client-specific binding plan.',
       },
       intentBoundary: SPALA_BACKEND_INTENT,
       urlResolution: {
@@ -1325,11 +1328,22 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         workspaceScope: 'workspace',
         bindingFile: '.spala/project.json',
         globalProjectInstallAllowed: false,
-        bootstrapArgument: '--bootstrap-stdin',
-        execution: PROJECT_INSTALL_EXECUTION,
-        bootstrapHandling: 'Opaque, short-lived, and one-time. Start installPlan.argv with tty:true and shell:false, wait for the running process, then send bootstrap.consumeUrl plus a newline through the process stdin tool. Never place it in argv or shell text.',
-        credentialModeAfterBootstrap: 'local_proxy',
-        projectOAuthRequired: false,
+        clientModes: {
+          bootstrap: {
+            clients: ['codex', 'roo', 'cursor'],
+            argument: '--bootstrap-stdin',
+            execution: PROJECT_INSTALL_EXECUTION,
+            credentialMode: 'local_proxy',
+            projectOAuthRequired: false,
+          },
+          claudeCode: {
+            clients: ['claude-code'],
+            execution: PROJECT_DIRECT_INSTALL_EXECUTION,
+            credentialMode: 'native_project_oauth',
+            projectOAuthRequired: true,
+          },
+        },
+        bootstrapHandling: 'For Codex, Roo, and Cursor only: opaque, short-lived, and one-time through process stdin. Never place it in argv or shell text. Claude Code receives no bootstrap.',
         exactUrlBehavior: 'Pass the exact clean mcpUrl with --exact-url so the installer never injects or changes scope.',
       },
       projectCreate: 'Creates a real Spala project through the authenticated platform API.',

@@ -90,9 +90,9 @@ checkout while keeping ordinary CI self-contained:
 SPALA_MCP_INSTALLER_ROOT=/path/to/npmjs-minimal pnpm test
 ```
 
-The smoke passes the generated `project bind` argv and bootstrap capability to
-the installer module directly, verifies the scoped `/<slug>/mcp` binding, and
-confirms one-time POST consumption.
+The smokes pass generated `project bind` argv to the installer module directly,
+verify the scoped `/<slug>/mcp` binding, confirm one-time POST consumption for
+bootstrap clients, and confirm Claude Code binds successfully with empty stdin.
 
 ## Environment
 
@@ -151,7 +151,7 @@ The public MCP accepts an issued MCP OAuth token for `https://mcp.spala.ai/mcp` 
 
 The upstream origin is configuration-only and never caller-controlled. Responses are parsed from documented fields; the service does not search arbitrary payloads for URLs or credentials.
 
-After public MCP OAuth, call `spala_start` as the protected first call. If it reports missing account data, ask the human one concise terminal question for exactly those fields and call `account_setup`; never invent placeholder names. Then ask for or confidently derive the real project name. Reuse the project recorded in the current workspace's `.spala/project.json` when it exists. Otherwise call `project_list`, and call `project_create` only when the intended project does not already exist. Then call `project_connect` with the project and one of `codex`, `roo`, `claude-code`, or `cursor`. Public MCP requests the existing dashboard project access URL, keeps its temporary project-entry credential server-side, and calls that exact project backend directly. The project backend performs its normal permission checks, enables MCP through the existing project settings API, and creates a short-lived one-time bootstrap-consumption URL. Public MCP never returns the dashboard or project-entry credential and treats the bootstrap URL as opaque.
+After public MCP OAuth, call `spala_start` as the protected first call. If it reports missing account data, ask the human one concise terminal question for exactly those fields and call `account_setup`; never invent placeholder names. Then ask for or confidently derive the real project name. Reuse the project recorded in the current workspace's `.spala/project.json` when it exists. Otherwise call `project_list`, and call `project_create` only when the intended project does not already exist. Then call `project_connect` with the project and one of `codex`, `roo`, `claude-code`, or `cursor`. Public MCP requests the existing dashboard project access URL, keeps its temporary project-entry credential server-side, and calls that exact project backend directly. The project backend performs its normal permission checks and enables MCP through the existing project settings API. Codex, Roo, and Cursor additionally receive a short-lived one-time bootstrap-consumption URL. Claude Code does not create or receive that unused capability; it uses direct workspace binding and native project OAuth after reload.
 
 ## Directory listing metadata
 
@@ -174,7 +174,7 @@ Public MCP accepts only the complete public HTTPS `mcpUrl` and `manifestUrl` ret
 
 Agentic workspace binding currently supports four client identifiers: `codex`, `roo`, `claude-code`, and `cursor`. Other applications may connect to the public MCP through their own MCP configuration, but `project_connect` does not return an executable project-binding plan for them. Without `client`, install-capable tools return `client_selection_required` and no executable plan.
 
-Successful Codex connection returns an argv with this contract:
+Successful Codex, Roo, and Cursor connections return a protected-bootstrap argv. The Codex shape is:
 
 ```txt
 npx --yes @spala-ai/mcp-install@0.1.16 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client codex --install-scope workspace --bootstrap-stdin --exact-url --yes --json
@@ -182,12 +182,18 @@ npx --yes @spala-ai/mcp-install@0.1.16 project bind --project-id <project-id> --
 
 Run the argv immediately as a direct process from the intended project root with `tty:true` and `shell:false`. Wait for the process tool to report a running process, then use the process stdin tool to send `bootstrap.consumeUrl` plus a newline. Never interpolate the capability into shell text or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. The handoff, top-level response, install plan, and bootstrap exchange use the same authorized scoped MCP endpoint; subset scopes are never widened. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
 
+Claude Code instead receives a direct bind without `--bootstrap-stdin`:
+
+```txt
+npx --yes @spala-ai/mcp-install@0.1.16 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client claude-code --install-scope workspace --exact-url --yes --json
+```
+
+Run it from the intended workspace, reload Claude Code, open `/mcp`, select the new project MCP, and complete browser authentication. No process-stdin channel or one-time capability is involved.
+
 After the authenticated contract returns an exact project MCP URL, the agent should connect to that project MCP and call:
 
 ```txt
-mcp_get_onboarding
-mcp_get_tool_map
-mcp_list_skills
+spala_start
 mcp_get_skill({ "name": "spala-developer" })
 project_get_builder_context
 ```

@@ -217,6 +217,41 @@ test('platform operation fixture matches principal, project, handoff, and access
   );
 });
 
+test('Claude Code preparation skips the one-time instruction session used by bootstrap clients', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-project-token';
+  const builderToken = 'builder-project-token';
+  const projectCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname.endsWith('/access-url')) {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    if (url.origin === projectUrl) projectCalls.push(`${init.method || 'GET'} ${url.pathname}`);
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return jsonResponse({ error: 'must_not_be_called' }, 500);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'claude-code');
+
+  assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
+  assert.equal(prepared.bootstrapConsumeUrl, undefined);
+  assert.deepEqual(projectCalls, [
+    'POST /api/__internal/builder-auth/external',
+    'POST /api/__internal/project/config',
+  ]);
+});
+
 test('signed external-auth handoff resolves the backend and consumes its one-time token once', async () => {
   const projectUrl = 'https://project.example';
   const externalAuthHandoff = 'signed-external-auth-handoff-value';

@@ -43,7 +43,7 @@ export type ProjectMcpHandoff = {
 };
 
 export type PreparedProjectMcpHandoff = ProjectMcpHandoff & {
-  bootstrapConsumeUrl: string;
+  bootstrapConsumeUrl?: string;
 };
 
 export type ProjectOrganizationInput = {
@@ -1268,6 +1268,21 @@ export function createSpalaApiClient(
           handoffMetadataContainsToken: true,
           runtimeBuilderToken: 'present',
         });
+      }
+
+      // Claude Code binds the exact remote MCP directly and completes native
+      // browser OAuth after reload. Do not create a one-time instruction
+      // session for a credential that this client cannot and does not consume.
+      if (client === 'claude-code') {
+        return {
+          projectId: preparedHandoff.projectId,
+          projectName: preparedHandoff.projectName,
+          status: preparedHandoff.status,
+          projectUrl: access.projectUrl,
+          mcpEnabled: preparedHandoff.mcpEnabled,
+          mcpUrl,
+          manifestUrl,
+        };
       }
 
       let instructionSession: unknown;

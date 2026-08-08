@@ -1118,6 +1118,84 @@ test('generated project bind plan and bootstrap run against the local installer 
   }
 });
 
+test('generated Claude Code plan binds through the local installer without bootstrap stdin', {
+  skip: !localInstallerRoot,
+}, async () => {
+  const installerCliPath = join(localInstallerRoot!, 'src/cli.js');
+  const installer = await import(pathToFileURL(installerCliPath).href) as {
+    runCli(
+      argv: string[],
+      env: NodeJS.ProcessEnv,
+      cwd: string,
+      streams: {
+        stdin: NodeJS.ReadableStream;
+        stdout: { write(chunk: string): void };
+        stderr: { write(chunk: string): void };
+      },
+      runtime: { fetch: typeof fetch },
+    ): Promise<void>;
+  };
+
+  const authorization = await authorize();
+  const token = await responseJson(await redeem(
+    authorization.clientId,
+    authorization.code,
+    authorization.verifier,
+  ));
+  bootstrapConsumeCount = 0;
+  const connected = await mcpRequest(
+    'project_connect',
+    { projectId: 'project-1', client: 'claude-code' },
+    `Bearer ${token.access_token as string}`,
+  );
+  assert.equal(connected.status, 200);
+  const connectedBody = await toolBody(connected);
+  const plan = connectedBody.installPlan as { argv: string[]; mcpUrl: string };
+  assert.equal(plan.argv.includes('--bootstrap-stdin'), false);
+  assert.equal((connectedBody.bootstrap as Record<string, unknown>).consumeUrl, undefined);
+  // The server suite uses reserved .example origins. Substitute a valid,
+  // same-origin Spala project URL only for the installer's host-boundary
+  // validation; the response assertions above still cover the generated URLs.
+  const installerProjectUrl = 'https://shared.spala.ai/p123';
+  const installerMcpUrl = `${installerProjectUrl}/mcp?scope=builder%2Cproject`;
+  const installerArgv = plan.argv.slice(3);
+  installerArgv[installerArgv.indexOf('--project-url') + 1] = installerProjectUrl;
+  installerArgv[installerArgv.indexOf('--url') + 1] = installerMcpUrl;
+
+  const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-smoke-'));
+  let stdout = '';
+  let stderr = '';
+  try {
+    mkdirSync(join(workspace, '.git'));
+    mkdirSync(join(workspace, '.claude'));
+    await installer.runCli(
+      installerArgv,
+      process.env,
+      workspace,
+      {
+        stdin: Readable.from([]),
+        stdout: { write: chunk => { stdout += chunk; } },
+        stderr: { write: chunk => { stderr += chunk; } },
+      },
+      { fetch: async (input, init) => fetch(input, init) },
+    );
+
+    const result = JSON.parse(stdout) as Record<string, unknown>;
+    const binding = JSON.parse(
+      readFileSync(join(workspace, '.spala', 'project.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(result['ok'], true);
+    assert.equal(result['agenticCredentialConfigured'], false);
+    assert.equal(binding['projectId'], 'project-1');
+    assert.equal(binding['projectUrl'], installerProjectUrl);
+    assert.equal(binding['mcpUrl'], installerMcpUrl);
+    assert.equal(bootstrapConsumeCount, 0, 'Claude Code direct binding must not create or consume a bootstrap session');
+    assert.equal(stderr, '');
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test('new account setup collects profile and company before first named project creation', async () => {
   newAccountProfile = undefined;
   newAccountOrganization = undefined;
