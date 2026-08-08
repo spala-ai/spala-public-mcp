@@ -1083,10 +1083,16 @@ export function createSpalaApiClient(
 
       const accessPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectAccessUrl(id));
       const access = parseProjectAccess(accessPayload, projectHandoff.projectUrl);
+      const initialHandoffContainsToken = access
+        ? Object.values(projectHandoff).some(value =>
+            typeof value === 'string'
+            && containsSensitiveToken(value, [access.token, publicMcpAccessToken])
+          )
+        : false;
       if (
         !access
         || access.token.includes(publicMcpAccessToken)
-        || containsSensitiveToken(projectHandoff.projectUrl, [access.token, publicMcpAccessToken])
+        || initialHandoffContainsToken
       ) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
@@ -1119,10 +1125,38 @@ export function createSpalaApiClient(
         }
       }
 
+      let preparationRuntimeBaseUrl = new URL(access.projectUrl);
+      if (projectHandoff.mcpUrl) {
+        const initialMcpUrl = applyAuthorizedProjectScope(projectHandoff.mcpUrl, authorizedScope);
+        const initialRuntimeBaseUrl = projectRuntimeBaseUrl(initialMcpUrl);
+        if (
+          !initialRuntimeBaseUrl
+          || !trustedProjectRuntime(
+            initialRuntimeBaseUrl,
+            access.projectUrl,
+            config.publicMcpTrustedSharedRuntimeOrigins,
+          )
+        ) {
+          rejectInvalidProjectBootstrapMaterial(id, {
+            initialRuntimeBaseUrl: initialRuntimeBaseUrl ? 'valid' : 'invalid',
+            initialRuntimeAuthority: 'untrusted',
+          });
+        }
+        preparationRuntimeBaseUrl = initialRuntimeBaseUrl;
+      }
+      const preparationBuilderAuthUrl = projectRuntimeEndpoint(
+        preparationRuntimeBaseUrl,
+        '/api/__internal/builder-auth/external',
+      );
+      const preparationConfigUrl = projectRuntimeEndpoint(
+        preparationRuntimeBaseUrl,
+        '/api/__internal/project/config',
+      );
+
       let builderToken: string;
       try {
         const exchangePayload = await requestProjectJson(
-          new URL(`${access.projectUrl}/api/__internal/builder-auth/external`),
+          preparationBuilderAuthUrl,
           access.token,
           'POST',
           { token: access.token },
@@ -1143,7 +1177,7 @@ export function createSpalaApiClient(
 
       try {
         await requestProjectJson(
-          new URL(`${access.projectUrl}/api/__internal/project/config`),
+          preparationConfigUrl,
           builderToken,
           'POST',
           { securityConfig: { mcpEnabled: true } },
@@ -1188,6 +1222,8 @@ export function createSpalaApiClient(
             config.publicMcpTrustedSharedRuntimeOrigins,
           )
         : false;
+      const runtimeMatchesPreparation = !projectHandoff.mcpUrl
+        || runtimeBaseUrl?.toString() === preparationRuntimeBaseUrl.toString();
       const handoffMetadataContainsToken = Object.values(preparedHandoff).some(value =>
         typeof value === 'string' && containsSensitiveToken(value, sensitiveTokens)
       );
@@ -1205,6 +1241,7 @@ export function createSpalaApiClient(
         || !runtimeBuilderAuthUrl
         || !agentInstructionUrl
         || !runtimeTrusted
+        || !runtimeMatchesPreparation
       ) {
         rejectInvalidProjectBootstrapMaterial(id, {
           handoffMetadataContainsToken,
@@ -1218,46 +1255,19 @@ export function createSpalaApiClient(
           runtimeBuilderAuthUrl: runtimeBuilderAuthUrl ? 'valid' : 'invalid',
           agentInstructionUrl: agentInstructionUrl ? 'valid' : 'invalid',
           runtimeAuthority: runtimeTrusted ? 'trusted' : 'untrusted',
+          runtimeBinding: runtimeMatchesPreparation ? 'valid' : 'mismatch',
         });
       }
 
-      const runtimeBase = runtimeBaseUrl.toString().replace(/\/$/, '');
-      let runtimeBuilderToken = builderToken;
-      if (runtimeBase !== access.projectUrl) {
-        try {
-          const runtimeExchangePayload = await requestProjectJson(
-            runtimeBuilderAuthUrl,
-            access.token,
-            'POST',
-            { token: access.token },
-            { authorization: false, sensitiveTokens: [builderToken, publicMcpAccessToken] },
-          );
-          const token = exchangedBuilderToken(runtimeExchangePayload, [
-            access.token,
-            publicMcpAccessToken,
-            builderToken,
-          ]);
-          if (!token) {
-            throw new SpalaApiError({
-              category: 'invalid_upstream_response',
-              code: 'invalid_project_runtime_builder_token',
-              message: 'The authoritative project runtime returned an invalid builder authentication response.',
-            });
-          }
-          runtimeBuilderToken = token;
-        } catch (error) {
-          rethrowProjectPreparation(error);
-        }
-        sensitiveTokens.push(runtimeBuilderToken);
-        const runtimeTokenInHandoff = Object.values(preparedHandoff).some(value =>
-          typeof value === 'string' && containsSensitiveToken(value, [runtimeBuilderToken])
-        );
-        if (runtimeTokenInHandoff) {
-          rejectInvalidProjectBootstrapMaterial(id, {
-            handoffMetadataContainsToken: true,
-            runtimeBuilderToken: 'present',
-          });
-        }
+      const runtimeBuilderToken = builderToken;
+      const runtimeTokenInHandoff = Object.values(preparedHandoff).some(value =>
+        typeof value === 'string' && containsSensitiveToken(value, [runtimeBuilderToken])
+      );
+      if (runtimeTokenInHandoff) {
+        rejectInvalidProjectBootstrapMaterial(id, {
+          handoffMetadataContainsToken: true,
+          runtimeBuilderToken: 'present',
+        });
       }
 
       let instructionSession: unknown;

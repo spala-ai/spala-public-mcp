@@ -238,6 +238,20 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       return Response.json({ token: runtimeBuilderProjectToken });
     }
     if (
+      url.pathname === `/${sharedRuntimeSlug}/api/__internal/project/config`
+      && init?.method === 'POST'
+    ) {
+      if (!builderAuthorizationHasScope(authorization, 'project-1')) {
+        return Response.json({ error: 'invalid_project_token' }, { status: 401 });
+      }
+      if (projectConfigFailures.has(runtimeBuilderProjectToken)) {
+        return Response.json({
+          error: { code: 'forbidden', message: `${runtimeBuilderProjectToken} must not escape` },
+        }, { status: 403 });
+      }
+      return Response.json({ success: true });
+    }
+    if (
       url.pathname === `/${sharedRuntimeSlug}/mcp/agent-instructions`
       && init?.method === 'POST'
     ) {
@@ -854,12 +868,13 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const connectionUpstreamCalls = upstreamCalls.slice(callsBeforeConnect);
   assert.deepEqual(
     connectionUpstreamCalls.filter(call => call.url.origin === projectUrl).map(call => `${call.method} ${call.url.pathname}`),
-    ['POST /api/__internal/builder-auth/external', 'POST /api/__internal/project/config'],
+    [],
   );
   assert.deepEqual(
     connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
     [
       `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
+      `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
       `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
   );
@@ -875,10 +890,9 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     [
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/access-url',
-      'POST https://project-one.example/api/__internal/builder-auth/external',
-      'POST https://project-one.example/api/__internal/project/config',
-      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
+      `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/project/config`,
+      'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
   );
@@ -886,13 +900,12 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const sharedRuntimeCalls = connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin);
   assert.ok(projectUpstreamCalls.every(call => call.serviceAuthentication === ''));
   assert.ok(sharedRuntimeCalls.every(call => call.serviceAuthentication === ''));
-  assert.equal(projectUpstreamCalls[0]?.authorization, '');
-  assert.equal(projectUpstreamCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
-  assert.ok(projectUpstreamCalls.slice(1).every(call => call.authorization === `Bearer ${builderProjectToken}`));
+  assert.equal(projectUpstreamCalls.length, 0);
   assert.equal(sharedRuntimeCalls[0]?.authorization, '');
   assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
   assert.equal(sharedRuntimeCalls[1]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[1]?.body, JSON.stringify({
+  assert.equal(sharedRuntimeCalls[2]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
+  assert.equal(sharedRuntimeCalls[2]?.body, JSON.stringify({
     scope: authorizedProjectScope,
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -964,7 +977,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(consumedAgain.status, 410, 'the installer capability must remain one-time');
 
   const callsBeforeConfigFailure = upstreamCalls.length;
-  projectConfigFailures.add(builderProjectToken);
+  projectConfigFailures.add(runtimeBuilderProjectToken);
   try {
     const configFailure = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
     assert.equal(configFailure.status, 200);
@@ -975,13 +988,13 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     assert.equal(JSON.stringify(failureBody).includes(runtimeBuilderProjectToken), false);
     assert.doesNotMatch(JSON.stringify(failureBody), /api\.spala\.ai/);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
-      .filter(call => call.url.origin === projectUrl)
+      .filter(call => call.url.origin === sharedRuntimeOrigin)
       .map(call => `${call.method} ${call.url.pathname}`), [
-        'POST /api/__internal/builder-auth/external',
-        'POST /api/__internal/project/config',
+        `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
+        `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
       ]);
   } finally {
-    projectConfigFailures.delete(builderProjectToken);
+    projectConfigFailures.delete(runtimeBuilderProjectToken);
   }
 
   runtimeRevokedAccessTokens.add(delegatedAccessToken);

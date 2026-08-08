@@ -635,6 +635,13 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
     }
     if (
       url.origin === 'https://shared-runtime.example'
+      && url.pathname === '/p123/api/__internal/project/config'
+    ) {
+      assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${runtimeBuilderToken}`);
+      return jsonResponse({ success: true });
+    }
+    if (
+      url.origin === 'https://shared-runtime.example'
       && url.pathname === '/p123/mcp/agent-instructions'
     ) {
       instructionUrl = url.toString();
@@ -663,11 +670,87 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
   assert.deepEqual(requestOrder, [
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/access-url',
-    'POST https://project.example/api/__internal/builder-auth/external',
-    'POST https://project.example/api/__internal/project/config',
-    'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'POST https://shared-runtime.example/p123/api/__internal/builder-auth/external',
+    'POST https://shared-runtime.example/p123/api/__internal/project/config',
+    'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'POST https://shared-runtime.example/p123/mcp/agent-instructions',
+  ]);
+});
+
+test('project preparation rejects an initial handoff that contains the fetched access credential', async () => {
+  const projectToken = 'temporary-initial-handoff-secret';
+  const projectUrl = 'https://project.example';
+  const runtimeCalls: URL[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'One',
+        status: 'ready',
+        projectUrl,
+        mcpEnabled: true,
+        mcpUrl: `https://shared-runtime.example/${projectToken}/mcp`,
+        manifestUrl: `https://shared-runtime.example/${projectToken}/mcp/install-manifest`,
+      });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    runtimeCalls.push(url);
+    return jsonResponse({ error: 'runtime must not be reached' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.code, 'invalid_project_access_handoff');
+    assert.doesNotMatch(error.message, new RegExp(projectToken));
+    return true;
+  });
+  assert.equal(runtimeCalls.length, 0);
+});
+
+test('project preparation rejects a refreshed runtime that differs from the exchange runtime', async () => {
+  const projectToken = 'temporary-runtime-binding-token';
+  const runtimeBuilderToken = 'builder-runtime-binding-token';
+  const projectUrl = 'https://project.example';
+  let handoffReads = 0;
+  const runtimeCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      handoffReads += 1;
+      const runtimeSlug = handoffReads === 1 ? 'p123' : 'p456';
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'One',
+        status: 'ready',
+        projectUrl,
+        mcpEnabled: true,
+        mcpUrl: `https://shared-runtime.example/${runtimeSlug}/mcp`,
+        manifestUrl: `https://shared-runtime.example/${runtimeSlug}/mcp/install-manifest`,
+      });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    runtimeCalls.push(`${url.origin}${url.pathname}`);
+    if (url.pathname === '/p123/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: runtimeBuilderToken });
+    }
+    if (url.pathname === '/p123/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    return jsonResponse({ error: 'refreshed runtime must not receive the token' }, 500);
+  }));
+
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.code, 'invalid_project_bootstrap_material');
+    assert.doesNotMatch(error.message, new RegExp(`${projectToken}|${runtimeBuilderToken}`));
+    return true;
+  });
+  assert.deepEqual(runtimeCalls, [
+    'https://shared-runtime.example/p123/api/__internal/builder-auth/external',
+    'https://shared-runtime.example/p123/api/__internal/project/config',
   ]);
 });
 
@@ -833,6 +916,12 @@ test('project preparation rejects bootstrap sessions that widen, narrow, or weak
       }
       if (
         url.origin === 'https://shared-runtime.example'
+        && url.pathname === '/p123/api/__internal/project/config'
+      ) {
+        return jsonResponse({ success: true });
+      }
+      if (
+        url.origin === 'https://shared-runtime.example'
         && url.pathname === '/p123/mcp/agent-instructions'
       ) {
         instructionRequests += 1;
@@ -854,7 +943,7 @@ test('project preparation rejects bootstrap sessions that widen, narrow, or weak
   }
 });
 
-test('shared runtime re-exchange failures stay internal and never create a bootstrap capability', async () => {
+test('shared runtime exchange failures stay internal and never create a bootstrap capability', async () => {
   const controlToken = 'control-runtime-exchange-secret';
   const projectToken = 'temporary-runtime-exchange-secret';
   const builderToken = 'builder-entry-runtime-exchange-secret';
@@ -862,17 +951,8 @@ test('shared runtime re-exchange failures stay internal and never create a boots
   const mcpUrl = 'https://shared-runtime.example/p123/mcp?scope=builder%2Cproject';
   const manifestUrl = 'https://shared-runtime.example/p123/mcp/install-manifest?scope=builder%2Cproject';
 
-  for (const runtimeExchangeResponse of [
-    jsonResponse({
-      error: {
-        code: 'invalid_token',
-        message: `${controlToken} ${projectToken} ${builderToken}`,
-      },
-    }, 401),
-    jsonResponse({ token: builderToken }),
-  ]) {
-    const calls: string[] = [];
-    const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
+  const calls: string[] = [];
+  const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
       calls.push(`${url.origin}${url.pathname}`);
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
         return jsonResponse({
@@ -888,38 +968,31 @@ test('shared runtime re-exchange failures stay internal and never create a boots
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
         return jsonResponse(projectAccessUrl(projectUrl, projectToken));
       }
-      if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
-        return jsonResponse({ token: builderToken });
-      }
-      if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
-        return jsonResponse({ success: true });
-      }
       if (
         url.origin === 'https://shared-runtime.example'
         && url.pathname === '/p123/api/__internal/builder-auth/external'
       ) {
-        return runtimeExchangeResponse.clone();
+        return jsonResponse({
+          error: {
+            code: 'invalid_token',
+            message: `${controlToken} ${projectToken} ${builderToken}`,
+          },
+        }, 401);
       }
       return jsonResponse({ error: 'bootstrap capability must not be created' }, 500);
-    }));
+  }));
 
-    await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
-      assert.ok(error instanceof SpalaApiError);
-      assert.equal(error.category, 'invalid_upstream_response');
-      assert.equal(error.status, undefined);
-      assert.equal(error.code, 'project_mcp_preparation_failed');
-      assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}|${builderToken}`));
-      return true;
-    });
-    assert.equal(
-      calls.some(call => call.endsWith('/p123/mcp/agent-instructions')),
-      false,
-    );
-    assert.equal(
-      calls.at(-1),
-      'https://shared-runtime.example/p123/api/__internal/builder-auth/external',
-    );
-  }
+  await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'authentication');
+    assert.equal(error.status, 401);
+    assert.equal(error.code, 'project_token_exchange_failed');
+    assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
+    return true;
+  });
+  assert.equal(calls.filter(call => call.endsWith('/p123/api/__internal/builder-auth/external')).length, 1);
+  assert.equal(calls.some(call => call.endsWith('/p123/mcp/agent-instructions')), false);
+  assert.equal(calls.at(-1), 'https://shared-runtime.example/p123/api/__internal/builder-auth/external');
 });
 
 test('project preparation rejects authoritative handoff URLs containing credentials', async () => {
