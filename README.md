@@ -136,7 +136,7 @@ Single-binding ticket and authorization-code claims are stored as hash-only mark
 ## Client install
 
 ```bash
-npx --yes @spala-ai/mcp-install@0.1.19 init --client codex --yes --json
+npx --yes @spala-ai/mcp-install init --client codex --yes --json
 ```
 
 For Codex this safely writes the user-scoped MCP configuration and a managed
@@ -177,7 +177,7 @@ Agentic workspace binding currently supports four client identifiers: `codex`, `
 Successful Codex, Roo, and Cursor connections return a protected-bootstrap argv. The Codex shape is:
 
 ```txt
-npx --yes @spala-ai/mcp-install@0.1.19 project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client codex --install-scope workspace --bootstrap-stdin --exact-url --yes --json
+npx --yes @spala-ai/mcp-install project bind --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client codex --install-scope workspace --bootstrap-stdin --exact-url --yes --json
 ```
 
 Run the argv immediately as a direct process from the intended project root with `tty:true` and `shell:false`. Wait for the process tool to report a running process, then use the process stdin tool to send `bootstrap.consumeUrl` plus a newline. Never interpolate the capability into shell text or process arguments. The capability is short-lived and one-time. The installer consumes it and configures a local credential proxy, then creates or updates `.spala/project.json`. Do not run native or manual project OAuth for this agentic flow; manual UI OAuth is unrelated. Never install a project MCP globally. The handoff, top-level response, install plan, and bootstrap exchange use the same authorized scoped MCP endpoint; subset scopes are never widened. The remote `manifestUrl` is informational and must not be fetched or passed to the installer. Follow the installer JSON reload instruction for the selected client.
@@ -185,7 +185,7 @@ Run the argv immediately as a direct process from the intended project root with
 Claude Code uses two generated commands without `--bootstrap-stdin`. The first command creates a verifier in the user's protected credential store and returns only a non-secret request ID and S256 challenge:
 
 ```txt
-npx --yes @spala-ai/mcp-install@0.1.19 project prepare --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client claude-code --install-scope workspace --exact-url --yes --json
+npx --yes @spala-ai/mcp-install project prepare --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client claude-code --install-scope workspace --exact-url --yes --json
 ```
 
 Call `project_connect` again with those two non-secret values. Run the returned `project bind` argv immediately; it contains the one-time claim and request ID, but never the verifier. The installer redeems the claim, stores the project credential outside the workspace, and configures the project-scoped local proxy. Reload Claude Code and call `spala_start` on the new project MCP. Do not start native project OAuth for this flow.

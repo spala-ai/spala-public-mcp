@@ -2,6 +2,7 @@
   "name": "mcp-spala-ai",
   "version": "0.1.1",
   "private": true,
+  "author": "Spala AI <info@spala.ai>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/spala-ai/spala-public-mcp.git"
