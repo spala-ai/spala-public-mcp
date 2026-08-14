@@ -846,7 +846,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.21', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.23', 'project', 'bind']);
   assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
@@ -958,7 +958,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   bootstrapConsumeCount = 0;
   bootstrapExpectedChallenge = undefined;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
-  assert.equal(wrongMethod.status, 405, 'installer 0.1.21 must consume the capability with POST');
+  assert.equal(wrongMethod.status, 405, 'installer 0.1.23 must consume the capability with POST');
   assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
 
   const installerResponse = await fetch(bootstrapConsumeUrl, {
@@ -1056,7 +1056,14 @@ test('generated project bind plan and bootstrap run against the local installer 
         stdout: { write(chunk: string): void };
         stderr: { write(chunk: string): void };
       },
-      runtime: { fetch: typeof fetch },
+      runtime: {
+        fetch: typeof fetch;
+        runCommand?: (input: {
+          command: string;
+          args: string[];
+          cwd: string;
+        }) => Promise<{ stdout: string }>;
+      },
     ): Promise<void>;
   };
 
@@ -1077,7 +1084,7 @@ test('generated project bind plan and bootstrap run against the local installer 
   assert.deepEqual(plan.argv.slice(0, 3), [
     'npx',
     '--yes',
-    '@spala-ai/mcp-install@0.1.21',
+    '@spala-ai/mcp-install@0.1.23',
   ]);
 
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
@@ -1190,7 +1197,12 @@ test('generated Claude Code plan binds through the local installer without proje
   const installerMcpUrl = `${installerProjectUrl}/mcp?scope=builder%2Cproject`;
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-smoke-'));
   const credentialHome = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-credentials-'));
-  const installerEnv = { ...process.env, SPALA_MCP_CREDENTIAL_HOME: credentialHome };
+  const installHome = mkdtempSync(join(tmpdir(), 'spala-public-mcp-claude-config-'));
+  const installerEnv = {
+    ...process.env,
+    SPALA_MCP_CREDENTIAL_HOME: credentialHome,
+    SPALA_MCP_INSTALL_HOME: installHome,
+  };
   let stderr = '';
   try {
     mkdirSync(join(workspace, '.git'));
@@ -1255,6 +1267,29 @@ test('generated Claude Code plan binds through the local installer without proje
             headers: upstream.headers,
           });
         },
+        runCommand: async ({ command, args, cwd }) => {
+          assert.equal(command, 'claude');
+          assert.equal(cwd, workspace);
+          assert.deepEqual(args.slice(0, 6), ['mcp', 'add', '--transport', 'stdio', '--scope', 'local']);
+          const serverName = args[6];
+          assert.equal(args[7], '--');
+          assert.deepEqual(args.slice(8, 10), ['pnpm', 'dlx']);
+          const configPath = join(installHome, '.claude.json');
+          writeFileSync(configPath, JSON.stringify({
+            projects: {
+              [workspace]: {
+                mcpServers: {
+                  [serverName]: {
+                    type: 'stdio',
+                    command: args[8],
+                    args: args.slice(9),
+                  },
+                },
+              },
+            },
+          }));
+          return { stdout: '' };
+        },
       },
     );
 
@@ -1264,6 +1299,7 @@ test('generated Claude Code plan binds through the local installer without proje
     ) as Record<string, unknown>;
     assert.equal(result['ok'], true);
     assert.equal(result['agenticCredentialConfigured'], true);
+    assert.equal(result['claudeRegistrationConfigured'], true);
     assert.equal(binding['projectId'], 'project-1');
     assert.equal(binding['projectUrl'], installerProjectUrl);
     assert.equal(binding['mcpUrl'], installerMcpUrl);
@@ -1272,6 +1308,7 @@ test('generated Claude Code plan binds through the local installer without proje
   } finally {
     rmSync(workspace, { recursive: true, force: true });
     rmSync(credentialHome, { recursive: true, force: true });
+    rmSync(installHome, { recursive: true, force: true });
   }
 });
 
@@ -2057,7 +2094,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.21 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 0.1.23 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
   const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
@@ -2075,21 +2112,21 @@ test('install manifest exposes machine-readable 0.1.21 installer commands and se
   assert.equal(agentIntegrations.projectMcpUrlsBundled, false);
   assert.equal((manifest.links as Record<string, unknown>).agentIntegrations, agentIntegrations.repository);
 
-  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.21 init --client <client> --yes --json');
-  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.21 init --client <client> --yes --json');
+  assert.equal(commands.installerNpm, 'npx --yes @spala-ai/mcp-install@0.1.23 init --client <client> --yes --json');
+  assert.equal(commands.installerPnpm, 'pnpm dlx @spala-ai/mcp-install@0.1.23 init --client <client> --yes --json');
   assert.deepEqual(commands.installerNpmArgv, {
-    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.21', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.21', 'status', '--client', '<client>', '--json'],
+    init: ['npx', '--yes', '@spala-ai/mcp-install@0.1.23', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['npx', '--yes', '@spala-ai/mcp-install@0.1.23', 'status', '--client', '<client>', '--json'],
   });
   assert.deepEqual(commands.installerPnpmArgv, {
-    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.21', 'init', '--client', '<client>', '--yes', '--json'],
-    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.21', 'status', '--client', '<client>', '--json'],
+    init: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.23', 'init', '--client', '<client>', '--yes', '--json'],
+    status: ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.23', 'status', '--client', '<client>', '--json'],
   });
-  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.21 init --client codex --yes --json');
+  assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@0.1.23 init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
-  assert.equal(installer.version, '0.1.21');
+  assert.equal(installer.version, '0.1.23');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.21']);
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.23']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',
