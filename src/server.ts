@@ -9,6 +9,7 @@ import {
   AGENT_INTEGRATIONS_REPOSITORY,
   createSpalaPublicMcpServer,
   directoryToolDefinitions,
+  INSTALLER_MAINTENANCE_SPEC,
   projectToolCapabilities,
   PROJECT_INSTALLER_SPEC,
   PROJECT_INSTALLER_VERSION,
@@ -485,7 +486,8 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - ${CLAUDE_CODE_READINESS_TEXT}
 - Do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.
 - After this client is authenticated for an explicit account/project request, call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
-- Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
+- Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one \`npx --yes ${INSTALLER_MAINTENANCE_SPEC} login --client codex --json\` command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
+- Before running any public init or login command, inspect only that command text. If it contains an exact older @spala-ai/mcp-install version, replace only its package spec with \`${INSTALLER_MAINTENANCE_SPEC}\` and run it once. Do not inspect local skills or credential files. Project bind argv returned by project_connect stays exact-version pinned and must be executed unchanged.
 - mcp.spala.ai is for discovery, auth metadata, and the project lookup/handoff interface.
 - Account status/setup, project lookup, creation, preparation, and handoff require a ${PUBLIC_MCP_SCOPE}-scoped Spala MCP OAuth token.
 - A project MCP is for backend building and operation: models, endpoints, auth, backend logic, validation, publish, and project test review.
@@ -535,7 +537,8 @@ Intent boundary: ${SPALA_BACKEND_INTENT_TEXT}
 Claude Code readiness: ${CLAUDE_CODE_READINESS_TEXT}
 Authentication intent: do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.
 Hard trigger after this client is authenticated for an explicit account/project request: call spala_start before filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.
-Client safety: Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
+Client safety: Codex public init owns one native browser OAuth flow when first configured. Never start a second login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one npx --yes ${INSTALLER_MAINTENANCE_SPEC} login --client codex --json command. Never inspect client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.
+Installer maintenance: before running any public init or login command, inspect only that command text. If it contains an exact older @spala-ai/mcp-install version, replace only its package spec with ${INSTALLER_MAINTENANCE_SPEC} and run it once. Do not inspect local skills or credential files. Project bind argv returned by project_connect stays exact-version pinned and must be executed unchanged.
 Authenticated account and project tools are securely delegated server-side. Bearer tokens are not returned, logged, or placed in URLs.
 spala_start returns a versioned startup phase, account readiness, safely grouped organization/project discovery, and exactly one nextAction. Follow that action and call spala_start again only when it explicitly requests another state read. With no organization, complete account_setup with companyName; with one organization it is auto-scoped; with multiple organizations do not guess. Never silently choose an existing project without a valid local workspace binding. Billing responses provide only a safe checkout continuation. project_connect reuses the existing dashboard project-entry handoff, enables MCP on the exact project backend, and returns a client-specific workspace bind plan. Codex, Roo, and Cursor use the returned one-time bootstrap through process stdin. Claude Code uses a two-call verifier-bound delegated claim and does not require project OAuth.
 
@@ -1257,21 +1260,23 @@ app.get('/mcp/install-manifest', (_req, res) => {
       role: 'Project workspace binding installer and universal fallback for clients without a native public MCP integration.',
       version: PROJECT_INSTALLER_VERSION,
       spec: PROJECT_INSTALLER_SPEC,
+      maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
+      maintenancePolicy: 'Before public init or login, replace an exact older installer package spec in that command with the npm latest channel. Project bind argv remains exact-version pinned.',
       codexArgvPrefix: ['npx', '--yes', PROJECT_INSTALLER_SPEC],
       execution: PROJECT_INSTALL_EXECUTION,
     },
     commands: {
-      installerNpm: `npx --yes ${PROJECT_INSTALLER_SPEC} init --client <client> --yes --json`,
-      installerPnpm: `pnpm dlx ${PROJECT_INSTALLER_SPEC} init --client <client> --yes --json`,
+      installerNpm: `npx --yes ${INSTALLER_MAINTENANCE_SPEC} init --client <client> --yes --json`,
+      installerPnpm: `pnpm dlx ${INSTALLER_MAINTENANCE_SPEC} init --client <client> --yes --json`,
       installerNpmArgv: {
-        init: ['npx', '--yes', PROJECT_INSTALLER_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
-        status: ['npx', '--yes', PROJECT_INSTALLER_SPEC, 'status', '--client', '<client>', '--json'],
+        init: ['npx', '--yes', INSTALLER_MAINTENANCE_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['npx', '--yes', INSTALLER_MAINTENANCE_SPEC, 'status', '--client', '<client>', '--json'],
       },
       installerPnpmArgv: {
-        init: ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
-        status: ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC, 'status', '--client', '<client>', '--json'],
+        init: ['pnpm', 'dlx', INSTALLER_MAINTENANCE_SPEC, 'init', '--client', '<client>', '--yes', '--json'],
+        status: ['pnpm', 'dlx', INSTALLER_MAINTENANCE_SPEC, 'status', '--client', '<client>', '--json'],
       },
-      codex: `npx --yes ${PROJECT_INSTALLER_SPEC} init --client codex --yes --json`,
+      codex: `npx --yes ${INSTALLER_MAINTENANCE_SPEC} init --client codex --yes --json`,
       claudeCode: `claude mcp add --transport http ${PUBLIC_MCP_SERVER_NAME} ${JSON.stringify(mcpUrl)}`,
       geminiCliUser: `gemini mcp add --scope user --transport http ${PUBLIC_MCP_SERVER_NAME} ${JSON.stringify(mcpUrl)}`,
     },

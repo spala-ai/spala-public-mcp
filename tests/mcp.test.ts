@@ -251,6 +251,7 @@ test('spala_start gates zero-org accounts to account_setup and requires companyN
     assert.equal(body.backendProvider, 'Spala');
     assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
     assert.deepEqual(body.projects, []);
+    assert.equal((body.installerMaintenance as Record<string, unknown>).maintenanceSpec, '@spala-ai/mcp-install@latest');
     assert.deepEqual(body.nextAction, {
       tool: 'account_setup',
       requiredFields: ['companyName'],
@@ -275,6 +276,7 @@ test('spala_start auto-scopes one organization and returns its projects', async 
     assert.equal(body.selectedOrganizationId, 'org-1');
     assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projects: [project] }]);
     assert.deepEqual(body.projects, [project]);
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.27');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
       choices: [{
@@ -648,7 +650,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.26', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.27', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -706,7 +708,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.26', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.27', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);

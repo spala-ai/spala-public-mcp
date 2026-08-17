@@ -1,5 +1,5 @@
 import { PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
-import { PROJECT_INSTALLER_SPEC } from './installerContract.js';
+import { INSTALLER_MAINTENANCE_SPEC } from './installerContract.js';
 
 export const docsIndex = [
   {
@@ -41,7 +41,7 @@ export const docsIndex = [
     id: 'public-mcp-install-command',
     title: 'Install Spala Public MCP with npm',
     url: 'https://www.npmjs.com/package/@spala-ai/mcp-install',
-    summary: `For Codex use npx --yes ${PROJECT_INSTALLER_SPEC} init --client codex --yes --json, then run npx --yes ${PROJECT_INSTALLER_SPEC} status --client codex --json and follow the exact JSON steps. After authentication, call project_connect for workspace binding. Codex, Roo, and Cursor start the returned plan with tty:true and shell:false, then send bootstrap.consumeUrl through the process stdin tool. Claude Code prepares a local verifier, calls project_connect again with its non-secret request ID and challenge, and redeems the returned claim without project OAuth. Legacy flags remain compatibility-only; project MCP must never be installed globally.`,
+    summary: `For Codex use npx --yes ${INSTALLER_MAINTENANCE_SPEC} init --client codex --yes --json, then run npx --yes ${INSTALLER_MAINTENANCE_SPEC} status --client codex --json and follow the exact JSON steps. The latest channel prevents persistent recovery guidance from freezing a client on the installer version that first configured it. After authentication, call project_connect for workspace binding. Codex, Roo, and Cursor start the returned exact-version plan with tty:true and shell:false, then send bootstrap.consumeUrl through the process stdin tool. Claude Code prepares a local verifier, calls project_connect again with its non-secret request ID and challenge, and redeems the returned claim without project OAuth. Legacy flags remain compatibility-only; project MCP must never be installed globally.`,
     keywords: ['npm', '@spala-ai/mcp-install', 'mcp install', 'spala_public_mcp', 'public mcp', 'project mcp', 'scope', 'builder project data'],
   },
   {
