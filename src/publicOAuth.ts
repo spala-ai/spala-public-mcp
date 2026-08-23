@@ -130,6 +130,7 @@ const REDEMPTION_STATE_CHAIN_LIMIT = 64;
 const REFRESH_RESULT_CACHE_SECONDS = 60;
 const REPLAY_BUCKET_PATTERN = /^\d+$/;
 const HOSTED_REDIRECT_URIS = new Set([
+  'https://agency.spala.ai/callback',
   'https://claude.ai/api/mcp/auth_callback',
   'https://vscode.dev/redirect',
   'https://vertexaisearch.cloud.google.com/oauth-redirect',
