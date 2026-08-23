@@ -658,6 +658,7 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
     const allowed = [
       'http://localhost:43123/oauth/callback',
       'http://127.0.0.1:33418/callback',
+      'https://agency.spala.ai/callback',
       'https://claude.ai/api/mcp/auth_callback',
       'https://vscode.dev/redirect',
       'https://vertexaisearch.cloud.google.com/oauth-redirect',
