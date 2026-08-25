@@ -727,6 +727,19 @@ function rethrowProjectStage(error: unknown, code: string): never {
   throw error;
 }
 
+const PROJECT_BUILDER_AUTH_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+
+function shouldRetryProjectBuilderAuth(error: unknown): boolean {
+  if (!(error instanceof SpalaApiError)) return false;
+  return error.category === 'upstream_unavailable'
+    || (error.status === 409 && error.code === 'builder_auth_not_ready')
+    || (error.status === 503 && error.code === 'DB_UNAVAILABLE');
+}
+
+function waitForProjectBuilderAuthRetry(delayMs: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
 function rethrowProjectPreparation(error: unknown): never {
   const unavailable = error instanceof SpalaApiError && error.category === 'upstream_unavailable';
   throw new SpalaApiError({
@@ -1164,25 +1177,66 @@ export function createSpalaApiClient(
       );
 
       let builderToken: string;
-      try {
-        const exchangePayload = await requestProjectJson(
-          preparationBuilderAuthUrl,
-          access.token,
-          'POST',
-          { token: access.token },
-          { authorization: false, sensitiveTokens: [publicMcpAccessToken] },
-        );
-        const token = exchangedBuilderToken(exchangePayload, [access.token, publicMcpAccessToken]);
-        if (!token) {
-          throw new SpalaApiError({
-            category: 'invalid_upstream_response',
-            code: 'invalid_project_builder_token',
-            message: 'The project backend returned an invalid builder authentication response.',
-          });
+      let exchangeAccessToken = access.token;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const exchangePayload = await requestProjectJson(
+            preparationBuilderAuthUrl,
+            exchangeAccessToken,
+            'POST',
+            { token: exchangeAccessToken },
+            { authorization: false, sensitiveTokens: [publicMcpAccessToken] },
+          );
+          const token = exchangedBuilderToken(exchangePayload, [exchangeAccessToken, publicMcpAccessToken]);
+          if (!token) {
+            throw new SpalaApiError({
+              category: 'invalid_upstream_response',
+              code: 'invalid_project_builder_token',
+              message: 'The project backend returned an invalid builder authentication response.',
+            });
+          }
+          builderToken = token;
+          break;
+        } catch (error) {
+          const delayMs = PROJECT_BUILDER_AUTH_RETRY_DELAYS_MS[attempt];
+          if (delayMs === undefined || !shouldRetryProjectBuilderAuth(error)) {
+            rethrowProjectStage(error, 'project_token_exchange_failed');
+          }
+          await waitForProjectBuilderAuthRetry(delayMs);
+
+          // The external token is one-time. Never replay it after an
+          // ambiguous response; obtain a fresh access handoff before retrying.
+          let refreshedAccess: ProjectAccess;
+          try {
+            const refreshedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectAccessUrl(id));
+            const parsedAccess = parseProjectAccess(refreshedPayload, access.projectUrl);
+            if (!parsedAccess) {
+              throw new SpalaApiError({
+                category: 'invalid_upstream_response',
+                code: 'invalid_project_access_handoff',
+                message: 'The Spala control plane returned an invalid project access handoff.',
+              });
+            }
+            refreshedAccess = parsedAccess;
+          } catch (refreshError) {
+            rethrowProjectStage(refreshError, 'project_token_exchange_failed');
+          }
+          if (!refreshedAccess || refreshedAccess.projectUrl !== access.projectUrl) {
+            throw new SpalaApiError({
+              category: 'invalid_upstream_response',
+              code: 'invalid_project_access_handoff',
+              message: 'The Spala control plane returned an invalid project access handoff.',
+            });
+          }
+          if (refreshedAccess.token === exchangeAccessToken) {
+            throw new SpalaApiError({
+              category: 'upstream_unavailable',
+              code: 'project_access_token_not_rotated',
+              message: 'The Spala control plane did not issue a fresh project access token for retry.',
+            });
+          }
+          exchangeAccessToken = refreshedAccess.token;
         }
-        builderToken = token;
-      } catch (error) {
-        rethrowProjectStage(error, 'project_token_exchange_failed');
       }
 
       try {

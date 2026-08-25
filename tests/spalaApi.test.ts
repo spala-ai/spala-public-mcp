@@ -1288,6 +1288,42 @@ test('project token exchange rejects missing or unchanged builder tokens with a 
   }
 });
 
+test('project token exchange retries transient readiness failures with a fresh access token', async () => {
+  const accessTokens = ['temporary-exchange-secret-1', 'temporary-exchange-secret-2'];
+  const calls: Array<{ url: URL; init: RequestInit }> = [];
+  let accessCall = 0;
+  let exchangeCall = 0;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-exchange-retry', fetchStub((url, init) => {
+    calls.push({ url, init });
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff());
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl('https://project.example', accessTokens[Math.min(accessCall++, 1)]!));
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/builder-auth/external') {
+      exchangeCall += 1;
+      if (exchangeCall === 1) return jsonResponse({ code: 'DB_UNAVAILABLE', error: 'warming up' }, 503);
+      return jsonResponse({ token: 'builder-project-token' });
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === 'https://project.example' && url.pathname === '/mcp/agent-instructions') {
+      return agentInstructionSession('https://project.example/mcp/agent-instructions/mcp_agent_retry/consume');
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(prepared.bootstrapConsumeUrl, 'https://project.example/mcp/agent-instructions/mcp_agent_retry/consume');
+  assert.equal(exchangeCall, 2);
+  const exchangeRequests = calls.filter(call => call.url.pathname === '/api/__internal/builder-auth/external');
+  assert.equal(exchangeRequests.length, 2);
+  assert.equal(JSON.parse(String(exchangeRequests[0]!.init.body)).token, accessTokens[0]);
+  assert.equal(JSON.parse(String(exchangeRequests[1]!.init.body)).token, accessTokens[1]);
+});
+
 test('agent instructions 404 preserves not-found category and status with a stable stage code', async () => {
   const projectToken = 'temporary-agent-instruction-404-secret';
   const builderToken = 'builder-agent-instruction-404-secret';
