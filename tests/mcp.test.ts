@@ -1019,6 +1019,35 @@ test('plan and payment failures include dashboard/pricing actions without invent
   });
 });
 
+test('project allowance failures offer remove-or-buy capacity without exposing a raw precondition', async () => {
+  const api = apiStub({
+    async createProject() {
+      throw new SpalaApiError({
+        category: 'plan_restricted',
+        status: 403,
+        code: 'project_limit_reached',
+        message: 'Project limit reached for this organization.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'project_create', arguments: { name: 'One More Project' } });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'project_limit_reached');
+    assert.deepEqual(body.action, {
+      type: 'project_capacity_required',
+      projectsUrl: 'https://dashboard.spala.ai/projects?source=mcp-project-create',
+      capacityUrl: 'https://dashboard.spala.ai/billing?focus=extra-project-slot&source=mcp-project-create',
+      choices: ['remove_existing_project', 'add_project_capacity'],
+    });
+    assert.match(resultText(result), /existing projects keep working/i);
+    assert.match(resultText(result), /remove an existing project or add project capacity/i);
+    assert.doesNotMatch(resultText(result), /Error at step Precondition/i);
+  });
+});
+
 test('public onboarding exposes the reviewed native integration repository', async () => {
   await withVerifiedClient(apiStub(), async client => {
     const help = resultText(await client.callTool({ name: 'spala_help', arguments: {} }));

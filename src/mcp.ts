@@ -1000,6 +1000,7 @@ function requireInstallClient(selector: ProjectSelector): SupportedInstallClient
 function safeProjectError(error: unknown, fallback: string, config: AppConfig): ToolResult {
   if (error instanceof SpalaApiError) {
     const planFailure = error.category === 'payment_required' || error.category === 'plan_restricted';
+    const projectCapacityFailure = planFailure && /project[ _-]?(?:limit|allowance|quota)|(?:limit|allowance|quota)[ _-]?project/i.test(`${error.code || ''} ${error.message}`);
     const organizationSelection = error.category === 'organization_selection_required';
     const accountSetupRequired = error.code === 'organization_required';
     let action: Record<string, unknown> | undefined;
@@ -1013,6 +1014,13 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       action = { type: 'complete_account_setup', statusTool: 'account_status', setupTool: 'account_setup' };
     } else if (organizationSelection) {
       action = { type: 'select_organization', argument: 'organizationId' };
+    } else if (projectCapacityFailure) {
+      action = {
+        type: 'project_capacity_required',
+        projectsUrl: `${config.dashboardUrl}/projects?source=mcp-project-create`,
+        capacityUrl: `${config.dashboardUrl}/billing?focus=extra-project-slot&source=mcp-project-create`,
+        choices: ['remove_existing_project', 'add_project_capacity'],
+      };
     } else if (planFailure) {
       action = {
         type: 'human_payment_required',
@@ -1026,7 +1034,9 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       error: error.category === 'authentication' ? 'reauthentication_required' : error.code || error.category,
       category: error.category,
       status: error.status,
-      message: planFailure
+      message: projectCapacityFailure
+        ? 'This organization has reached its project allowance. Existing projects keep working. Stop and ask the human to remove an existing project or add project capacity in the Spala dashboard, then retry this tool.'
+        : planFailure
         ? 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.'
         : accountSetupRequired
           ? 'The account has no company/workspace organization yet. Call account_status, ask the human for its missing fields, then call account_setup and retry.'
