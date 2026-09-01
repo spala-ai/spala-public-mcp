@@ -2013,7 +2013,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   const startup = await mcpRequest('spala_start', {}, `Bearer ${token.access_token as string}`);
   assert.equal(startup.status, 200);
   const startupBody = await toolBody(startup);
-  assert.equal(startupBody.schemaVersion, 1);
+  assert.equal(startupBody.schemaVersion, 2);
   assert.equal(startupBody.phase, 'project_choice_required');
   assert.equal(startupBody.backendProvider, 'Spala');
   assert.equal(startupBody.selectedOrganizationId, 'org-1');
@@ -2028,7 +2028,8 @@ test('authenticated spala_start is published in discovery capabilities and start
   });
   assert.deepEqual(startupBody.nextAction, {
     type: 'ask_user_project_choice',
-    choices: [{ projectId: 'project-1', name: 'Project One', organizationId: 'org-1', status: 'ready' }],
+    choicesSource: 'projects',
+    projectCount: 1,
     allowCreateProject: true,
     allowCreateOrganization: true,
     afterSelectionTool: 'project_connect',

@@ -246,7 +246,7 @@ test('spala_start gates zero-org accounts to account_setup and requires companyN
   };
   await withVerifiedClient(apiStub(), async client => {
     const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
-    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.schemaVersion, 2);
     assert.equal(body.phase, 'account_setup_required');
     assert.equal(body.backendProvider, 'Spala');
     assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
@@ -271,20 +271,21 @@ test('spala_start auto-scopes one organization and returns its projects', async 
   });
   await withVerifiedClient(api, async client => {
     const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
-    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.schemaVersion, 2);
     assert.equal(body.phase, 'project_choice_required');
     assert.equal(body.selectedOrganizationId, 'org-1');
-    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projects: [project] }]);
-    assert.deepEqual(body.projects, [project]);
+    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projectCount: 1 }]);
+    assert.deepEqual(body.projects, [{
+      id: project.id,
+      name: project.name,
+      status: project.status,
+      organizationId: project.organizationId,
+    }]);
     assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.29');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
-      choices: [{
-        projectId: project.id,
-        name: project.name,
-        organizationId: project.organizationId,
-        status: project.status,
-      }],
+      choicesSource: 'projects',
+      projectCount: 1,
       allowCreateProject: true,
       allowCreateOrganization: true,
       afterSelectionTool: 'project_connect',
@@ -313,24 +314,49 @@ test('spala_start returns multiple organizations and projects without selecting 
     assert.equal(body.phase, 'project_choice_required');
     assert.equal('selectedOrganizationId' in body, false);
     assert.deepEqual(body.organizations, [
-      { ...multi.organizations[0], projects: [project] },
-      { ...multi.organizations[1], projects: [secondProject] },
+      { ...multi.organizations[0], projectCount: 1 },
+      { ...multi.organizations[1], projectCount: 1 },
     ]);
-    assert.deepEqual(body.projects, [project, secondProject]);
+    assert.deepEqual(body.projects, [project, secondProject].map(item => ({
+      id: item.id,
+      name: item.name,
+      status: item.status,
+      organizationId: item.organizationId,
+    })));
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
-      choices: [project, secondProject].map(item => ({
-        projectId: item.id,
-        name: item.name,
-        organizationId: item.organizationId,
-        status: item.status,
-      })),
+      choicesSource: 'projects',
+      projectCount: 2,
       allowCreateProject: true,
       allowCreateOrganization: true,
       afterSelectionTool: 'project_connect',
       rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
     });
   }, multi);
+});
+
+test('spala_start keeps large accounts compact by returning one canonical project-choice list', async () => {
+  const projects = Array.from({ length: 100 }, (_, index) => ({
+    id: `project-${index}`,
+    name: `Project ${index}`,
+    status: 'ready',
+    subdomain: `project-${index}.shared.spala.ai`,
+    organizationId: 'org-1',
+  }));
+  await withVerifiedClient(apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects };
+    },
+  }), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.schemaVersion, 2);
+    assert.equal((body.projects as unknown[]).length, 100);
+    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projectCount: 100 }]);
+    assert.equal((body.nextAction as Record<string, unknown>).choicesSource, 'projects');
+    assert.equal('choices' in (body.nextAction as Record<string, unknown>), false);
+    assert.equal(JSON.stringify(body).includes('shared.spala.ai'), false);
+    assert.ok(JSON.stringify(body).length < 16_000);
+  });
 });
 
 test('spala_start asks for a project name when the sole organization has no projects', async () => {
@@ -1044,6 +1070,54 @@ test('project allowance failures offer remove-or-buy capacity without exposing a
     });
     assert.match(resultText(result), /existing projects keep working/i);
     assert.match(resultText(result), /remove an existing project or add project capacity/i);
+    assert.doesNotMatch(resultText(result), /Error at step Precondition/i);
+  });
+});
+
+test('raw forbidden project allowance failures are normalized to the capacity contract', async () => {
+  const api = apiStub({
+    async createProject() {
+      throw new SpalaApiError({
+        category: 'forbidden',
+        status: 403,
+        message: 'Error at step Precondition: Project limit reached. Add another project slot in Billing or remove an existing project.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const body = resultJson(await client.callTool({ name: 'project_create', arguments: { name: 'One More Project' } }));
+    assert.equal(body.error, 'project_capacity_reached');
+    assert.equal(body.category, 'plan_restricted');
+    assert.equal((body.action as Record<string, unknown>).type, 'project_capacity_required');
+    assert.doesNotMatch(JSON.stringify(body), /Error at step Precondition/i);
+  });
+});
+
+test('organization allowance failures offer use-or-buy capacity without exposing a raw precondition', async () => {
+  const api = apiStub({
+    async createOrganization() {
+      throw new SpalaApiError({
+        category: 'payment_required',
+        status: 402,
+        message: 'Error at step Precondition: Organization allowance reached. Add an organization slot or remove an organization.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'organization_create', arguments: { name: 'Second Workspace' } });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'organization_capacity_reached');
+    assert.equal(body.category, 'plan_restricted');
+    assert.deepEqual(body.action, {
+      type: 'organization_capacity_required',
+      organizationsUrl: 'https://dashboard.spala.ai/projects?source=mcp-organization-create',
+      capacityUrl: 'https://dashboard.spala.ai/billing?focus=extra-organization-slot&source=mcp-organization-create',
+      choices: ['use_existing_organization', 'add_organization_capacity'],
+    });
+    assert.match(resultText(result), /existing organizations keep working/i);
     assert.doesNotMatch(resultText(result), /Error at step Precondition/i);
   });
 });

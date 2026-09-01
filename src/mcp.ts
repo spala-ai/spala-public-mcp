@@ -824,7 +824,7 @@ function json(value: unknown, isError = false): ToolResult {
 }
 
 type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
-export const PUBLIC_MCP_STARTUP_VERSION = 1;
+export const PUBLIC_MCP_STARTUP_VERSION = 2;
 const accountSetupLocks = new Map<string, Promise<void>>();
 const ACCOUNT_SETUP_BLOCKED_ACTIONS = [
   'inspect application source',
@@ -863,10 +863,23 @@ type StartupProjectDiscovery = {
   projects: SpalaProject[];
 };
 
+type StartupProjectChoice = Pick<SpalaProject, 'id' | 'name' | 'status'> & {
+  organizationId?: string;
+};
+
 async function discoverStartupProjects(api: SpalaApiClient, principal: SpalaPrincipal): Promise<StartupProjectDiscovery[]> {
   return Promise.all(principal.organizations.map(async organization => ({
     organization,
     projects: (await api.listProjects({ organizationId: organization.id })).projects,
+  })));
+}
+
+function startupProjectChoices(discovered: StartupProjectDiscovery[]): StartupProjectChoice[] {
+  return discovered.flatMap(entry => entry.projects.map(project => ({
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    ...(project.organizationId ? { organizationId: project.organizationId } : {}),
   })));
 }
 
@@ -1000,7 +1013,10 @@ function requireInstallClient(selector: ProjectSelector): SupportedInstallClient
 function safeProjectError(error: unknown, fallback: string, config: AppConfig): ToolResult {
   if (error instanceof SpalaApiError) {
     const planFailure = error.category === 'payment_required' || error.category === 'plan_restricted';
-    const projectCapacityFailure = planFailure && /project[ _-]?(?:limit|allowance|quota)|(?:limit|allowance|quota)[ _-]?project/i.test(`${error.code || ''} ${error.message}`);
+    const capacityText = `${error.code || ''} ${error.message}`;
+    const projectCapacityFailure = /project[ _-]?(?:limit|allowance|quota)|(?:limit|allowance|quota)[ _-]?project/i.test(capacityText);
+    const organizationCapacityFailure = !projectCapacityFailure
+      && /organization[ _-]?(?:limit|allowance|capacity|quota)|(?:limit|allowance|capacity|quota)[ _-]?organization|organization slot/i.test(capacityText);
     const organizationSelection = error.category === 'organization_selection_required';
     const accountSetupRequired = error.code === 'organization_required';
     let action: Record<string, unknown> | undefined;
@@ -1021,6 +1037,13 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
         capacityUrl: `${config.dashboardUrl}/billing?focus=extra-project-slot&source=mcp-project-create`,
         choices: ['remove_existing_project', 'add_project_capacity'],
       };
+    } else if (organizationCapacityFailure) {
+      action = {
+        type: 'organization_capacity_required',
+        organizationsUrl: `${config.dashboardUrl}/projects?source=mcp-organization-create`,
+        capacityUrl: `${config.dashboardUrl}/billing?focus=extra-organization-slot&source=mcp-organization-create`,
+        choices: ['use_existing_organization', 'add_organization_capacity'],
+      };
     } else if (planFailure) {
       action = {
         type: 'human_payment_required',
@@ -1031,11 +1054,18 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       action = { type: 'review_project_access', dashboardUrl: config.dashboardUrl };
     }
     return json({
-      error: error.category === 'authentication' ? 'reauthentication_required' : error.code || error.category,
-      category: error.category,
+      error: error.category === 'authentication'
+        ? 'reauthentication_required'
+        : error.code
+          || (projectCapacityFailure ? 'project_capacity_reached' : undefined)
+          || (organizationCapacityFailure ? 'organization_capacity_reached' : undefined)
+          || error.category,
+      category: projectCapacityFailure || organizationCapacityFailure ? 'plan_restricted' : error.category,
       status: error.status,
       message: projectCapacityFailure
         ? 'This organization has reached its project allowance. Existing projects keep working. Stop and ask the human to remove an existing project or add project capacity in the Spala dashboard, then retry this tool.'
+        : organizationCapacityFailure
+          ? 'This account has reached its organization allowance. Existing organizations keep working. Stop and ask the human to use an existing organization or add organization capacity in the Spala dashboard, then retry this tool.'
         : planFailure
         ? 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.'
         : accountSetupRequired
@@ -1501,7 +1531,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
 
     try {
       const discovered = await discoverStartupProjects(api!, principal);
-      const projects = discovered.flatMap(entry => entry.projects);
+      const projects = startupProjectChoices(discovered);
       const oneOrganization = principal.organizations.length === 1;
       const hasProjects = projects.length > 0;
       const phase = hasProjects
@@ -1512,12 +1542,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       const nextAction = hasProjects
         ? {
             type: 'ask_user_project_choice',
-            choices: projects.map(project => ({
-              projectId: project.id,
-              name: project.name,
-              organizationId: project.organizationId,
-              status: project.status,
-            })),
+            choicesSource: 'projects',
+            projectCount: projects.length,
             allowCreateProject: true,
             allowCreateOrganization: true,
             afterSelectionTool: 'project_connect',
@@ -1545,7 +1571,10 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         user: principal.user,
         accountSetup: { state: 'ready', missingFields: [] },
         selectedOrganizationId: oneOrganization ? principal.organizations[0]!.id : undefined,
-        organizations: discovered.map(entry => ({ ...entry.organization, projects: entry.projects })),
+        organizations: discovered.map(entry => ({
+          ...entry.organization,
+          projectCount: entry.projects.length,
+        })),
         projects,
         installerMaintenance: INSTALLER_MAINTENANCE,
         nextAction,
