@@ -725,10 +725,22 @@ function parseAgentInstructionBootstrap(
   if (record['deliveryMode'] !== expectedDeliveryMode) return { reason: 'invalid_delivery_mode' };
 
   const consumeUrlValue = stringField(record, 'consumeUrl', 4_096);
-  const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
+  const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, {
+    allowProjectScope: true,
+    requireCanonical: true,
+  });
   if (!consumeUrl) return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
   const parsed = new URL(consumeUrl);
   const expectedMcp = new URL(mcpUrl);
+  const queryEntries = [...parsed.searchParams.entries()];
+  const expectedProfile = expectedMcp.searchParams.get('profile');
+  if (
+    queryEntries.some(([key]) => key !== 'profile')
+    || parsed.searchParams.getAll('profile').length > 1
+    || parsed.searchParams.get('profile') !== expectedProfile
+  ) {
+    return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
+  }
   if (parsed.origin !== expectedMcp.origin) return { reason: 'untrusted_origin' };
 
   const prefix = `${expectedMcp.pathname.replace(/\/+$/, '')}/agent-instructions/`;

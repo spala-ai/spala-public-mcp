@@ -274,7 +274,7 @@ test('guided project preparation preserves profile in URLs and agent instruction
     if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
       instructionBody = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
       return agentInstructionSession(
-        `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume`,
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume?profile=guided`,
       );
     }
     return jsonResponse({ error: 'unexpected_request' }, 500);
@@ -284,6 +284,10 @@ test('guided project preparation preserves profile in URLs and agent instruction
 
   assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata&profile=guided`);
   assert.equal(prepared.manifestUrl, `${projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata&profile=guided`);
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume?profile=guided`,
+  );
   assert.deepEqual(instructionBody, {
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
@@ -1545,6 +1549,8 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
     undefined,
     '',
     `https://project.example/mcp/bootstrap?session=${controlToken}`,
+    'https://project.example/mcp/agent-instructions/mcp_agent_profile/consume?profile=guided',
+    'https://project.example/mcp/agent-instructions/mcp_agent_scope/consume?scope=builder%2Cproject%2Cdata',
   ];
 
   for (const bootstrapConsumeUrl of invalidUrls) {
