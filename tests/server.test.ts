@@ -2162,6 +2162,24 @@ test('install manifest exposes machine-readable 0.1.29 installer commands and se
   assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
 });
 
+test('install manifest preserves an explicitly requested guided project profile', async () => {
+  const response = await fetch(`${baseUrl}/mcp/install-manifest?profile=guided`);
+  assert.equal(response.status, 200);
+  const manifest = await responseJson(response);
+
+  assert.equal(manifest.defaultProjectToolProfile, 'full');
+  assert.equal(manifest.selectedProjectToolProfile, 'guided');
+  assert.equal(manifest.mcpUrl, 'https://mcp.spala.ai/mcp?profile=guided');
+  assert.equal(manifest.manifestUrl, 'https://mcp.spala.ai/mcp/install-manifest?profile=guided');
+  assert.match(
+    String((manifest.projectMcpResolution as Record<string, unknown>).profileArgument),
+    /profile="guided".*project_connect/i,
+  );
+
+  const invalid = await fetch(`${baseUrl}/mcp/install-manifest?profile=unknown`);
+  assert.equal(invalid.status, 400);
+});
+
 test('public response bodies, headers, metadata, and tool results never disclose the internal origin', async () => {
   const checks: Array<Promise<Response>> = [
     fetch(`${baseUrl}/`),

@@ -1187,16 +1187,30 @@ app.post('/oauth/revoke', async (req, res) => {
   }
 });
 
-app.get('/mcp/install-manifest', (_req, res) => {
+app.get('/mcp/install-manifest', (req, res) => {
   recordTelemetry('manifest_fetch', {});
   setDiscoveryCache(res);
-  const mcpUrl = publicMcpUrl();
+  const rawProfile = req.query['profile'];
+  if (rawProfile !== undefined && rawProfile !== 'full' && rawProfile !== 'guided') {
+    res.status(400).json({ error: 'invalid_tool_profile', supportedProfiles: ['full', 'guided'] });
+    return;
+  }
+  const selectedProjectToolProfile = rawProfile === 'guided' ? 'guided' : 'full';
+  const mcpUrlObject = new URL(publicMcpUrl());
+  const manifestUrlObject = new URL(`${publicMcpUrl()}/install-manifest`);
+  if (selectedProjectToolProfile === 'guided') {
+    mcpUrlObject.searchParams.set('profile', 'guided');
+    manifestUrlObject.searchParams.set('profile', 'guided');
+  }
+  const mcpUrl = mcpUrlObject.toString();
   res.json({
     schemaVersion: 1,
     name: 'Spala Public MCP',
     serverName: PUBLIC_MCP_SERVER_NAME,
     mcpUrl,
-    manifestUrl: `${mcpUrl}/install-manifest`,
+    manifestUrl: manifestUrlObject.toString(),
+    defaultProjectToolProfile: 'full',
+    selectedProjectToolProfile,
     transport: 'streamable-http',
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     maintainer: MAINTAINER,
@@ -1209,6 +1223,9 @@ app.get('/mcp/install-manifest', (_req, res) => {
     projectMcpResolution: {
       source: 'The authenticated project handoff returned by Spala.',
       rule: 'Call project_connect and execute its client-specific workspace-only project bind plan with the exact clean mcpUrl.',
+      profileArgument: selectedProjectToolProfile === 'guided'
+        ? 'Pass profile="guided" to project_connect or project_get_mcp_manifest to preserve the guided project tool surface.'
+        : 'Omit profile or pass profile="full" for the complete project MCP compatibility surface.',
       note: 'Codex, Roo, and Cursor follow the protected bootstrap instructions. Claude Code follows the returned verifier preparation and delegated claim instructions without project OAuth. Agents must not derive project URLs, expose credentials, or install a project MCP globally.',
       execution: {
         bootstrapClients: PROJECT_INSTALL_EXECUTION,

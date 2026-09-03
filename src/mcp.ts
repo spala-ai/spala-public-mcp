@@ -126,6 +126,7 @@ const PROJECT_SELECTOR_SCHEMA = {
 const PROJECT_INSTALL_SELECTOR_SCHEMA = {
   ...PROJECT_SELECTOR_SCHEMA,
   client: z.enum(SUPPORTED_INSTALL_CLIENTS).optional(),
+  profile: z.enum(['full', 'guided']).optional(),
   bootstrapRequestId: z.string().regex(/^claim_[A-Za-z0-9_-]{20,80}$/).optional(),
   bootstrapChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 };
@@ -194,6 +195,12 @@ const INSTALL_CLIENT_JSON_SCHEMA = {
   description: 'Target MCP client for @spala-ai/mcp-install. Omit to receive client_selection_required without an executable mutation plan.',
 } as const;
 
+const PROJECT_TOOL_PROFILE_JSON_SCHEMA = {
+  type: 'string',
+  enum: ['full', 'guided'],
+  description: 'Optional project MCP tool profile. full preserves the complete compatibility surface; guided exposes the compact build-and-test surface. Defaults to full.',
+} as const;
+
 const BOOTSTRAP_REQUEST_JSON_SCHEMA = {
   bootstrapRequestId: {
     type: 'string',
@@ -212,11 +219,17 @@ const PROJECT_INSTALL_SELECTOR_JSON_SCHEMA = {
   description: 'Provide exactly one project selector and a supported agentic workspace client (codex, roo, claude-code, or cursor) to receive executable installer argv.',
   oneOf: PROJECT_SELECTOR_JSON_SCHEMA.oneOf.map(branch => ({
     ...branch,
-    properties: { ...branch.properties, client: INSTALL_CLIENT_JSON_SCHEMA, ...BOOTSTRAP_REQUEST_JSON_SCHEMA },
+    properties: {
+      ...branch.properties,
+      client: INSTALL_CLIENT_JSON_SCHEMA,
+      profile: PROJECT_TOOL_PROFILE_JSON_SCHEMA,
+      ...BOOTSTRAP_REQUEST_JSON_SCHEMA,
+    },
   })),
   properties: {
     ...PROJECT_SELECTOR_JSON_SCHEMA.properties,
     client: INSTALL_CLIENT_JSON_SCHEMA,
+    profile: PROJECT_TOOL_PROFILE_JSON_SCHEMA,
     ...BOOTSTRAP_REQUEST_JSON_SCHEMA,
   },
 } as const;
@@ -390,6 +403,7 @@ const PROJECT_CONNECTION_OUTPUT = outputObject(
     project: OBJECT_OUTPUT,
     handoff: OBJECT_OUTPUT,
     mcpUrl: { type: 'string', format: 'uri' },
+    toolProfile: { type: 'string', enum: ['full', 'guided'] },
     serverName: STRING_OUTPUT,
     transport: STRING_OUTPUT,
     preparedByProjectBackend: BOOLEAN_OUTPUT,
@@ -520,6 +534,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
       handoff: OBJECT_OUTPUT,
       mcpUrl: { type: 'string', format: 'uri' },
       manifestUrl: { type: 'string', format: 'uri' },
+      toolProfile: { type: 'string', enum: ['full', 'guided'] },
       serverName: STRING_OUTPUT,
       transport: STRING_OUTPUT,
       auth: STRING_OUTPUT,
@@ -658,6 +673,7 @@ type ProjectSelector = {
   subdomain?: string;
   organizationId?: string;
   client?: SupportedInstallClient;
+  profile?: 'full' | 'guided';
   bootstrapRequestId?: string;
   bootstrapChallenge?: string;
 };
@@ -965,6 +981,7 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
   const subdomain = input.subdomain?.trim();
   const organizationId = input.organizationId?.trim();
   const client = input.client;
+  const profile = input.profile;
   const bootstrapRequestId = input.bootstrapRequestId?.trim();
   const bootstrapChallenge = input.bootstrapChallenge?.trim();
   if (Number(projectId !== undefined) + Number(subdomain !== undefined) !== 1) {
@@ -995,8 +1012,8 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
     ? { bootstrapRequestId, bootstrapChallenge }
     : {};
   return projectId !== undefined
-    ? { projectId, ...(client ? { client } : {}), ...bootstrap }
-    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}), ...bootstrap };
+    ? { projectId, ...(client ? { client } : {}), ...(profile ? { profile } : {}), ...bootstrap }
+    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}), ...(profile ? { profile } : {}), ...bootstrap };
 }
 
 function requireInstallClient(selector: ProjectSelector): SupportedInstallClient | ToolResult {
@@ -1296,7 +1313,7 @@ async function prepareHandoff(
     : undefined;
   return {
     project: resolved.project,
-    handoff: await api.prepareProjectMcp(resolved.projectId, client, bootstrapProof),
+    handoff: await api.prepareProjectMcp(resolved.projectId, client, bootstrapProof, selector.profile || 'full'),
   };
 }
 
@@ -1786,6 +1803,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         project: resolved.project,
         handoff: responseHandoff,
         mcpUrl: serverSideA2a ? installPlan.mcpUrl : handoff.mcpUrl,
+        toolProfile: selector.profile || 'full',
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         preparedByProjectBackend: true,
@@ -1878,6 +1896,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         handoff: publicHandoff,
         mcpUrl: handoff.mcpUrl,
         manifestUrl: handoff.manifestUrl,
+        toolProfile: selector.profile || 'full',
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         auth: claudeCode ? 'local_credential_proxy_after_pkce_claim' : 'local_credential_proxy_after_bootstrap',

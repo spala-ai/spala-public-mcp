@@ -89,6 +89,10 @@ test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () =
   assert.equal(parseProjectMcpUrl(encodedCommaScope), encodedCommaScope);
   assert.equal(parseProjectMcpUrl(encodedSubsetScope), encodedSubsetScope);
   assert.equal(
+    parseProjectMcpUrl('https://shared.example/project-a/mcp/?scope=builder%2Cproject%2Cdata&profile=guided'),
+    'https://shared.example/project-a/mcp/?scope=builder%2Cproject%2Cdata&profile=guided',
+  );
+  assert.equal(
     parseProjectMcpUrl('https://project.example/mcp?scope=builder&scope=project'),
     undefined,
     'duplicate scope parameters must be rejected',
@@ -102,6 +106,8 @@ test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () =
     'https://project.example/mcp?scope=',
     'https://project.example/mcp?scope=api',
     'https://project.example/mcp?scope=builder,builder',
+    'https://project.example/mcp?scope=builder&profile=unknown',
+    'https://project.example/mcp?scope=builder&profile=guided&profile=guided',
     'https://project.example/mcp#secret',
     'https://PROJECT.example/mcp?scope=builder,project,data',
     'https://project.example:443/mcp?scope=builder,project,data',
@@ -250,6 +256,41 @@ test('Claude Code preparation skips the one-time instruction session used by boo
     'POST /api/__internal/builder-auth/external',
     'POST /api/__internal/project/config',
   ]);
+});
+
+test('guided project preparation preserves profile in URLs and agent instructions', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-guided-project-token';
+  const builderToken = 'builder-guided-project-token';
+  let instructionBody: Record<string, unknown> | undefined;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionBody = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex', undefined, 'guided');
+
+  assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata&profile=guided`);
+  assert.equal(prepared.manifestUrl, `${projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata&profile=guided`);
+  assert.deepEqual(instructionBody, {
+    scope: 'builder,project,data',
+    clientName: 'Spala codex agent',
+    deliveryMode: 'one-time',
+    profile: 'guided',
+  });
 });
 
 test('Claude Code preparation binds its delegated claim to the local installer challenge', async () => {

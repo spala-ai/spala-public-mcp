@@ -51,6 +51,8 @@ export type ProjectBootstrapProof = {
   challenge: string;
 };
 
+export type ProjectMcpToolProfile = 'full' | 'guided';
+
 export type ProjectOrganizationInput = {
   organizationId?: string;
 };
@@ -87,6 +89,7 @@ export type SpalaApiClient = {
     projectId: string,
     client: 'codex' | 'roo' | 'claude-code' | 'cursor' | 'a2a',
     bootstrapProof?: ProjectBootstrapProof,
+    toolProfile?: ProjectMcpToolProfile,
   ): Promise<PreparedProjectMcpHandoff>;
 };
 
@@ -236,9 +239,15 @@ function isForbiddenHostname(hostname: string): boolean {
 
 function hasValidProjectScopeQuery(url: URL): boolean {
   const entries = [...url.searchParams.entries()];
-  if (entries.length !== 1) return false;
-  const [key, value] = entries[0]!;
-  if (key !== 'scope') return false;
+  if (entries.length < 1 || entries.length > 2) return false;
+  if (url.searchParams.getAll('scope').length > 1 || url.searchParams.getAll('profile').length > 1) return false;
+  if (entries.some(([key]) => key !== 'scope' && key !== 'profile')) return false;
+
+  const profile = url.searchParams.get('profile');
+  if (profile !== null && profile !== 'full' && profile !== 'guided') return false;
+
+  const value = url.searchParams.get('scope');
+  if (value === null) return profile !== null;
 
   const scopes = value.split(',');
   const allowedScopes = new Set(['builder', 'project', 'data']);
@@ -270,6 +279,27 @@ function applyAuthorizedProjectScope(value: string, authorizedScope: string): st
     });
   }
   if (!existingScope) parsed.searchParams.set('scope', authorizedScope);
+  return parsed.toString();
+}
+
+function applyProjectToolProfile(value: string, toolProfile: ProjectMcpToolProfile): string {
+  const parsed = new URL(value);
+  const existingProfile = parsed.searchParams.get('profile');
+  if (existingProfile && existingProfile !== 'full' && existingProfile !== 'guided') {
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      code: 'project_mcp_profile_invalid',
+      message: 'The project backend returned an invalid MCP tool profile.',
+    });
+  }
+  if (existingProfile && existingProfile !== toolProfile) {
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      code: 'project_mcp_profile_mismatch',
+      message: 'The project backend returned an MCP URL with a different tool profile than requested.',
+    });
+  }
+  if (toolProfile === 'guided' && !existingProfile) parsed.searchParams.set('profile', 'guided');
   return parsed.toString();
 }
 
@@ -1093,7 +1123,7 @@ export function createSpalaApiClient(
       return verifiedProjectHandoff(payload, id);
     },
 
-    async prepareProjectMcp(projectIdValue, client, bootstrapProof) {
+    async prepareProjectMcp(projectIdValue, client, bootstrapProof, toolProfile = 'full') {
       const id = normalizeProjectId(projectIdValue);
       let projectHandoff: ProjectMcpHandoff;
       try {
@@ -1266,10 +1296,16 @@ export function createSpalaApiClient(
       }
       const preparedProjectUrl = parseProjectBaseUrl(preparedHandoff.projectUrl);
       const mcpUrl = preparedHandoff.mcpUrl
-        ? applyAuthorizedProjectScope(preparedHandoff.mcpUrl, authorizedScope)
+        ? applyProjectToolProfile(
+            applyAuthorizedProjectScope(preparedHandoff.mcpUrl, authorizedScope),
+            toolProfile,
+          )
         : undefined;
       const manifestUrl = preparedHandoff.manifestUrl
-        ? applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope)
+        ? applyProjectToolProfile(
+            applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope),
+            toolProfile,
+          )
         : undefined;
       const sensitiveTokens = [access.token, builderToken, publicMcpAccessToken];
       const runtimeBaseUrl = mcpUrl ? projectRuntimeBaseUrl(mcpUrl) : undefined;
@@ -1366,6 +1402,7 @@ export function createSpalaApiClient(
             scope: authorizedScope,
             clientName: `Spala ${client} agent`,
             deliveryMode: verifierBoundClaim ? 'one-time-pkce' : 'one-time',
+            ...(toolProfile === 'guided' ? { profile: 'guided' } : {}),
             ...(verifierBoundClaim ? { codeChallenge: bootstrapProof!.challenge } : {}),
           },
           { sensitiveTokens: [access.token, builderToken, publicMcpAccessToken] },

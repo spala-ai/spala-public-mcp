@@ -191,13 +191,17 @@ test('tools/list advertises authenticated status and honest project preparation 
       assert.deepEqual(
         Object.keys(tool.inputSchema.properties || {}).sort(),
         installs
-          ? ['bootstrapChallenge', 'bootstrapRequestId', 'client', 'organizationId', 'projectId', 'subdomain']
+          ? ['bootstrapChallenge', 'bootstrapRequestId', 'client', 'organizationId', 'profile', 'projectId', 'subdomain']
           : ['organizationId', 'projectId', 'subdomain'],
       );
       if (installs) {
         assert.deepEqual(
           (tool.inputSchema.properties?.['client'] as { enum: string[] }).enum,
           SUPPORTED_INSTALL_CLIENTS,
+        );
+        assert.deepEqual(
+          (tool.inputSchema.properties?.['profile'] as { enum: string[] }).enum,
+          ['full', 'guided'],
         );
       }
       assert.equal(Array.isArray(tool.inputSchema.oneOf), true);
@@ -750,6 +754,37 @@ test('project_connect, compatibility select, and manifest send the client and ke
       'list:org-1',
       'prepare:project-1:roo',
     ]);
+  });
+});
+
+test('project_connect preserves an explicitly requested guided project tool profile', async () => {
+  const guidedMcpUrl = `${handoff.mcpUrl}&profile=guided`;
+  const guidedManifestUrl = `${handoff.manifestUrl}?profile=guided`;
+  let requestedProfile: string | undefined;
+  const api = apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp(_projectId, _client, _bootstrapProof, toolProfile) {
+      requestedProfile = toolProfile;
+      return { ...handoff, mcpUrl: guidedMcpUrl, manifestUrl: guidedManifestUrl };
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const connected = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: project.id, client: 'codex', profile: 'guided' },
+    });
+    assert.notEqual(connected.isError, true);
+    const body = resultJson(connected);
+    const plan = body.installPlan as { argv: string[]; mcpUrl: string };
+
+    assert.equal(requestedProfile, 'guided');
+    assert.equal(body.toolProfile, 'guided');
+    assert.equal(body.mcpUrl, guidedMcpUrl);
+    assert.equal(plan.mcpUrl, guidedMcpUrl);
+    assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], guidedMcpUrl);
   });
 });
 
