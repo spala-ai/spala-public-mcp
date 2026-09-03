@@ -1269,21 +1269,24 @@ export function createSpalaApiClient(
         }
       }
 
-      try {
-        await requestProjectJson(
-          preparationConfigUrl,
-          builderToken,
-          'POST',
-          { securityConfig: { mcpEnabled: true } },
-          { sensitiveTokens: [access.token, publicMcpAccessToken] },
-        );
-      } catch (error) {
-        rethrowProjectStage(error, 'project_mcp_enable_failed');
+      if (!projectHandoff.mcpEnabled) {
+        try {
+          await requestProjectJson(
+            preparationConfigUrl,
+            builderToken,
+            'POST',
+            { securityConfig: { mcpEnabled: true } },
+            { sensitiveTokens: [access.token, publicMcpAccessToken] },
+          );
+        } catch (error) {
+          rethrowProjectStage(error, 'project_mcp_enable_failed');
+        }
       }
 
-      // Enabling MCP can change the authoritative handoff. Re-read it and use
-      // its exact URLs before creating a bootstrap session. The project
-      // backend binds the session endpoint identity from this request URL.
+      // MCP enablement or runtime placement can change the authoritative
+      // handoff. Re-read it and use its exact URLs before creating a bootstrap
+      // session. The project backend binds the session endpoint identity from
+      // this request URL.
       let preparedHandoff: ProjectMcpHandoff;
       try {
         const preparedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));

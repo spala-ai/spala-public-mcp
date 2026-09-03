@@ -254,7 +254,6 @@ test('Claude Code preparation skips the one-time instruction session used by boo
   assert.equal(prepared.bootstrapConsumeUrl, undefined);
   assert.deepEqual(projectCalls, [
     'POST /api/__internal/builder-auth/external',
-    'POST /api/__internal/project/config',
   ]);
 });
 
@@ -552,7 +551,6 @@ test('authenticated client reuses the first builder session when the project and
   }
   assert.deepEqual(projectCalls.map(call => `${call.init.method} ${call.url.pathname}`), [
     'POST /api/__internal/builder-auth/external',
-    'POST /api/__internal/project/config',
     'POST /mcp/agent-instructions',
   ]);
   const exchangeCall = projectCalls[0]!;
@@ -560,11 +558,8 @@ test('authenticated client reuses the first builder session when the project and
   assert.equal(new Headers(exchangeCall.init.headers).get('x-spala-public-mcp-service-secret'), null);
   assert.equal(exchangeCall.init.body, JSON.stringify({ token: projectToken }));
   assert.doesNotMatch(String(exchangeCall.init.body), /opaque-valid-token/);
-  assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), true);
+  assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), false);
   assert.equal(projectCalls[1]?.init.body, JSON.stringify({
-    securityConfig: { mcpEnabled: true },
-  }));
-  assert.equal(projectCalls[2]?.init.body, JSON.stringify({
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -616,7 +611,6 @@ test('project preparation trusts the exact custom-domain access origin and path'
   );
   assert.deepEqual(projectCalls.map(url => url.pathname), [
     '/apps/project-one/api/__internal/builder-auth/external',
-    '/apps/project-one/api/__internal/project/config',
     '/apps/project-one/mcp/agent-instructions',
   ]);
 });
@@ -787,7 +781,6 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/access-url',
     'POST https://shared-runtime.example/p123/api/__internal/builder-auth/external',
-    'POST https://shared-runtime.example/p123/api/__internal/project/config',
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'POST https://shared-runtime.example/p123/mcp/agent-instructions',
   ]);
@@ -866,7 +859,45 @@ test('project preparation rejects a refreshed runtime that differs from the exch
   });
   assert.deepEqual(runtimeCalls, [
     'https://shared-runtime.example/p123/api/__internal/builder-auth/external',
-    'https://shared-runtime.example/p123/api/__internal/project/config',
+  ]);
+});
+
+test('project preparation skips the MCP config write when the authoritative handoff already reports MCP enabled', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-already-enabled-token';
+  const builderToken = 'builder-already-enabled-token';
+  const projectCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    if (url.origin === projectUrl) projectCalls.push(`${init.method || 'GET'} ${url.pathname}`);
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ error: 'redundant MCP enable must not be attempted' }, 500);
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_already_enabled/consume`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    `${projectUrl}/mcp/agent-instructions/mcp_agent_already_enabled/consume`,
+  );
+  assert.deepEqual(projectCalls, [
+    'POST /api/__internal/builder-auth/external',
+    'POST /mcp/agent-instructions',
   ]);
 });
 
@@ -879,8 +910,9 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   const authoritativeManifestUrl = 'https://shared-runtime.example/p123/mcp/install-manifest';
   let handoffReads = 0;
   let mcpEnabled = false;
+  let enableBody: unknown;
   let handoffReadsAtInstruction: number | undefined;
-  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       handoffReads += 1;
       return !mcpEnabled
@@ -908,6 +940,7 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
       return jsonResponse({ token: builderToken });
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      enableBody = JSON.parse(String(init.body || '{}'));
       mcpEnabled = true;
       return jsonResponse({ success: true });
     }
@@ -934,6 +967,7 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   assert.equal(handoffReads, 2);
   assert.equal(handoffReadsAtInstruction, 2, 'the authoritative handoff must be refreshed before session creation');
   assert.equal(mcpEnabled, true);
+  assert.deepEqual(enableBody, { securityConfig: { mcpEnabled: true } });
   assert.equal(prepared.mcpUrl, `${authoritativeMcpUrl}?scope=builder%2Cproject%2Cdata`);
   assert.equal(prepared.manifestUrl, `${authoritativeManifestUrl}?scope=builder%2Cproject%2Cdata`);
   assert.equal(
@@ -1265,7 +1299,15 @@ test('project backend failures receive stage-specific fallback codes without exp
     const projectCalls: string[] = [];
     const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
-        return jsonResponse(projectMcpHandoff());
+        return stage === '/api/__internal/project/config'
+          ? jsonResponse({
+              projectId: 'project-1',
+              projectName: 'Project One',
+              status: 'ready',
+              projectUrl: 'https://project.example',
+              mcpEnabled: false,
+            })
+          : jsonResponse(projectMcpHandoff());
       }
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
         return jsonResponse(projectAccessUrl('https://project.example', projectToken));
@@ -1293,9 +1335,7 @@ test('project backend failures receive stage-specific fallback codes without exp
       assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
       return true;
     });
-    assert.deepEqual(projectCalls, stage === '/api/__internal/project/config'
-      ? ['/api/__internal/project/config']
-      : ['/api/__internal/project/config', '/mcp/agent-instructions']);
+    assert.deepEqual(projectCalls, [stage]);
   }
 });
 
@@ -1396,7 +1436,7 @@ test('agent instructions 404 preserves not-found category and status with a stab
     assert.doesNotMatch(error.message, new RegExp(`${projectToken}|${builderToken}`));
     return true;
   });
-  assert.deepEqual(projectCalls, ['/api/__internal/project/config', '/mcp/agent-instructions']);
+  assert.deepEqual(projectCalls, ['/mcp/agent-instructions']);
 });
 
 test('project runtime access accepts the platform access-url response field', async () => {
@@ -1427,7 +1467,7 @@ test('project runtime access accepts the platform access-url response field', as
 
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
   assert.equal(prepared.projectId, 'project-1');
-  assert.deepEqual(projectCalls.map(url => url.pathname), ['/api/__internal/project/config', '/mcp/agent-instructions']);
+  assert.deepEqual(projectCalls.map(url => url.pathname), ['/mcp/agent-instructions']);
   assert.doesNotMatch(JSON.stringify(prepared), new RegExp(projectToken));
 });
 
@@ -1464,7 +1504,13 @@ test('project admin config failure stops before agent instructions and redacts t
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     calls.push({ url, init });
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
-      return jsonResponse(projectMcpHandoff());
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'Project One',
+        status: 'ready',
+        projectUrl: 'https://project.example',
+        mcpEnabled: false,
+      });
     }
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
       return jsonResponse(projectAccessUrl('https://project.example', projectToken));

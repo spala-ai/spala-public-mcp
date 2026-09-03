@@ -886,7 +886,6 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
     [
       `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-      `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
       `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
   );
@@ -903,7 +902,6 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/access-url',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-      `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/project/config`,
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
@@ -916,8 +914,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(sharedRuntimeCalls[0]?.authorization, '');
   assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
   assert.equal(sharedRuntimeCalls[1]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[2]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[2]?.body, JSON.stringify({
+  assert.equal(sharedRuntimeCalls[1]?.body, JSON.stringify({
     scope: authorizedProjectScope,
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -992,19 +989,15 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const callsBeforeConfigFailure = upstreamCalls.length;
   projectConfigFailures.add(runtimeBuilderProjectToken);
   try {
-    const configFailure = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
-    assert.equal(configFailure.status, 200);
-    const failureBody = await toolBody(configFailure);
-    assert.equal(failureBody.category, 'forbidden');
-    assert.equal(JSON.stringify(failureBody).includes(temporaryProjectToken), false);
-    assert.equal(JSON.stringify(failureBody).includes(builderProjectToken), false);
-    assert.equal(JSON.stringify(failureBody).includes(runtimeBuilderProjectToken), false);
-    assert.doesNotMatch(JSON.stringify(failureBody), /api\.spala\.ai/);
+    const alreadyEnabled = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
+    assert.equal(alreadyEnabled.status, 200);
+    const alreadyEnabledBody = await toolBody(alreadyEnabled);
+    assert.equal(alreadyEnabledBody.preparedByProjectBackend, true);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
       .filter(call => call.url.origin === sharedRuntimeOrigin)
       .map(call => `${call.method} ${call.url.pathname}`), [
         `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-        `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
+        `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
       ]);
   } finally {
     projectConfigFailures.delete(runtimeBuilderProjectToken);
