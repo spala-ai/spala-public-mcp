@@ -1053,6 +1053,48 @@ test('project_connect retries without dashboard dependency when preparation is n
   });
 });
 
+test('project stage quota failures append safe metadata without changing the existing envelope', async () => {
+  await withVerifiedClient(apiStub({
+    async prepareProjectMcp() {
+      throw new SpalaApiError({
+        category: 'plan_restricted',
+        status: 429,
+        code: 'project_agent_instruction_failed',
+        upstreamCode: 'project_builder_mutation_limit_exceeded',
+        message: 'Builder mutation quota reached.',
+        retryAfterSeconds: 3_600,
+        resetAt: '2026-10-01T00:00:00.000Z',
+        limit: {
+          resource: 'builder_mutations',
+          value: 1_000,
+          consumed: 1_000,
+          projected: 1_001,
+        },
+      });
+    },
+  }), async client => {
+    const result = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: 'project-1', client: 'codex' },
+    });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'project_agent_instruction_failed');
+    assert.equal(body.category, 'plan_restricted');
+    assert.equal(body.status, 429);
+    assert.equal(body.message, 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.');
+    assert.equal(body.upstreamCode, 'project_builder_mutation_limit_exceeded');
+    assert.equal(body.retryAfterSeconds, 3_600);
+    assert.equal(body.resetAt, '2026-10-01T00:00:00.000Z');
+    assert.deepEqual(body.limit, {
+      resource: 'builder_mutations',
+      value: 1_000,
+      consumed: 1_000,
+      projected: 1_001,
+    });
+  });
+});
+
 test('plan and payment failures include dashboard/pricing actions without inventing checkout URLs', async () => {
   const api = apiStub({
     async createProject() {

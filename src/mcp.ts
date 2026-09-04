@@ -899,6 +899,16 @@ function startupProjectChoices(discovered: StartupProjectDiscovery[]): StartupPr
   })));
 }
 
+function safeQuotaMetadata(error: SpalaApiError | undefined): Record<string, unknown> {
+  if (!error || error.status !== 429) return {};
+  return {
+    ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}),
+    ...(error.retryAfterSeconds !== undefined ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+    ...(error.resetAt ? { resetAt: error.resetAt } : {}),
+    ...(error.limit ? { limit: { ...error.limit } } : {}),
+  };
+}
+
 function startupBillingError(error: unknown, config: AppConfig): ToolResult | undefined {
   if (!(error instanceof SpalaApiError)) return undefined;
   const billing = error.category === 'payment_required' || error.category === 'plan_restricted';
@@ -908,6 +918,7 @@ function startupBillingError(error: unknown, config: AppConfig): ToolResult | un
     phase: 'billing_required',
     error: error.code || error.category,
     message: 'Billing is required to continue project discovery. Continue through the safe Spala checkout flow, then retry spala_start.',
+    ...safeQuotaMetadata(error),
     nextAction: {
       type: 'continue_checkout',
       ...(error.checkoutUrl ? { checkoutUrl: error.checkoutUrl } : {}),
@@ -925,6 +936,7 @@ function startupFailure(error: unknown): ToolResult {
     error: apiError?.code || apiError?.category || 'spala_start_failed',
     message: 'Spala startup could not complete. Retry spala_start after the temporary service failure clears.',
     ...(apiError?.status ? { status: apiError.status } : {}),
+    ...safeQuotaMetadata(apiError),
     nextAction: {
       tool: 'spala_start',
       reason: 'Retry the authenticated versioned startup flow.',
@@ -1096,6 +1108,7 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
               : error.category === 'not_found'
                 ? 'The requested project was not found or is not available to the signed-in account.'
                 : 'The project operation is temporarily unavailable. Retry later.',
+      ...safeQuotaMetadata(error),
       ...(error.organizationChoices ? { organizationChoices: error.organizationChoices } : {}),
       ...(action ? { action } : {}),
     }, true);

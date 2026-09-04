@@ -1437,6 +1437,7 @@ test('agent instructions 404 preserves not-found category and status with a stab
     assert.equal(error.category, 'not_found');
     assert.equal(error.status, 404);
     assert.equal(error.code, 'project_agent_instruction_failed');
+    assert.equal(error.upstreamCode, 'not_found');
     assert.doesNotMatch(error.message, new RegExp(`${projectToken}|${builderToken}`));
     return true;
   });
@@ -1637,12 +1638,82 @@ test('project preparation rejects a bootstrap capability from an unrelated publi
   });
 });
 
+test('project creation reconciles one new exact-name project after an ambiguous upstream failure', async () => {
+  let projectListCalls = 0;
+  const oldMatch = {
+    id: 'project-old',
+    project_name: 'Recovered Project',
+    status: 'active',
+    subdomain: 'recovered-old',
+  };
+  const newMatch = {
+    id: 'project-new',
+    project_name: 'Recovered Project',
+    status: 'active',
+    subdomain: 'recovered-new',
+  };
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
+      return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-1', name: 'One' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      projectListCalls += 1;
+      return jsonResponse(projectListCalls === 1 ? [oldMatch] : [oldMatch, newMatch]);
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'POST') {
+      return jsonResponse({ error: { code: 'upstream_timeout', message: 'The create result is unknown.' } }, 504);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const created = await api.createProject({ name: 'Recovered Project' });
+  assert.equal(created.project.id, 'project-new');
+  assert.equal(created.project.name, 'Recovered Project');
+  assert.equal(created.project.organizationId, 'org-1');
+  assert.equal(projectListCalls, 2);
+});
+
+test('project creation never reconciles a pre-existing exact-name project', async () => {
+  let projectListCalls = 0;
+  const oldMatch = {
+    id: 'project-old',
+    project_name: 'Existing Project',
+    status: 'active',
+    subdomain: 'existing-project',
+  };
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
+      return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-1', name: 'One' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      projectListCalls += 1;
+      return jsonResponse([oldMatch]);
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'POST') {
+      return jsonResponse({ error: { code: 'upstream_timeout', message: 'The create result is unknown.' } }, 503);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await assert.rejects(api.createProject({ name: 'Existing Project' }), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'upstream_unavailable');
+    assert.equal(error.status, 503);
+    assert.equal(error.code, 'upstream_timeout');
+    return true;
+  });
+  assert.equal(projectListCalls, 2);
+});
+
 test('project creation auto-selects a sole organization and parses the direct POST response', async () => {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, 'sole-org-token', fetchStub((url, init) => {
     calls.push({ url, init });
     if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-only', name: 'Only organization' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      return jsonResponse([]);
     }
     return jsonResponse({
       id: 'project-created',
@@ -1661,7 +1732,8 @@ test('project creation auto-selects a sole organization and parses the direct PO
     subdomain: 'sole-organization-project',
     organizationId: 'org-only',
   });
-  assert.equal(calls[1]?.init.body, JSON.stringify({
+  assert.equal(calls[1]?.url.searchParams.get('organizationId'), 'org-only');
+  assert.equal(calls[2]?.init.body, JSON.stringify({
     project_name: 'Sole Organization Project',
     organization_id: 'org-only',
   }));
@@ -1783,6 +1855,79 @@ test('invalid, unavailable, and plan-restricted upstream responses are typed wit
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'plan_restricted');
     assert.equal(error.checkoutUrl, 'https://billing.spala.ai/checkout/session');
+    return true;
+  });
+});
+
+test('quota 429 responses preserve only validated retry and limit metadata', async () => {
+  const secret = 'opaque-quota-secret';
+  const api = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: 'PROJECT_BUILDER_MUTATION_LIMIT_EXCEEDED',
+      message: 'Builder mutation quota reached.',
+      retryAfterSeconds: 3_600,
+      resetAt: '2026-10-01T00:00:00.000Z',
+      limit: {
+        resource: 'builder_mutations',
+        value: 1_000,
+        consumed: 1_000,
+        reserved: 0,
+        projected: 1_001,
+        credential: secret,
+      },
+      internal: { credential: secret },
+    },
+  }, 429)));
+
+  await assert.rejects(api.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'plan_restricted');
+    assert.equal(error.status, 429);
+    assert.equal(error.code, 'project_builder_mutation_limit_exceeded');
+    assert.equal(error.upstreamCode, 'project_builder_mutation_limit_exceeded');
+    assert.equal(error.retryAfterSeconds, 3_600);
+    assert.equal(error.resetAt, '2026-10-01T00:00:00.000Z');
+    assert.deepEqual(error.limit, {
+      resource: 'builder_mutations',
+      value: 1_000,
+      consumed: 1_000,
+      reserved: 0,
+      projected: 1_001,
+    });
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(secret));
+    return true;
+  });
+
+  const malformed = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: `quota-${secret}`,
+      message: 'Quota reached.',
+      retryAfterSeconds: -1,
+      resetAt: '2026-10-01 00:00:00',
+      limit: { resource: `builder_${secret}`, value: 1_000, consumed: '1000' },
+    },
+  }, 429)));
+  await assert.rejects(malformed.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.status, 429);
+    assert.equal(error.upstreamCode, undefined);
+    assert.equal(error.retryAfterSeconds, undefined);
+    assert.equal(error.resetAt, undefined);
+    assert.equal(error.limit, undefined);
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(secret));
+    return true;
+  });
+
+  const unknownResource = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: 'PROJECT_UNKNOWN_LIMIT_EXCEEDED',
+      retryAfterSeconds: 1,
+      limit: { resource: 'credential_material', value: 1, consumed: 1, projected: 2 },
+    },
+  }, 429)));
+  await assert.rejects(unknownResource.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.limit, undefined);
     return true;
   });
 });

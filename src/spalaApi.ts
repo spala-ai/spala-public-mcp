@@ -112,10 +112,31 @@ export type SpalaApiErrorCategory =
   | 'invalid_upstream_response'
   | 'request_failed';
 
+export type SpalaQuotaLimit = {
+  resource: string;
+  value: number;
+  consumed: number;
+  reserved?: number;
+  projected?: number;
+};
+
+const SPALA_QUOTA_RESOURCES = new Set([
+  'api_requests',
+  'background_starts',
+  'builder_mutations',
+  'mcp_rate',
+  'realtime_messages',
+  'transfer_bytes',
+]);
+
 export class SpalaApiError extends Error {
   readonly category: SpalaApiErrorCategory;
   readonly status?: number;
   readonly code?: string;
+  readonly upstreamCode?: string;
+  readonly retryAfterSeconds?: number;
+  readonly resetAt?: string;
+  readonly limit?: SpalaQuotaLimit;
   readonly checkoutUrl?: string;
   readonly organizationChoices?: SpalaOrganization[];
 
@@ -124,6 +145,10 @@ export class SpalaApiError extends Error {
     message: string;
     status?: number;
     code?: string;
+    upstreamCode?: string;
+    retryAfterSeconds?: number;
+    resetAt?: string;
+    limit?: SpalaQuotaLimit;
     checkoutUrl?: string;
     organizationChoices?: SpalaOrganization[];
   }) {
@@ -132,6 +157,10 @@ export class SpalaApiError extends Error {
     this.category = options.category;
     this.status = options.status;
     this.code = options.code;
+    this.upstreamCode = options.upstreamCode;
+    this.retryAfterSeconds = options.retryAfterSeconds;
+    this.resetAt = options.resetAt;
+    this.limit = options.limit ? { ...options.limit } : undefined;
     this.checkoutUrl = options.checkoutUrl;
     this.organizationChoices = options.organizationChoices?.map(organization => ({ ...organization }));
   }
@@ -434,10 +463,53 @@ function normalizedCode(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined;
+}
+
+function safeRetryAfterSeconds(value: unknown): number | undefined {
+  const parsed = nonNegativeSafeInteger(value);
+  return parsed !== undefined && parsed <= 31_536_000 ? parsed : undefined;
+}
+
+function canonicalResetAt(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 32) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : undefined;
+}
+
+function safeQuotaLimit(raw: unknown): SpalaQuotaLimit | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const resource = record['resource'];
+  const value = nonNegativeSafeInteger(record['value']);
+  const consumed = nonNegativeSafeInteger(record['consumed']);
+  const reserved = record['reserved'] === undefined ? undefined : nonNegativeSafeInteger(record['reserved']);
+  const projected = record['projected'] === undefined ? undefined : nonNegativeSafeInteger(record['projected']);
+  if (
+    typeof resource !== 'string'
+    || !SPALA_QUOTA_RESOURCES.has(resource)
+    || value === undefined
+    || consumed === undefined
+    || (record['reserved'] !== undefined && reserved === undefined)
+    || (record['projected'] !== undefined && projected === undefined)
+  ) return undefined;
+  return {
+    resource,
+    value,
+    consumed,
+    ...(reserved !== undefined ? { reserved } : {}),
+    ...(projected !== undefined ? { projected } : {}),
+  };
+}
+
 function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   code?: string;
   message?: string;
   checkoutUrl?: string;
+  retryAfterSeconds?: number;
+  resetAt?: string;
+  limit?: SpalaQuotaLimit;
 } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const record = raw as Record<string, unknown>;
@@ -458,7 +530,10 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   const checkoutUrl = typeof rawCheckoutUrl === 'string' && !containsSensitiveToken(rawCheckoutUrl, sensitiveTokens)
     ? parsePublicHttpsUrl(rawCheckoutUrl)
     : undefined;
-  return { code, message, checkoutUrl };
+  const retryAfterSeconds = safeRetryAfterSeconds(nestedRecord?.['retryAfterSeconds'] ?? record['retryAfterSeconds']);
+  const resetAt = canonicalResetAt(nestedRecord?.['resetAt'] ?? record['resetAt']);
+  const limit = safeQuotaLimit(nestedRecord?.['limit'] ?? record['limit']);
+  return { code, message, checkoutUrl, retryAfterSeconds, resetAt, limit };
 }
 
 function errorCategory(status: number, code?: string, message?: string): SpalaApiErrorCategory {
@@ -485,6 +560,19 @@ function defaultErrorMessage(category: SpalaApiErrorCategory): string {
   if (category === 'not_found') return 'The requested Spala resource was not found.';
   if (category === 'upstream_unavailable') return 'The Spala control plane is temporarily unavailable.';
   return 'The Spala control-plane request failed.';
+}
+
+function isAmbiguousProjectCreateFailure(error: unknown): error is SpalaApiError {
+  if (!(error instanceof SpalaApiError)) return false;
+  const ambiguousStatus = error.status === undefined
+    || error.status >= 500
+    || (error.status >= 200 && error.status < 300);
+  return ambiguousStatus
+    && (
+      error.category === 'upstream_unavailable'
+      || error.category === 'invalid_upstream_response'
+      || error.category === 'request_failed'
+    );
 }
 
 async function readBoundedResponseBody(response: Response, maximumBytes: number): Promise<string> {
@@ -761,6 +849,10 @@ function rethrowProjectStage(error: unknown, code: string): never {
       category: error.category,
       status: error.status,
       code,
+      upstreamCode: error.upstreamCode ?? error.code,
+      retryAfterSeconds: error.retryAfterSeconds,
+      resetAt: error.resetAt,
+      limit: error.limit,
       message: error.message,
       checkoutUrl: error.checkoutUrl,
       organizationChoices: error.organizationChoices,
@@ -871,6 +963,10 @@ export function createSpalaApiClient(
           category,
           status: response.status,
           code: parsed.code,
+          upstreamCode: parsed.code,
+          retryAfterSeconds: parsed.retryAfterSeconds,
+          resetAt: parsed.resetAt,
+          limit: parsed.limit,
           message: parsed.message || defaultErrorMessage(category),
           checkoutUrl: parsed.checkoutUrl,
         });
@@ -928,6 +1024,10 @@ export function createSpalaApiClient(
           category,
           status: response.status,
           code: parsed.code,
+          upstreamCode: parsed.code,
+          retryAfterSeconds: parsed.retryAfterSeconds,
+          resetAt: parsed.resetAt,
+          limit: parsed.limit,
           message: parsed.message || defaultErrorMessage(category),
           checkoutUrl: parsed.checkoutUrl,
         });
@@ -1116,17 +1216,54 @@ export function createSpalaApiClient(
         throw new SpalaApiError({ category: 'request_failed', message: 'Project name must be between 1 and 120 characters.' });
       }
       const organization = await resolveOrganization(input.organizationId);
-      const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
-        body: { project_name: name, organization_id: organization.id },
+      const beforePayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+        query: { organizationId: organization.id },
       });
-      const project = parseCreatedProject(payload);
-      if (!project) {
+      const beforeProjects = parseProjectCollection(beforePayload);
+      if (!beforeProjects) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
-          message: 'The Spala control plane returned an invalid created project.',
+          message: 'The Spala control plane returned an invalid project list.',
         });
       }
-      return { organization, project: { ...project, organizationId: organization.id } };
+      const existingExactNameIds = new Set(
+        beforeProjects.filter(project => project.name === name).map(project => project.id),
+      );
+
+      try {
+        const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+          body: { project_name: name, organization_id: organization.id },
+        });
+        const project = parseCreatedProject(payload);
+        if (!project) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            status: 200,
+            message: 'The Spala control plane returned an invalid created project.',
+          });
+        }
+        return { organization, project: { ...project, organizationId: organization.id } };
+      } catch (error) {
+        if (!isAmbiguousProjectCreateFailure(error)) throw error;
+
+        let afterProjects: SpalaProject[] | undefined;
+        try {
+          const afterPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+            query: { organizationId: organization.id },
+          });
+          afterProjects = parseProjectCollection(afterPayload);
+        } catch {
+          throw error;
+        }
+        const newExactNameProjects = (afterProjects || []).filter(project =>
+          project.name === name && !existingExactNameIds.has(project.id)
+        );
+        if (newExactNameProjects.length !== 1) throw error;
+        return {
+          organization,
+          project: { ...newExactNameProjects[0]!, organizationId: organization.id },
+        };
+      }
     },
 
     async getProjectHandoff(projectId) {
