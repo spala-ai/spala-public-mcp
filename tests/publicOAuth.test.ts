@@ -665,7 +665,12 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
       'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
       'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
       'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
+      'https://www.cursor.com/agents/mcp/oauth/callback',
+      'https://www.cursor.com/bot/mcp/oauth/callback',
+      'https://grok.com/connectors-oauth-exchange-code/',
       'cursor://anysphere.cursor-mcp/oauth/callback',
+      'cursor://anysphere.cursor-mcp/oauth/return',
+      'grokbot://mcp/oauth/callback',
       'vscode://github.copilot-chat/mcp/oauth/callback',
       'vscode-insiders://github.copilot-chat/mcp/oauth/callback',
       'claude://mcp/oauth/callback',
@@ -685,6 +690,19 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
         code_challenge: createHash('sha256').update(VERIFIER, 'utf8').digest('base64url'),
       }), /^v1\./);
     }
+
+    const cursorBundle = facade.register({
+      redirect_uris: [
+        'cursor://anysphere.cursor-mcp/oauth/callback',
+        'https://www.cursor.com/agents/mcp/oauth/callback',
+        'http://localhost:8787/callback',
+      ],
+    });
+    assert.deepEqual(cursorBundle.redirectUris, [
+      'cursor://anysphere.cursor-mcp/oauth/callback',
+      'https://www.cursor.com/agents/mcp/oauth/callback',
+      'http://localhost:8787/callback',
+    ]);
 
     const cursor = facade.register({
       redirect_uris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
@@ -711,6 +729,11 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
       'https://subdomain.agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
       'https://agentidentitycredentials.googleapis.com/v2/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
       'gemini://mcp/oauth/callback',
+      'https://www.cursor.com/agents/mcp/oauth/callback/extra',
+      'https://www.cursor.com/bot/mcp/oauth/other',
+      'https://grok.com/connectors-oauth-exchange-code',
+      'grokbot://mcp/oauth/callback?next=https://evil.example',
+      'cursor://anysphere.cursor-mcp/oauth/return?next=https://evil.example',
       'cursor://anysphere.cursor-mcp/oauth/callback?next=https://evil.example',
       'vscode://github.copilot-chat/mcp/oauth/callback#fragment',
       'codex://user@oauth/callback',

@@ -132,12 +132,17 @@ const REPLAY_BUCKET_PATTERN = /^\d+$/;
 const HOSTED_REDIRECT_URIS = new Set([
   'https://agency.spala.ai/callback',
   'https://claude.ai/api/mcp/auth_callback',
+  'https://www.cursor.com/agents/mcp/oauth/callback',
+  'https://www.cursor.com/bot/mcp/oauth/callback',
+  'https://grok.com/connectors-oauth-exchange-code/',
   'https://vscode.dev/redirect',
   'https://vertexaisearch.cloud.google.com/oauth-redirect',
   'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
 ]);
 const NATIVE_REDIRECT_URIS = new Set([
   'cursor://anysphere.cursor-mcp/oauth/callback',
+  'cursor://anysphere.cursor-mcp/oauth/return',
+  'grokbot://mcp/oauth/callback',
   'vscode://github.copilot-chat/mcp/oauth/callback',
   'vscode-insiders://github.copilot-chat/mcp/oauth/callback',
   'claude://mcp/oauth/callback',
