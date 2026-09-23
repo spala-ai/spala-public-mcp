@@ -252,6 +252,38 @@ test('Claude Code preparation skips the one-time instruction session used by boo
   ]);
 });
 
+test('project bootstrap requests explicitly preserve the unprofiled full MCP contract', async () => {
+  const projectUrl = 'https://shared-runtime.example/p123';
+  for (const client of ['codex', 'roo', 'cursor', 'claude-code'] as const) {
+    const proof = client === 'claude-code' ? { challenge: 'c'.repeat(43) } : undefined;
+    let requestedProfile: unknown;
+    const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+      if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+      if (url.pathname.endsWith('/access-url')) {
+        return jsonResponse(projectAccessUrl(projectUrl, 'temporary-project-token'));
+      }
+      if (url.pathname.endsWith('/builder-auth/external')) return jsonResponse({ token: 'builder-project-token' });
+      if (url.pathname.endsWith('/project/config')) return jsonResponse({ success: true });
+      if (url.pathname.endsWith('/mcp/agent-instructions')) {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        // The runtime's installer endpoint defaults omitted profiles to guided.
+        requestedProfile = body.profile;
+        return agentInstructionSession(
+          `${projectUrl}/mcp/agent-instructions/mcp_agent_profile_contract/consume${body.profile === 'full' ? '' : '?profile=guided'}`,
+          String(body.scope),
+          body.deliveryMode,
+        );
+      }
+      return jsonResponse({ error: 'unexpected_request' }, 500);
+    }));
+    const prepared = await api.prepareProjectMcp('project-1', client, proof);
+    assert.equal(requestedProfile, 'full', client);
+    assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata`);
+    assert.equal(prepared.bootstrapConsumeUrl,
+      `${projectUrl}/mcp/agent-instructions/mcp_agent_profile_contract/consume`);
+  }
+});
+
 test('Claude Code preparation binds its delegated claim to the local installer challenge', async () => {
   const projectUrl = 'https://project.example';
   const projectToken = 'temporary-project-token';
@@ -288,6 +320,7 @@ test('Claude Code preparation binds its delegated claim to the local installer c
     scope: 'builder,project,data',
     clientName: 'Spala claude-code agent',
     deliveryMode: 'one-time-pkce',
+    profile: 'full',
     codeChallenge: challenge,
   });
 });
@@ -527,6 +560,7 @@ test('authenticated client reuses the first builder session when the project and
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
+    profile: 'full',
   }));
   for (const call of projectCalls.slice(1)) {
     assert.equal(new Headers(call.init.headers).get('authorization'), `Bearer ${builderToken}`);

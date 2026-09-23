@@ -1366,6 +1366,9 @@ export function createSpalaApiClient(
             scope: authorizedScope,
             clientName: `Spala ${client} agent`,
             deliveryMode: verifierBoundClaim ? 'one-time-pkce' : 'one-time',
+            // This public handoff uses unprofiled (full) MCP URLs. The runtime
+            // defaults omitted installer profiles to guided, so bind explicitly.
+            profile: 'full',
             ...(verifierBoundClaim ? { codeChallenge: bootstrapProof!.challenge } : {}),
           },
           { sensitiveTokens: [access.token, builderToken, publicMcpAccessToken] },
