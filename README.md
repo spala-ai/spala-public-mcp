@@ -141,7 +141,8 @@ npx --yes @spala-ai/mcp-install init --client codex --yes --json
 
 For Codex this safely writes the user-scoped MCP configuration and a managed
 Spala routing skill, owns one native browser OAuth flow when first configured,
-then requires a new or resumed session. Do not run a second login, manually
+then requires a new session. To keep the conversation, use `codex fork`;
+`codex resume` keeps the old tool set. Do not run a second login, manually
 open its authorization URL, inspect client credential stores, or hand-roll MCP
 HTTP calls to bypass the reload boundary.
 
