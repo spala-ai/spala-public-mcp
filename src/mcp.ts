@@ -126,7 +126,7 @@ const PROJECT_SELECTOR_SCHEMA = {
 const PROJECT_INSTALL_SELECTOR_SCHEMA = {
   ...PROJECT_SELECTOR_SCHEMA,
   client: z.enum(SUPPORTED_INSTALL_CLIENTS).optional(),
-  profile: z.enum(['full', 'guided']).optional(),
+  profile: z.literal('guided').optional(),
   bootstrapRequestId: z.string().regex(/^claim_[A-Za-z0-9_-]{20,80}$/).optional(),
   bootstrapChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 };
@@ -197,8 +197,8 @@ const INSTALL_CLIENT_JSON_SCHEMA = {
 
 const PROJECT_TOOL_PROFILE_JSON_SCHEMA = {
   type: 'string',
-  enum: ['full', 'guided'],
-  description: 'Optional project MCP tool profile. full preserves the complete compatibility surface; guided exposes the compact build-and-test surface. Defaults to full.',
+  enum: ['guided'],
+  description: 'Set to guided to preserve the compact build-and-test surface through project handoff. Omit for the default full compatibility surface.',
 } as const;
 
 const BOOTSTRAP_REQUEST_JSON_SCHEMA = {
@@ -673,7 +673,7 @@ type ProjectSelector = {
   subdomain?: string;
   organizationId?: string;
   client?: SupportedInstallClient;
-  profile?: 'full' | 'guided';
+  profile?: 'guided';
   bootstrapRequestId?: string;
   bootstrapChallenge?: string;
 };

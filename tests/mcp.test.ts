@@ -201,13 +201,20 @@ test('tools/list advertises authenticated status and honest project preparation 
         );
         assert.deepEqual(
           (tool.inputSchema.properties?.['profile'] as { enum: string[] }).enum,
-          ['full', 'guided'],
+          ['guided'],
         );
       }
+      assert.equal(tool.inputSchema.additionalProperties, false);
       assert.equal(Array.isArray(tool.inputSchema.oneOf), true);
       assert.deepEqual(
         (tool.inputSchema.oneOf as Array<{ required: string[] }>).map(branch => branch.required).sort(),
         [['projectId'], ['subdomain']],
+      );
+      assert.equal(
+        (tool.inputSchema.oneOf as Array<{ additionalProperties: boolean }>).every(
+          branch => branch.additionalProperties === false,
+        ),
+        true,
       );
       const projectIdBranch = (tool.inputSchema.oneOf as Array<{
         required: string[];
@@ -285,7 +292,7 @@ test('spala_start auto-scopes one organization and returns its projects', async 
       status: project.status,
       organizationId: project.organizationId,
     }]);
-    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.29');
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.30');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
       choicesSource: 'projects',
@@ -542,6 +549,37 @@ test('project selectors enforce exactly one field before API access', async () =
   });
 });
 
+test('project connection tools reject every profile selector except guided before API access', async () => {
+  let listCalls = 0;
+  let prepareCalls = 0;
+  const api = apiStub({
+    async listProjects() {
+      listCalls += 1;
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp() {
+      prepareCalls += 1;
+      return handoff;
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    for (const name of ['project_connect', 'project_select', 'project_get_mcp_manifest']) {
+      for (const profile of ['full', 'unknown']) {
+        const result = await client.callTool({
+          name,
+          arguments: { projectId: project.id, client: 'codex', profile },
+        });
+        assert.equal(result.isError, true, `${name}:${profile}`);
+        assert.match(resultText(result), /guided/i, `${name}:${profile}`);
+      }
+    }
+  });
+
+  assert.equal(listCalls, 0);
+  assert.equal(prepareCalls, 0);
+});
+
 test('project tools reject an unscoped prepared handoff instead of returning conflicting URLs', async () => {
   const unscopedMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/';
   let prepareCalls = 0;
@@ -680,7 +718,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.30', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -738,7 +776,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.30', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -757,35 +795,47 @@ test('project_connect, compatibility select, and manifest send the client and ke
   });
 });
 
-test('project_connect preserves an explicitly requested guided project tool profile', async () => {
+test('project connection tools preserve an explicitly requested guided project tool profile', async () => {
   const guidedMcpUrl = `${handoff.mcpUrl}&profile=guided`;
   const guidedManifestUrl = `${handoff.manifestUrl}?profile=guided`;
-  let requestedProfile: string | undefined;
+  const requestedProfiles: Array<string | undefined> = [];
   const api = apiStub({
     async listProjects() {
       return { organization: principal.organizations[0]!, projects: [project] };
     },
     async prepareProjectMcp(_projectId, _client, _bootstrapProof, toolProfile) {
-      requestedProfile = toolProfile;
+      requestedProfiles.push(toolProfile);
       return { ...handoff, mcpUrl: guidedMcpUrl, manifestUrl: guidedManifestUrl };
     },
   });
 
   await withVerifiedClient(api, async client => {
-    const connected = await client.callTool({
-      name: 'project_connect',
-      arguments: { projectId: project.id, client: 'codex', profile: 'guided' },
-    });
-    assert.notEqual(connected.isError, true);
-    const body = resultJson(connected);
-    const plan = body.installPlan as { argv: string[]; mcpUrl: string };
+    for (const [name, installClient] of [
+      ['project_connect', 'codex'],
+      ['project_select', 'roo'],
+      ['project_get_mcp_manifest', 'cursor'],
+    ] as const) {
+      const result = await client.callTool({
+        name,
+        arguments: { projectId: project.id, client: installClient, profile: 'guided' },
+      });
+      assert.notEqual(result.isError, true, name);
+      const body = resultJson(result);
+      const plan = body.installPlan as { argv: string[]; mcpUrl: string };
 
-    assert.equal(requestedProfile, 'guided');
-    assert.equal(body.toolProfile, 'guided');
-    assert.equal(body.mcpUrl, guidedMcpUrl);
-    assert.equal(plan.mcpUrl, guidedMcpUrl);
-    assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], guidedMcpUrl);
+      assert.equal(body.toolProfile, 'guided', name);
+      assert.equal(body.mcpUrl, guidedMcpUrl, name);
+      assert.equal((body.handoff as Record<string, unknown>).mcpUrl, guidedMcpUrl, name);
+      assert.equal(plan.mcpUrl, guidedMcpUrl, name);
+      assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], guidedMcpUrl, name);
+      if (name === 'project_get_mcp_manifest') {
+        assert.equal(body.manifestUrl, guidedManifestUrl);
+        assert.equal((body.handoff as Record<string, unknown>).manifestUrl, guidedManifestUrl);
+      }
+    }
   });
+
+  assert.deepEqual(requestedProfiles, ['guided', 'guided', 'guided']);
 });
 
 test('Claude Code project connections use a verifier-bound delegated claim without project OAuth', async () => {

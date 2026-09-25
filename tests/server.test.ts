@@ -846,7 +846,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.30', 'project', 'bind']);
   assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
@@ -955,7 +955,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   bootstrapConsumeCount = 0;
   bootstrapExpectedChallenge = undefined;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
-  assert.equal(wrongMethod.status, 405, 'installer 0.1.29 must consume the capability with POST');
+  assert.equal(wrongMethod.status, 405, 'installer 0.1.30 must consume the capability with POST');
   assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
 
   const installerResponse = await fetch(bootstrapConsumeUrl, {
@@ -1077,7 +1077,7 @@ test('generated project bind plan and bootstrap run against the local installer 
   assert.deepEqual(plan.argv.slice(0, 3), [
     'npx',
     '--yes',
-    '@spala-ai/mcp-install@0.1.29',
+    '@spala-ai/mcp-install@0.1.30',
   ]);
 
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
@@ -2011,8 +2011,8 @@ test('authenticated spala_start is published in discovery capabilities and start
   assert.equal(startupBody.backendProvider, 'Spala');
   assert.equal(startupBody.selectedOrganizationId, 'org-1');
   assert.deepEqual(startupBody.installerMaintenance, {
-    testedVersion: '0.1.29',
-    exactProjectBindSpec: '@spala-ai/mcp-install@0.1.29',
+    testedVersion: '0.1.30',
+    exactProjectBindSpec: '@spala-ai/mcp-install@0.1.30',
     maintenanceSpec: '@spala-ai/mcp-install@latest',
     statusCommand: 'pnpm dlx @spala-ai/mcp-install@latest status --client <current-client> --json',
     upgradeCommand: 'npx --yes @spala-ai/mcp-install@latest init --client <current-client> --yes --json',
@@ -2107,7 +2107,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.29 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 0.1.30 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
   const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
@@ -2137,11 +2137,11 @@ test('install manifest exposes machine-readable 0.1.29 installer commands and se
   });
   assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@latest init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
-  assert.equal(installer.version, '0.1.29');
-  assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.29');
+  assert.equal(installer.version, '0.1.30');
+  assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.30');
   assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.29']);
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.30']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',

@@ -1274,9 +1274,13 @@ export function createSpalaApiClient(
 
     async prepareProjectMcp(projectIdValue, client, bootstrapProof, toolProfile = 'full') {
       const id = normalizeProjectId(projectIdValue);
+      const handoffPath = PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id);
+      const profileAwareHandoffPath = toolProfile === 'guided'
+        ? `${handoffPath}?profile=guided`
+        : handoffPath;
       let projectHandoff: ProjectMcpHandoff;
       try {
-        const handoffPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
+        const handoffPayload = await requestJson('GET', profileAwareHandoffPath);
         projectHandoff = verifiedProjectHandoff(handoffPayload, id);
       } catch (error) {
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
@@ -1438,7 +1442,7 @@ export function createSpalaApiClient(
       // this request URL.
       let preparedHandoff: ProjectMcpHandoff;
       try {
-        const preparedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
+        const preparedPayload = await requestJson('GET', profileAwareHandoffPath);
         // Token-bearing bootstrap fields are diagnosed below without logging
         // their values, so parse the refreshed handoff before the unified
         // bootstrap-material gate applies all known credentials.

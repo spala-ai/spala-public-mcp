@@ -261,9 +261,13 @@ test('guided project preparation preserves profile in URLs and agent instruction
   const projectUrl = 'https://project.example';
   const projectToken = 'temporary-guided-project-token';
   const builderToken = 'builder-guided-project-token';
+  const handoffQueries: string[] = [];
   let instructionBody: Record<string, unknown> | undefined;
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
-    if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      handoffQueries.push(url.search);
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
     if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, projectToken));
     if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
       return jsonResponse({ token: builderToken });
@@ -282,6 +286,7 @@ test('guided project preparation preserves profile in URLs and agent instruction
 
   const prepared = await api.prepareProjectMcp('project-1', 'codex', undefined, 'guided');
 
+  assert.deepEqual(handoffQueries, ['?profile=guided', '?profile=guided']);
   assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata&profile=guided`);
   assert.equal(prepared.manifestUrl, `${projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata&profile=guided`);
   assert.equal(

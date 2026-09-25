@@ -1225,7 +1225,7 @@ app.get('/mcp/install-manifest', (req, res) => {
       rule: 'Call project_connect and execute its client-specific workspace-only project bind plan with the exact clean mcpUrl.',
       profileArgument: selectedProjectToolProfile === 'guided'
         ? 'Pass profile="guided" to project_connect or project_get_mcp_manifest to preserve the guided project tool surface.'
-        : 'Omit profile or pass profile="full" for the complete project MCP compatibility surface.',
+        : 'Omit profile for the complete project MCP compatibility surface.',
       note: 'Codex, Roo, and Cursor follow the protected bootstrap instructions. Claude Code follows the returned verifier preparation and delegated claim instructions without project OAuth. Agents must not derive project URLs, expose credentials, or install a project MCP globally.',
       execution: {
         bootstrapClients: PROJECT_INSTALL_EXECUTION,
