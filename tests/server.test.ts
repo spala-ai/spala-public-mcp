@@ -918,6 +918,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     scope: authorizedProjectScope,
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
+    profile: 'full',
   }));
   assert.equal((connectedBody.handoff as Record<string, unknown>).bootstrapConsumeUrl, undefined);
   assert.equal(JSON.stringify(connectedBody).split('mcp_agent_test').length - 1, 1);

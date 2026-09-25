@@ -1558,7 +1558,7 @@ export function createSpalaApiClient(
             scope: authorizedScope,
             clientName: `Spala ${client} agent`,
             deliveryMode: verifierBoundClaim ? 'one-time-pkce' : 'one-time',
-            ...(toolProfile === 'guided' ? { profile: 'guided' } : {}),
+            profile: toolProfile,
             ...(verifierBoundClaim ? { codeChallenge: bootstrapProof!.challenge } : {}),
           },
           { sensitiveTokens: [access.token, builderToken, publicMcpAccessToken] },

@@ -301,6 +301,32 @@ test('guided project preparation preserves profile in URLs and agent instruction
   });
 });
 
+test('default full project preparation explicitly overrides the runtime guided handoff default', async () => {
+  const projectUrl = 'https://project.example';
+  let instructionProfile: unknown;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, 'project-entry-token'));
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: 'builder-bootstrap-token' });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionProfile = (JSON.parse(String(init.body || '{}')) as Record<string, unknown>).profile;
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_default_full/consume${instructionProfile === 'full' ? '' : '?profile=guided'}`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(instructionProfile, 'full');
+  assert.equal(prepared.bootstrapConsumeUrl, `${projectUrl}/mcp/agent-instructions/mcp_agent_default_full/consume`);
+});
+
 test('Claude Code preparation binds its delegated claim to the local installer challenge', async () => {
   const projectUrl = 'https://project.example';
   const projectToken = 'temporary-project-token';
@@ -337,6 +363,7 @@ test('Claude Code preparation binds its delegated claim to the local installer c
     scope: 'builder,project,data',
     clientName: 'Spala claude-code agent',
     deliveryMode: 'one-time-pkce',
+    profile: 'full',
     codeChallenge: challenge,
   });
 });
@@ -572,6 +599,7 @@ test('authenticated client reuses the first builder session when the project and
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
+    profile: 'full',
   }));
   for (const call of projectCalls.slice(1)) {
     assert.equal(new Headers(call.init.headers).get('authorization'), `Bearer ${builderToken}`);
