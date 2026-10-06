@@ -72,6 +72,17 @@ function isSafeCorsOrigin(origin: string): boolean {
 }
 
 app.use((req, res, next) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  next();
+});
+
+app.use((req, res, next) => {
   const origin = req.get('origin');
   if (origin && !isSafeCorsOrigin(origin)) {
     res.status(403).json({ error: 'origin_not_allowed' });

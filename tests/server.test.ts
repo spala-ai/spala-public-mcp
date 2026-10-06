@@ -741,6 +741,33 @@ test('OAuth metadata advertises public endpoints and no device flow', async () =
   );
 });
 
+test('every response carries baseline security headers, including preflight and rejected origins', async () => {
+  const expected: Array<[string, string]> = [
+    ['strict-transport-security', 'max-age=63072000; includeSubDomains; preload'],
+    ['x-content-type-options', 'nosniff'],
+    ['x-frame-options', 'DENY'],
+    ['referrer-policy', 'no-referrer'],
+    ['content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"],
+    ['cross-origin-opener-policy', 'same-origin'],
+    ['cross-origin-resource-policy', 'same-origin'],
+  ];
+
+  const health = await fetch(`${baseUrl}/health`);
+  assert.equal(health.status, 200);
+  for (const [header, value] of expected) assert.equal(health.headers.get(header), value, header);
+
+  const preflight = await fetch(`${baseUrl}/oauth/dashboard/approve`, {
+    method: 'OPTIONS',
+    headers: { origin: 'https://dashboard.spala.ai' },
+  });
+  assert.equal(preflight.status, 204);
+  for (const [header, value] of expected) assert.equal(preflight.headers.get(header), value, `preflight ${header}`);
+
+  const rejectedOrigin = await fetch(`${baseUrl}/health`, { headers: { origin: 'https://evil.example' } });
+  assert.equal(rejectedOrigin.status, 403);
+  for (const [header, value] of expected) assert.equal(rejectedOrigin.headers.get(header), value, `rejected ${header}`);
+});
+
 test('dashboard approval CORS permits the dashboard origin and rejects unconfigured origins', async () => {
   const dashboard = await fetch(`${baseUrl}/oauth/dashboard/approve`, {
     method: 'OPTIONS',
