@@ -15,6 +15,7 @@ export type AppConfig = {
   publicMcpPlatformTimeoutMs: number;
   publicMcpPlatformResponseLimitBytes: number;
   publicMcpTrustedSharedRuntimeOrigins: readonly string[];
+  googleAgentIdentityRedirectUris: readonly string[];
   spalaAgentA2aResourceUrl: string | null;
   dashboardUrl: string;
   pricingUrl: string;
@@ -172,6 +173,64 @@ function trustedSharedRuntimeOrigins(env: Environment): readonly string[] {
   }))];
 }
 
+const GOOGLE_AGENT_IDENTITY_CALLBACK_HOST = 'agentidentitycredentials.googleapis.com';
+const GOOGLE_AGENT_IDENTITY_CALLBACK_PATH =
+  /^\/v1(?:alpha)?\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/locations\/[a-z0-9-]+\/authProviders\/[a-z][a-z0-9-]{0,62}\/oauthcallback$/;
+
+// Verified production Google Agent Identity callback (project wide-memento-446116-s7,
+// location us-central1, provider spala-oauth-v2). Overridable via
+// PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS, which replaces this list in full so that
+// any additional customer/staging callback must be explicitly and exactly registered.
+const DEFAULT_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: readonly string[] = [
+  'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback',
+];
+
+function googleAgentIdentityRedirectUris(env: Environment): readonly string[] {
+  const raw = env['PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS'];
+  const entries = raw === undefined
+    ? [...DEFAULT_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS]
+    : raw.trim() === ''
+      ? []
+      : raw.split(',').map(value => value.trim());
+  if (entries.some(value => !value)) {
+    configError('PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS', 'contains an empty entry');
+  }
+  if (entries.includes('*')) {
+    configError('PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS', 'wildcards are not allowed');
+  }
+
+  return [...new Set(entries.map(value => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return configError(
+        'PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS',
+        'entries must be exact HTTPS callback URLs',
+      );
+    }
+    if (
+      url.protocol !== 'https:'
+      || url.hostname.toLowerCase() !== GOOGLE_AGENT_IDENTITY_CALLBACK_HOST
+      || url.port !== ''
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || !GOOGLE_AGENT_IDENTITY_CALLBACK_PATH.test(url.pathname)
+      || url.toString() !== value
+    ) {
+      configError(
+        'PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS',
+        `entries must be exact https://${GOOGLE_AGENT_IDENTITY_CALLBACK_HOST}`
+          + '/v1/projects/{project}/locations/{location}/authProviders/{provider}/oauthcallback URLs'
+          + ' without credentials, ports, queries, or fragments',
+      );
+    }
+    return url.toString();
+  }))];
+}
+
 function oauthEncryptionSecret(env: Environment): string {
   const value = env['PUBLIC_OAUTH_ENCRYPTION_SECRET'] || '';
   if (!value) configError('PUBLIC_OAUTH_ENCRYPTION_SECRET', 'is required');
@@ -261,6 +320,7 @@ export function loadConfig(env: Environment = process.env): AppConfig {
     publicMcpPlatformTimeoutMs: integerEnv(env, 'PUBLIC_MCP_PLATFORM_TIMEOUT_MS', 8_000, 100, 60_000),
     publicMcpPlatformResponseLimitBytes: integerEnv(env, 'PUBLIC_MCP_PLATFORM_RESPONSE_LIMIT_BYTES', 1_048_576, 1_024, 10_485_760),
     publicMcpTrustedSharedRuntimeOrigins: trustedSharedRuntimeOrigins(env),
+    googleAgentIdentityRedirectUris: googleAgentIdentityRedirectUris(env),
     spalaAgentA2aResourceUrl: optionalA2aResourceUrl(env),
     dashboardUrl: absoluteUrl(env, 'SPALA_DASHBOARD_URL', 'https://dashboard.spala.ai', {
       originOnly: true,

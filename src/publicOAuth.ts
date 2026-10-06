@@ -148,8 +148,6 @@ const NATIVE_REDIRECT_URIS = new Set([
   'claude://mcp/oauth/callback',
   'codex://mcp/oauth/callback',
 ]);
-const GOOGLE_AGENT_IDENTITY_CALLBACK_PATH =
-  /^\/v1(?:alpha)?\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/locations\/[a-z0-9-]+\/authProviders\/[a-z][a-z0-9-]{0,62}\/oauthcallback$/;
 
 export { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE };
 
@@ -272,7 +270,7 @@ function requiredString(value: unknown, field: string, maximum: number): string 
   return value;
 }
 
-function validateRedirectUri(value: string): string {
+function validateRedirectUri(value: string, config: AppConfig): string {
   let url: URL;
   try {
     url = new URL(value);
@@ -283,10 +281,7 @@ function validateRedirectUri(value: string): string {
   const localHttp = url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(hostname);
   const hosted = HOSTED_REDIRECT_URIS.has(value) && url.toString() === value;
   const googleAgentIdentity = (
-    url.protocol === 'https:'
-    && hostname === 'agentidentitycredentials.googleapis.com'
-    && url.port === ''
-    && GOOGLE_AGENT_IDENTITY_CALLBACK_PATH.test(url.pathname)
+    config.googleAgentIdentityRedirectUris.includes(value)
     && url.toString() === value
   );
   const native = NATIVE_REDIRECT_URIS.has(value) && url.toString() === value;
@@ -860,7 +855,7 @@ export class PublicOAuthFacade {
     if (!Array.isArray(values) || values.length < 1 || values.length > 16) {
       throw new PublicOAuthError('invalid_client_metadata', 'Provide between one and sixteen redirect_uris.');
     }
-    const redirectUris = [...new Set(values.map(value => validateRedirectUri(requiredString(value, 'redirect_uri', 2_048))))];
+    const redirectUris = [...new Set(values.map(value => validateRedirectUri(requiredString(value, 'redirect_uri', 2_048), this.config)))];
     const tokenEndpointAuthMethod = record?.['token_endpoint_auth_method'] ?? 'none';
     if (tokenEndpointAuthMethod !== 'none' && tokenEndpointAuthMethod !== 'client_secret_post') {
       throw new PublicOAuthError('invalid_client_metadata', 'Unsupported token_endpoint_auth_method.');
@@ -919,7 +914,7 @@ export class PublicOAuthFacade {
       throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
     }
     if (registration.kind !== 'client') throw new PublicOAuthError('invalid_client', 'The OAuth client is invalid.', 401);
-    const redirectUri = validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048));
+    const redirectUri = validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048), this.config);
     if (!registration.redirectUris.includes(redirectUri)) {
       throw new PublicOAuthError('invalid_request', 'The redirect_uri is not registered for this client.');
     }
@@ -951,7 +946,7 @@ export class PublicOAuthFacade {
       const clientId = requiredString(input['client_id'], 'client_id', 16_384);
       const registration = decrypt(this.config, clientId);
       if (registration.kind !== 'client') return undefined;
-      redirectUri = validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048));
+      redirectUri = validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048), this.config);
       if (!registration.redirectUris.includes(redirectUri)) return undefined;
     } catch {
       return undefined;
@@ -1049,7 +1044,7 @@ export class PublicOAuthFacade {
     const { clientId } = this.authenticateTokenClient(input);
     const redirectUri = input['redirect_uri'] === undefined
       ? code.redirectUri
-      : validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048));
+      : validateRedirectUri(requiredString(input['redirect_uri'], 'redirect_uri', 2_048), this.config);
     const verifier = requiredString(input['code_verifier'], 'code_verifier', 128);
     const requestedResource = input['resource'];
     if (

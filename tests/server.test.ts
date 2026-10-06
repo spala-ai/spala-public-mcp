@@ -1476,7 +1476,7 @@ test('authorization codes are single-use after issuance and authorization errors
   assert.deepEqual((await responseJson(agencyRegistration)).redirect_uris, ['https://agency.spala.ai/callback']);
 
   const agentIdentityCallback =
-    'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback';
+    'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback';
   const agentIdentityRegistration = await fetch(`${baseUrl}/oauth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

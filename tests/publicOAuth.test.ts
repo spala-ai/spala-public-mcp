@@ -663,8 +663,7 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
       'https://vscode.dev/redirect',
       'https://vertexaisearch.cloud.google.com/oauth-redirect',
       'https://vertexaisearch.cloud.google.com/static/oauth/oauth.html',
-      'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
-      'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
+      'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback',
       'https://www.cursor.com/agents/mcp/oauth/callback',
       'https://www.cursor.com/bot/mcp/oauth/callback',
       'https://grok.com/connectors-oauth-exchange-code/',
@@ -724,6 +723,10 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
     for (const redirectUri of [
       'https://evil.example/oauth/callback',
       'https://vscode.dev/redirect/other',
+      'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
+      'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback',
+      'https://agentidentitycredentials.googleapis.com/v1/projects/attacker-project-000/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback',
+      'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/europe-west1/authProviders/spala-oauth-v2/oauthcallback',
       'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback?next=https://evil.example',
       'https://agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback/extra',
       'https://subdomain.agentidentitycredentials.googleapis.com/v1alpha/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback',
@@ -749,6 +752,60 @@ test('DCR accepts only verified loopback, hosted, and explicit native callback c
         redirectUri,
       );
     }
+  } finally {
+    rmSync(statePath, { recursive: true, force: true });
+  }
+});
+
+test('Google Agent Identity callbacks honor the configurable exact allowlist', () => {
+  const statePath = mkdtempSync(join(tmpdir(), 'public-oauth-google-allowlist-'));
+  const live = 'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback';
+  const fixture = 'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth/oauthcallback';
+  const customer = 'https://agentidentitycredentials.googleapis.com/v1/projects/customer-proj-123/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback';
+  try {
+    // Default (unset env): only the verified live spala-oauth-v2 callback is trusted.
+    const byDefault = new PublicOAuthFacade(testConfig(statePath));
+    assert.deepEqual(byDefault.register({ redirect_uris: [live] }).redirectUris, [live]);
+    assert.throws(
+      () => byDefault.register({ redirect_uris: [fixture] }),
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_request',
+    );
+
+    // Explicit configuration replaces the list in full.
+    const configured = new PublicOAuthFacade(loadConfig({
+      PUBLIC_BASE_URL: 'https://mcp.spala.ai',
+      SPALA_API_BASE_URL: 'https://api.spala.ai',
+      PUBLIC_OAUTH_ENCRYPTION_SECRET: 'public-oauth-replay-test-encryption-secret-32-bytes',
+      PUBLIC_OAUTH_REPLAY_STATE_PATH: statePath,
+      PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'public-oauth-test-platform-service-secret-32-bytes',
+      SPALA_AGENT_A2A_RESOURCE_URL: A2A_RESOURCE,
+      PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: `${live},${customer}`,
+    }));
+    assert.deepEqual(configured.register({ redirect_uris: [live] }).redirectUris, [live]);
+    assert.deepEqual(configured.register({ redirect_uris: [customer] }).redirectUris, [customer]);
+    assert.throws(
+      () => configured.register({ redirect_uris: [fixture] }),
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_request',
+    );
+
+    // Empty configuration disables Google callbacks while leaving hosted callbacks intact.
+    const disabled = new PublicOAuthFacade(loadConfig({
+      PUBLIC_BASE_URL: 'https://mcp.spala.ai',
+      SPALA_API_BASE_URL: 'https://api.spala.ai',
+      PUBLIC_OAUTH_ENCRYPTION_SECRET: 'public-oauth-replay-test-encryption-secret-32-bytes',
+      PUBLIC_OAUTH_REPLAY_STATE_PATH: statePath,
+      PUBLIC_MCP_PLATFORM_SERVICE_SECRET: 'public-oauth-test-platform-service-secret-32-bytes',
+      SPALA_AGENT_A2A_RESOURCE_URL: A2A_RESOURCE,
+      PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: '',
+    }));
+    assert.throws(
+      () => disabled.register({ redirect_uris: [live] }),
+      (error: unknown) => error instanceof PublicOAuthError && error.error === 'invalid_request',
+    );
+    assert.deepEqual(
+      disabled.register({ redirect_uris: ['https://vertexaisearch.cloud.google.com/oauth-redirect'] }).redirectUris,
+      ['https://vertexaisearch.cloud.google.com/oauth-redirect'],
+    );
   } finally {
     rmSync(statePath, { recursive: true, force: true });
   }

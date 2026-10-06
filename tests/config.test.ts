@@ -43,6 +43,9 @@ test('loadConfig parses strict valid configuration', () => {
     'https://runtime.spala.ai',
     'https://runtime-2.spala.ai',
   ]);
+  assert.deepEqual(config.googleAgentIdentityRedirectUris, [
+    'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback',
+  ]);
   assert.equal(config.spalaAgentA2aResourceUrl, 'https://agent.spala.ai/a2a/jsonrpc');
   assert.equal(config.mcpBodyLimitBytes, 65536);
   assert.equal(config.mcpRateLimitMax, 240);
@@ -84,6 +87,12 @@ test('loadConfig rejects malformed and unsafe configuration', () => {
     ['CORS wildcard', { CORS_ALLOWED_ORIGINS: '*' }],
     ['CORS path', { CORS_ALLOWED_ORIGINS: 'https://app.spala.ai/path' }],
     ['insecure remote CORS', { CORS_ALLOWED_ORIGINS: 'http://app.spala.ai' }],
+    ['google callback wildcard', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: '*' }],
+    ['google callback wrong host', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: 'https://evil.example.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback' }],
+    ['google callback query', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: 'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback?x=1' }],
+    ['google callback insecure', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: 'http://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback' }],
+    ['google callback port', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: 'https://agentidentitycredentials.googleapis.com:8443/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback' }],
+    ['google callback empty entry', { PUBLIC_MCP_GOOGLE_AGENT_IDENTITY_REDIRECT_URIS: 'https://agentidentitycredentials.googleapis.com/v1/projects/wide-memento-446116-s7/locations/us-central1/authProviders/spala-oauth-v2/oauthcallback,' }],
   ];
 
   for (const [label, override] of invalid) {
