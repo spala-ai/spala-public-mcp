@@ -2184,3 +2184,57 @@ test('public response bodies, headers, metadata, and tool results never disclose
     assert.doesNotMatch(transcript, /api\.spala\.ai/);
   }
 });
+
+test('GET /mcp answers 405 when an MCP client asks for the server event stream', async () => {
+  const response = await fetch(`${baseUrl}/mcp`, { headers: { accept: 'text/event-stream' } });
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get('allow'), 'POST');
+  assert.match(response.headers.get('vary') || '', /\bAccept\b/);
+  assert.match(response.headers.get('content-type') || '', /^application\/json/);
+  const body = await response.json() as Record<string, unknown>;
+  assert.equal(body.jsonrpc, '2.0');
+  assert.equal(body.id, null);
+  const error = body.error as Record<string, unknown>;
+  assert.equal(error.code, -32000);
+  assert.match(String(error.message), /POST/);
+});
+
+test('GET /mcp still serves the JSON description to browsers, crawlers, and plain fetches', async () => {
+  const accepts: Array<string | undefined> = [
+    undefined,
+    '*/*',
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'application/json',
+  ];
+  for (const accept of accepts) {
+    const response = await fetch(`${baseUrl}/mcp`, accept === undefined ? undefined : { headers: { accept } });
+    assert.equal(response.status, 200, `accept: ${accept ?? '(none)'}`);
+    assert.match(response.headers.get('content-type') || '', /^application\/json/);
+    const body = await response.json() as Record<string, unknown>;
+    assert.equal(body.name, 'Spala Public MCP');
+    assert.equal(typeof body.mcpUrl, 'string');
+    assert.ok(Array.isArray(body.publicTools));
+  }
+});
+
+test('the reference MCP client opens the GET stream once and stops after the 405', async () => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  const requests: Array<{ method: string; status: number }> = [];
+  const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+    fetch: async (input, init) => {
+      const response = await fetch(input, init);
+      requests.push({ method: init?.method || 'GET', status: response.status });
+      return response;
+    },
+  });
+  const client = new Client({ name: 'spala-public-mcp-get-stream-regression', version: '0.0.0' });
+  await client.connect(transport);
+  // A 200 JSON answer here is treated by the SDK as a stream that closed at once, which it
+  // re-opens after its 1 s reconnection delay forever. Wait long enough to catch that loop.
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  await client.close();
+  const gets = requests.filter(request => request.method === 'GET');
+  assert.deepEqual(gets, [{ method: 'GET', status: 405 }]);
+  assert.ok(requests.some(request => request.method === 'POST' && request.status === 200));
+});

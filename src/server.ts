@@ -1293,12 +1293,27 @@ app.get('/.well-known/project-mcp-test.md', (_req, res) => {
   res.type('text/markdown; charset=utf-8').send(projectMcpTestMarkdown());
 });
 
-app.get('/mcp', (_req, res) => {
+function requestsEventStream(req: Request): boolean {
+  return (req.get('accept') || '').toLowerCase().includes('text/event-stream');
+}
+
+app.get('/mcp', (req, res) => {
+  // MCP Streamable HTTP: a GET whose Accept lists text/event-stream is a client opening the
+  // server-to-client SSE stream. This server is stateless and never sends server-initiated
+  // messages, so the spec's other permitted answer, 405, is the right one. Answering 200 JSON
+  // here made reference clients treat the body as a stream that closed at once and re-open it
+  // every second. Browsers and crawlers never ask for text/event-stream and keep the description.
+  res.vary('Accept');
+  if (requestsEventStream(req)) {
+    res.setHeader('Allow', 'POST');
+    jsonRpcErrorResponse(res, 405, -32000, 'Method not allowed. This endpoint does not offer a GET event stream; send MCP JSON-RPC requests with POST.');
+    return;
+  }
   res.json({
     name: 'Spala Public MCP',
     purpose: 'Discovery, OAuth metadata, and authenticated Spala project discovery and MCP handoff.',
     mcpUrl: publicMcpUrl(),
-    usage: 'Use POST with MCP JSON-RPC for protocol requests. This GET response is a human and crawler-friendly endpoint description.',
+    usage: 'Use POST with MCP JSON-RPC for protocol requests. This GET response is a human and crawler-friendly endpoint description. GET with Accept: text/event-stream returns 405 because this server does not offer a standalone event stream.',
     maintainer: MAINTAINER,
     protocolCompatibility: PROTOCOL_COMPATIBILITY,
     links: discoveryLinks(),
