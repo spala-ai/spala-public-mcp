@@ -108,6 +108,8 @@ test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () =
     'https://project.example/api',
     'https://127.0.0.1/mcp',
     'https://10.0.0.4/mcp',
+    'https://100.64.0.1/mcp',
+    'https://100.127.255.254/mcp',
     'https://[::]/mcp',
     'https://[::1]/mcp',
     'https://[fe80::1]/mcp',

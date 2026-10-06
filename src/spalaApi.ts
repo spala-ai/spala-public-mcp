@@ -191,6 +191,7 @@ function isForbiddenIpv4(octets: number[]): boolean {
   return octets[0] === 0 ||
     octets[0] === 10 ||
     octets[0] === 127 ||
+    octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127 ||
     octets[0] === 169 && octets[1] === 254 ||
     octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31 ||
     octets[0] === 192 && octets[1] === 168 ||
