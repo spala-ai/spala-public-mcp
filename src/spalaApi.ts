@@ -51,6 +51,8 @@ export type ProjectBootstrapProof = {
   challenge: string;
 };
 
+export type ProjectMcpToolProfile = 'full' | 'guided';
+
 export type ProjectOrganizationInput = {
   organizationId?: string;
 };
@@ -87,6 +89,7 @@ export type SpalaApiClient = {
     projectId: string,
     client: 'codex' | 'roo' | 'claude-code' | 'cursor' | 'a2a',
     bootstrapProof?: ProjectBootstrapProof,
+    toolProfile?: ProjectMcpToolProfile,
   ): Promise<PreparedProjectMcpHandoff>;
 };
 
@@ -109,10 +112,31 @@ export type SpalaApiErrorCategory =
   | 'invalid_upstream_response'
   | 'request_failed';
 
+export type SpalaQuotaLimit = {
+  resource: string;
+  value: number;
+  consumed: number;
+  reserved?: number;
+  projected?: number;
+};
+
+const SPALA_QUOTA_RESOURCES = new Set([
+  'api_requests',
+  'background_starts',
+  'builder_mutations',
+  'mcp_rate',
+  'realtime_messages',
+  'transfer_bytes',
+]);
+
 export class SpalaApiError extends Error {
   readonly category: SpalaApiErrorCategory;
   readonly status?: number;
   readonly code?: string;
+  readonly upstreamCode?: string;
+  readonly retryAfterSeconds?: number;
+  readonly resetAt?: string;
+  readonly limit?: SpalaQuotaLimit;
   readonly checkoutUrl?: string;
   readonly organizationChoices?: SpalaOrganization[];
 
@@ -121,6 +145,10 @@ export class SpalaApiError extends Error {
     message: string;
     status?: number;
     code?: string;
+    upstreamCode?: string;
+    retryAfterSeconds?: number;
+    resetAt?: string;
+    limit?: SpalaQuotaLimit;
     checkoutUrl?: string;
     organizationChoices?: SpalaOrganization[];
   }) {
@@ -129,6 +157,10 @@ export class SpalaApiError extends Error {
     this.category = options.category;
     this.status = options.status;
     this.code = options.code;
+    this.upstreamCode = options.upstreamCode;
+    this.retryAfterSeconds = options.retryAfterSeconds;
+    this.resetAt = options.resetAt;
+    this.limit = options.limit ? { ...options.limit } : undefined;
     this.checkoutUrl = options.checkoutUrl;
     this.organizationChoices = options.organizationChoices?.map(organization => ({ ...organization }));
   }
@@ -237,9 +269,15 @@ function isForbiddenHostname(hostname: string): boolean {
 
 function hasValidProjectScopeQuery(url: URL): boolean {
   const entries = [...url.searchParams.entries()];
-  if (entries.length !== 1) return false;
-  const [key, value] = entries[0]!;
-  if (key !== 'scope') return false;
+  if (entries.length < 1 || entries.length > 2) return false;
+  if (url.searchParams.getAll('scope').length > 1 || url.searchParams.getAll('profile').length > 1) return false;
+  if (entries.some(([key]) => key !== 'scope' && key !== 'profile')) return false;
+
+  const profile = url.searchParams.get('profile');
+  if (profile !== null && profile !== 'full' && profile !== 'guided') return false;
+
+  const value = url.searchParams.get('scope');
+  if (value === null) return profile !== null;
 
   const scopes = value.split(',');
   const allowedScopes = new Set(['builder', 'project', 'data']);
@@ -271,6 +309,27 @@ function applyAuthorizedProjectScope(value: string, authorizedScope: string): st
     });
   }
   if (!existingScope) parsed.searchParams.set('scope', authorizedScope);
+  return parsed.toString();
+}
+
+function applyProjectToolProfile(value: string, toolProfile: ProjectMcpToolProfile): string {
+  const parsed = new URL(value);
+  const existingProfile = parsed.searchParams.get('profile');
+  if (existingProfile && existingProfile !== 'full' && existingProfile !== 'guided') {
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      code: 'project_mcp_profile_invalid',
+      message: 'The project backend returned an invalid MCP tool profile.',
+    });
+  }
+  if (existingProfile && existingProfile !== toolProfile) {
+    throw new SpalaApiError({
+      category: 'invalid_upstream_response',
+      code: 'project_mcp_profile_mismatch',
+      message: 'The project backend returned an MCP URL with a different tool profile than requested.',
+    });
+  }
+  if (toolProfile === 'guided' && !existingProfile) parsed.searchParams.set('profile', 'guided');
   return parsed.toString();
 }
 
@@ -405,10 +464,53 @@ function normalizedCode(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
+function nonNegativeSafeInteger(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined;
+}
+
+function safeRetryAfterSeconds(value: unknown): number | undefined {
+  const parsed = nonNegativeSafeInteger(value);
+  return parsed !== undefined && parsed <= 31_536_000 ? parsed : undefined;
+}
+
+function canonicalResetAt(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 32) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : undefined;
+}
+
+function safeQuotaLimit(raw: unknown): SpalaQuotaLimit | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const resource = record['resource'];
+  const value = nonNegativeSafeInteger(record['value']);
+  const consumed = nonNegativeSafeInteger(record['consumed']);
+  const reserved = record['reserved'] === undefined ? undefined : nonNegativeSafeInteger(record['reserved']);
+  const projected = record['projected'] === undefined ? undefined : nonNegativeSafeInteger(record['projected']);
+  if (
+    typeof resource !== 'string'
+    || !SPALA_QUOTA_RESOURCES.has(resource)
+    || value === undefined
+    || consumed === undefined
+    || (record['reserved'] !== undefined && reserved === undefined)
+    || (record['projected'] !== undefined && projected === undefined)
+  ) return undefined;
+  return {
+    resource,
+    value,
+    consumed,
+    ...(reserved !== undefined ? { reserved } : {}),
+    ...(projected !== undefined ? { projected } : {}),
+  };
+}
+
 function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   code?: string;
   message?: string;
   checkoutUrl?: string;
+  retryAfterSeconds?: number;
+  resetAt?: string;
+  limit?: SpalaQuotaLimit;
 } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const record = raw as Record<string, unknown>;
@@ -429,7 +531,10 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   const checkoutUrl = typeof rawCheckoutUrl === 'string' && !containsSensitiveToken(rawCheckoutUrl, sensitiveTokens)
     ? parsePublicHttpsUrl(rawCheckoutUrl)
     : undefined;
-  return { code, message, checkoutUrl };
+  const retryAfterSeconds = safeRetryAfterSeconds(nestedRecord?.['retryAfterSeconds'] ?? record['retryAfterSeconds']);
+  const resetAt = canonicalResetAt(nestedRecord?.['resetAt'] ?? record['resetAt']);
+  const limit = safeQuotaLimit(nestedRecord?.['limit'] ?? record['limit']);
+  return { code, message, checkoutUrl, retryAfterSeconds, resetAt, limit };
 }
 
 function errorCategory(status: number, code?: string, message?: string): SpalaApiErrorCategory {
@@ -456,6 +561,19 @@ function defaultErrorMessage(category: SpalaApiErrorCategory): string {
   if (category === 'not_found') return 'The requested Spala resource was not found.';
   if (category === 'upstream_unavailable') return 'The Spala control plane is temporarily unavailable.';
   return 'The Spala control-plane request failed.';
+}
+
+function isAmbiguousProjectCreateFailure(error: unknown): error is SpalaApiError {
+  if (!(error instanceof SpalaApiError)) return false;
+  const ambiguousStatus = error.status === undefined
+    || error.status >= 500
+    || (error.status >= 200 && error.status < 300);
+  return ambiguousStatus
+    && (
+      error.category === 'upstream_unavailable'
+      || error.category === 'invalid_upstream_response'
+      || error.category === 'request_failed'
+    );
 }
 
 async function readBoundedResponseBody(response: Response, maximumBytes: number): Promise<string> {
@@ -696,10 +814,22 @@ function parseAgentInstructionBootstrap(
   if (record['deliveryMode'] !== expectedDeliveryMode) return { reason: 'invalid_delivery_mode' };
 
   const consumeUrlValue = stringField(record, 'consumeUrl', 4_096);
-  const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, { requireCanonical: true });
+  const consumeUrl = parsePublicHttpsUrl(consumeUrlValue, {
+    allowProjectScope: true,
+    requireCanonical: true,
+  });
   if (!consumeUrl) return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
   const parsed = new URL(consumeUrl);
   const expectedMcp = new URL(mcpUrl);
+  const queryEntries = [...parsed.searchParams.entries()];
+  const expectedProfile = expectedMcp.searchParams.get('profile');
+  if (
+    queryEntries.some(([key]) => key !== 'profile')
+    || parsed.searchParams.getAll('profile').length > 1
+    || parsed.searchParams.get('profile') !== expectedProfile
+  ) {
+    return { reason: 'invalid_url', diagnostic: bootstrapUrlDiagnostic(consumeUrlValue) };
+  }
   if (parsed.origin !== expectedMcp.origin) return { reason: 'untrusted_origin' };
 
   const prefix = `${expectedMcp.pathname.replace(/\/+$/, '')}/agent-instructions/`;
@@ -720,6 +850,10 @@ function rethrowProjectStage(error: unknown, code: string): never {
       category: error.category,
       status: error.status,
       code,
+      upstreamCode: error.upstreamCode ?? error.code,
+      retryAfterSeconds: error.retryAfterSeconds,
+      resetAt: error.resetAt,
+      limit: error.limit,
       message: error.message,
       checkoutUrl: error.checkoutUrl,
       organizationChoices: error.organizationChoices,
@@ -830,6 +964,10 @@ export function createSpalaApiClient(
           category,
           status: response.status,
           code: parsed.code,
+          upstreamCode: parsed.code,
+          retryAfterSeconds: parsed.retryAfterSeconds,
+          resetAt: parsed.resetAt,
+          limit: parsed.limit,
           message: parsed.message || defaultErrorMessage(category),
           checkoutUrl: parsed.checkoutUrl,
         });
@@ -887,6 +1025,10 @@ export function createSpalaApiClient(
           category,
           status: response.status,
           code: parsed.code,
+          upstreamCode: parsed.code,
+          retryAfterSeconds: parsed.retryAfterSeconds,
+          resetAt: parsed.resetAt,
+          limit: parsed.limit,
           message: parsed.message || defaultErrorMessage(category),
           checkoutUrl: parsed.checkoutUrl,
         });
@@ -1075,17 +1217,54 @@ export function createSpalaApiClient(
         throw new SpalaApiError({ category: 'request_failed', message: 'Project name must be between 1 and 120 characters.' });
       }
       const organization = await resolveOrganization(input.organizationId);
-      const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
-        body: { project_name: name, organization_id: organization.id },
+      const beforePayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+        query: { organizationId: organization.id },
       });
-      const project = parseCreatedProject(payload);
-      if (!project) {
+      const beforeProjects = parseProjectCollection(beforePayload);
+      if (!beforeProjects) {
         throw new SpalaApiError({
           category: 'invalid_upstream_response',
-          message: 'The Spala control plane returned an invalid created project.',
+          message: 'The Spala control plane returned an invalid project list.',
         });
       }
-      return { organization, project: { ...project, organizationId: organization.id } };
+      const existingExactNameIds = new Set(
+        beforeProjects.filter(project => project.name === name).map(project => project.id),
+      );
+
+      try {
+        const payload = await requestJson('POST', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+          body: { project_name: name, organization_id: organization.id },
+        });
+        const project = parseCreatedProject(payload);
+        if (!project) {
+          throw new SpalaApiError({
+            category: 'invalid_upstream_response',
+            status: 200,
+            message: 'The Spala control plane returned an invalid created project.',
+          });
+        }
+        return { organization, project: { ...project, organizationId: organization.id } };
+      } catch (error) {
+        if (!isAmbiguousProjectCreateFailure(error)) throw error;
+
+        let afterProjects: SpalaProject[] | undefined;
+        try {
+          const afterPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projects, {
+            query: { organizationId: organization.id },
+          });
+          afterProjects = parseProjectCollection(afterPayload);
+        } catch {
+          throw error;
+        }
+        const newExactNameProjects = (afterProjects || []).filter(project =>
+          project.name === name && !existingExactNameIds.has(project.id)
+        );
+        if (newExactNameProjects.length !== 1) throw error;
+        return {
+          organization,
+          project: { ...newExactNameProjects[0]!, organizationId: organization.id },
+        };
+      }
     },
 
     async getProjectHandoff(projectId) {
@@ -1094,11 +1273,15 @@ export function createSpalaApiClient(
       return verifiedProjectHandoff(payload, id);
     },
 
-    async prepareProjectMcp(projectIdValue, client, bootstrapProof) {
+    async prepareProjectMcp(projectIdValue, client, bootstrapProof, toolProfile = 'full') {
       const id = normalizeProjectId(projectIdValue);
+      const handoffPath = PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id);
+      const profileAwareHandoffPath = toolProfile === 'guided'
+        ? `${handoffPath}?profile=guided`
+        : handoffPath;
       let projectHandoff: ProjectMcpHandoff;
       try {
-        const handoffPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
+        const handoffPayload = await requestJson('GET', profileAwareHandoffPath);
         projectHandoff = verifiedProjectHandoff(handoffPayload, id);
       } catch (error) {
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
@@ -1240,24 +1423,27 @@ export function createSpalaApiClient(
         }
       }
 
-      try {
-        await requestProjectJson(
-          preparationConfigUrl,
-          builderToken,
-          'POST',
-          { securityConfig: { mcpEnabled: true } },
-          { sensitiveTokens: [access.token, publicMcpAccessToken] },
-        );
-      } catch (error) {
-        rethrowProjectStage(error, 'project_mcp_enable_failed');
+      if (!projectHandoff.mcpEnabled) {
+        try {
+          await requestProjectJson(
+            preparationConfigUrl,
+            builderToken,
+            'POST',
+            { securityConfig: { mcpEnabled: true } },
+            { sensitiveTokens: [access.token, publicMcpAccessToken] },
+          );
+        } catch (error) {
+          rethrowProjectStage(error, 'project_mcp_enable_failed');
+        }
       }
 
-      // Enabling MCP can change the authoritative handoff. Re-read it and use
-      // its exact URLs before creating a bootstrap session. The project
-      // backend binds the session endpoint identity from this request URL.
+      // MCP enablement or runtime placement can change the authoritative
+      // handoff. Re-read it and use its exact URLs before creating a bootstrap
+      // session. The project backend binds the session endpoint identity from
+      // this request URL.
       let preparedHandoff: ProjectMcpHandoff;
       try {
-        const preparedPayload = await requestJson('GET', PUBLIC_MCP_PLATFORM_ROUTES.projectHandoff(id));
+        const preparedPayload = await requestJson('GET', profileAwareHandoffPath);
         // Token-bearing bootstrap fields are diagnosed below without logging
         // their values, so parse the refreshed handoff before the unified
         // bootstrap-material gate applies all known credentials.
@@ -1267,10 +1453,16 @@ export function createSpalaApiClient(
       }
       const preparedProjectUrl = parseProjectBaseUrl(preparedHandoff.projectUrl);
       const mcpUrl = preparedHandoff.mcpUrl
-        ? applyAuthorizedProjectScope(preparedHandoff.mcpUrl, authorizedScope)
+        ? applyProjectToolProfile(
+            applyAuthorizedProjectScope(preparedHandoff.mcpUrl, authorizedScope),
+            toolProfile,
+          )
         : undefined;
       const manifestUrl = preparedHandoff.manifestUrl
-        ? applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope)
+        ? applyProjectToolProfile(
+            applyAuthorizedProjectScope(preparedHandoff.manifestUrl, authorizedScope),
+            toolProfile,
+          )
         : undefined;
       const sensitiveTokens = [access.token, builderToken, publicMcpAccessToken];
       const runtimeBaseUrl = mcpUrl ? projectRuntimeBaseUrl(mcpUrl) : undefined;
@@ -1367,9 +1559,9 @@ export function createSpalaApiClient(
             scope: authorizedScope,
             clientName: `Spala ${client} agent`,
             deliveryMode: verifierBoundClaim ? 'one-time-pkce' : 'one-time',
-            // This public handoff uses unprofiled (full) MCP URLs. The runtime
-            // defaults omitted installer profiles to guided, so bind explicitly.
-            profile: 'full',
+            // The runtime defaults omitted installer profiles to guided, so always
+            // bind the requested profile explicitly (full unless guided was asked for).
+            profile: toolProfile,
             ...(verifierBoundClaim ? { codeChallenge: bootstrapProof!.challenge } : {}),
           },
           { sensitiveTokens: [access.token, builderToken, publicMcpAccessToken] },

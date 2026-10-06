@@ -89,6 +89,10 @@ test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () =
   assert.equal(parseProjectMcpUrl(encodedCommaScope), encodedCommaScope);
   assert.equal(parseProjectMcpUrl(encodedSubsetScope), encodedSubsetScope);
   assert.equal(
+    parseProjectMcpUrl('https://shared.example/project-a/mcp/?scope=builder%2Cproject%2Cdata&profile=guided'),
+    'https://shared.example/project-a/mcp/?scope=builder%2Cproject%2Cdata&profile=guided',
+  );
+  assert.equal(
     parseProjectMcpUrl('https://project.example/mcp?scope=builder&scope=project'),
     undefined,
     'duplicate scope parameters must be rejected',
@@ -102,6 +106,8 @@ test('parseProjectMcpUrl accepts only explicit public HTTPS MCP endpoints', () =
     'https://project.example/mcp?scope=',
     'https://project.example/mcp?scope=api',
     'https://project.example/mcp?scope=builder,builder',
+    'https://project.example/mcp?scope=builder&profile=unknown',
+    'https://project.example/mcp?scope=builder&profile=guided&profile=guided',
     'https://project.example/mcp#secret',
     'https://PROJECT.example/mcp?scope=builder,project,data',
     'https://project.example:443/mcp?scope=builder,project,data',
@@ -250,7 +256,6 @@ test('Claude Code preparation skips the one-time instruction session used by boo
   assert.equal(prepared.bootstrapConsumeUrl, undefined);
   assert.deepEqual(projectCalls, [
     'POST /api/__internal/builder-auth/external',
-    'POST /api/__internal/project/config',
   ]);
 });
 
@@ -284,6 +289,76 @@ test('project bootstrap requests explicitly preserve the unprofiled full MCP con
     assert.equal(prepared.bootstrapConsumeUrl,
       `${projectUrl}/mcp/agent-instructions/mcp_agent_profile_contract/consume`);
   }
+});
+
+test('guided project preparation preserves profile in URLs and agent instructions', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-guided-project-token';
+  const builderToken = 'builder-guided-project-token';
+  const handoffQueries: string[] = [];
+  let instructionBody: Record<string, unknown> | undefined;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) {
+      handoffQueries.push(url.search);
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionBody = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume?profile=guided`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex', undefined, 'guided');
+
+  assert.deepEqual(handoffQueries, ['?profile=guided', '?profile=guided']);
+  assert.equal(prepared.mcpUrl, `${projectUrl}/mcp?scope=builder%2Cproject%2Cdata&profile=guided`);
+  assert.equal(prepared.manifestUrl, `${projectUrl}/mcp/install-manifest?scope=builder%2Cproject%2Cdata&profile=guided`);
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    `${projectUrl}/mcp/agent-instructions/mcp_agent_guided/consume?profile=guided`,
+  );
+  assert.deepEqual(instructionBody, {
+    scope: 'builder,project,data',
+    clientName: 'Spala codex agent',
+    deliveryMode: 'one-time',
+    profile: 'guided',
+  });
+});
+
+test('default full project preparation explicitly overrides the runtime guided handoff default', async () => {
+  const projectUrl = 'https://project.example';
+  let instructionProfile: unknown;
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff(projectUrl));
+    if (url.pathname.endsWith('/access-url')) return jsonResponse(projectAccessUrl(projectUrl, 'project-entry-token'));
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: 'builder-bootstrap-token' });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ success: true });
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      instructionProfile = (JSON.parse(String(init.body || '{}')) as Record<string, unknown>).profile;
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_default_full/consume${instructionProfile === 'full' ? '' : '?profile=guided'}`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+  assert.equal(instructionProfile, 'full');
+  assert.equal(prepared.bootstrapConsumeUrl, `${projectUrl}/mcp/agent-instructions/mcp_agent_default_full/consume`);
 });
 
 test('Claude Code preparation binds its delegated claim to the local installer challenge', async () => {
@@ -546,7 +621,6 @@ test('authenticated client reuses the first builder session when the project and
   }
   assert.deepEqual(projectCalls.map(call => `${call.init.method} ${call.url.pathname}`), [
     'POST /api/__internal/builder-auth/external',
-    'POST /api/__internal/project/config',
     'POST /mcp/agent-instructions',
   ]);
   const exchangeCall = projectCalls[0]!;
@@ -554,11 +628,8 @@ test('authenticated client reuses the first builder session when the project and
   assert.equal(new Headers(exchangeCall.init.headers).get('x-spala-public-mcp-service-secret'), null);
   assert.equal(exchangeCall.init.body, JSON.stringify({ token: projectToken }));
   assert.doesNotMatch(String(exchangeCall.init.body), /opaque-valid-token/);
-  assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), true);
+  assert.equal(projectCalls.some(call => call.init.method === 'POST' && call.url.pathname === '/api/__internal/project/config'), false);
   assert.equal(projectCalls[1]?.init.body, JSON.stringify({
-    securityConfig: { mcpEnabled: true },
-  }));
-  assert.equal(projectCalls[2]?.init.body, JSON.stringify({
     scope: 'builder,project,data',
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -611,7 +682,6 @@ test('project preparation trusts the exact custom-domain access origin and path'
   );
   assert.deepEqual(projectCalls.map(url => url.pathname), [
     '/apps/project-one/api/__internal/builder-auth/external',
-    '/apps/project-one/api/__internal/project/config',
     '/apps/project-one/mcp/agent-instructions',
   ]);
 });
@@ -782,7 +852,6 @@ test('project preparation preserves authoritative handoff URLs instead of derivi
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/access-url',
     'POST https://shared-runtime.example/p123/api/__internal/builder-auth/external',
-    'POST https://shared-runtime.example/p123/api/__internal/project/config',
     'GET https://control.spala.example/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
     'POST https://shared-runtime.example/p123/mcp/agent-instructions',
   ]);
@@ -861,7 +930,45 @@ test('project preparation rejects a refreshed runtime that differs from the exch
   });
   assert.deepEqual(runtimeCalls, [
     'https://shared-runtime.example/p123/api/__internal/builder-auth/external',
-    'https://shared-runtime.example/p123/api/__internal/project/config',
+  ]);
+});
+
+test('project preparation skips the MCP config write when the authoritative handoff already reports MCP enabled', async () => {
+  const projectUrl = 'https://project.example';
+  const projectToken = 'temporary-already-enabled-token';
+  const builderToken = 'builder-already-enabled-token';
+  const projectCalls: string[] = [];
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
+      return jsonResponse(projectMcpHandoff(projectUrl));
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
+      return jsonResponse(projectAccessUrl(projectUrl, projectToken));
+    }
+    if (url.origin === projectUrl) projectCalls.push(`${init.method || 'GET'} ${url.pathname}`);
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/builder-auth/external') {
+      return jsonResponse({ token: builderToken });
+    }
+    if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      return jsonResponse({ error: 'redundant MCP enable must not be attempted' }, 500);
+    }
+    if (url.origin === projectUrl && url.pathname === '/mcp/agent-instructions') {
+      return agentInstructionSession(
+        `${projectUrl}/mcp/agent-instructions/mcp_agent_already_enabled/consume`,
+      );
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const prepared = await api.prepareProjectMcp('project-1', 'codex');
+
+  assert.equal(
+    prepared.bootstrapConsumeUrl,
+    `${projectUrl}/mcp/agent-instructions/mcp_agent_already_enabled/consume`,
+  );
+  assert.deepEqual(projectCalls, [
+    'POST /api/__internal/builder-auth/external',
+    'POST /mcp/agent-instructions',
   ]);
 });
 
@@ -874,8 +981,9 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   const authoritativeManifestUrl = 'https://shared-runtime.example/p123/mcp/install-manifest';
   let handoffReads = 0;
   let mcpEnabled = false;
+  let enableBody: unknown;
   let handoffReadsAtInstruction: number | undefined;
-  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
       handoffReads += 1;
       return !mcpEnabled
@@ -903,6 +1011,7 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
       return jsonResponse({ token: builderToken });
     }
     if (url.origin === projectUrl && url.pathname === '/api/__internal/project/config') {
+      enableBody = JSON.parse(String(init.body || '{}'));
       mcpEnabled = true;
       return jsonResponse({ success: true });
     }
@@ -929,6 +1038,7 @@ test('project preparation refreshes the authoritative handoff after enabling MCP
   assert.equal(handoffReads, 2);
   assert.equal(handoffReadsAtInstruction, 2, 'the authoritative handoff must be refreshed before session creation');
   assert.equal(mcpEnabled, true);
+  assert.deepEqual(enableBody, { securityConfig: { mcpEnabled: true } });
   assert.equal(prepared.mcpUrl, `${authoritativeMcpUrl}?scope=builder%2Cproject%2Cdata`);
   assert.equal(prepared.manifestUrl, `${authoritativeManifestUrl}?scope=builder%2Cproject%2Cdata`);
   assert.equal(
@@ -1260,7 +1370,15 @@ test('project backend failures receive stage-specific fallback codes without exp
     const projectCalls: string[] = [];
     const api = createSpalaApiClient(config, controlToken, fetchStub((url) => {
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
-        return jsonResponse(projectMcpHandoff());
+        return stage === '/api/__internal/project/config'
+          ? jsonResponse({
+              projectId: 'project-1',
+              projectName: 'Project One',
+              status: 'ready',
+              projectUrl: 'https://project.example',
+              mcpEnabled: false,
+            })
+          : jsonResponse(projectMcpHandoff());
       }
       if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
         return jsonResponse(projectAccessUrl('https://project.example', projectToken));
@@ -1288,9 +1406,7 @@ test('project backend failures receive stage-specific fallback codes without exp
       assert.doesNotMatch(error.message, new RegExp(`${controlToken}|${projectToken}`));
       return true;
     });
-    assert.deepEqual(projectCalls, stage === '/api/__internal/project/config'
-      ? ['/api/__internal/project/config']
-      : ['/api/__internal/project/config', '/mcp/agent-instructions']);
+    assert.deepEqual(projectCalls, [stage]);
   }
 });
 
@@ -1388,10 +1504,11 @@ test('agent instructions 404 preserves not-found category and status with a stab
     assert.equal(error.category, 'not_found');
     assert.equal(error.status, 404);
     assert.equal(error.code, 'project_agent_instruction_failed');
+    assert.equal(error.upstreamCode, 'not_found');
     assert.doesNotMatch(error.message, new RegExp(`${projectToken}|${builderToken}`));
     return true;
   });
-  assert.deepEqual(projectCalls, ['/api/__internal/project/config', '/mcp/agent-instructions']);
+  assert.deepEqual(projectCalls, ['/mcp/agent-instructions']);
 });
 
 test('project runtime access accepts the platform access-url response field', async () => {
@@ -1422,7 +1539,7 @@ test('project runtime access accepts the platform access-url response field', as
 
   const prepared = await api.prepareProjectMcp('project-1', 'codex');
   assert.equal(prepared.projectId, 'project-1');
-  assert.deepEqual(projectCalls.map(url => url.pathname), ['/api/__internal/project/config', '/mcp/agent-instructions']);
+  assert.deepEqual(projectCalls.map(url => url.pathname), ['/mcp/agent-instructions']);
   assert.doesNotMatch(JSON.stringify(prepared), new RegExp(projectToken));
 });
 
@@ -1459,7 +1576,13 @@ test('project admin config failure stops before agent instructions and redacts t
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
     calls.push({ url, init });
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff') {
-      return jsonResponse(projectMcpHandoff());
+      return jsonResponse({
+        projectId: 'project-1',
+        projectName: 'Project One',
+        status: 'ready',
+        projectUrl: 'https://project.example',
+        mcpEnabled: false,
+      });
     }
     if (url.pathname === '/api/__internal/public-mcp/v1/projects/project-1/access-url') {
       return jsonResponse(projectAccessUrl('https://project.example', projectToken));
@@ -1494,6 +1617,8 @@ test('project preparation treats bootstrap consumption URLs as opaque and reject
     undefined,
     '',
     `https://project.example/mcp/bootstrap?session=${controlToken}`,
+    'https://project.example/mcp/agent-instructions/mcp_agent_profile/consume?profile=guided',
+    'https://project.example/mcp/agent-instructions/mcp_agent_scope/consume?scope=builder%2Cproject%2Cdata',
   ];
 
   for (const bootstrapConsumeUrl of invalidUrls) {
@@ -1580,12 +1705,82 @@ test('project preparation rejects a bootstrap capability from an unrelated publi
   });
 });
 
+test('project creation reconciles one new exact-name project after an ambiguous upstream failure', async () => {
+  let projectListCalls = 0;
+  const oldMatch = {
+    id: 'project-old',
+    project_name: 'Recovered Project',
+    status: 'active',
+    subdomain: 'recovered-old',
+  };
+  const newMatch = {
+    id: 'project-new',
+    project_name: 'Recovered Project',
+    status: 'active',
+    subdomain: 'recovered-new',
+  };
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
+      return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-1', name: 'One' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      projectListCalls += 1;
+      return jsonResponse(projectListCalls === 1 ? [oldMatch] : [oldMatch, newMatch]);
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'POST') {
+      return jsonResponse({ error: { code: 'upstream_timeout', message: 'The create result is unknown.' } }, 504);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  const created = await api.createProject({ name: 'Recovered Project' });
+  assert.equal(created.project.id, 'project-new');
+  assert.equal(created.project.name, 'Recovered Project');
+  assert.equal(created.project.organizationId, 'org-1');
+  assert.equal(projectListCalls, 2);
+});
+
+test('project creation never reconciles a pre-existing exact-name project', async () => {
+  let projectListCalls = 0;
+  const oldMatch = {
+    id: 'project-old',
+    project_name: 'Existing Project',
+    status: 'active',
+    subdomain: 'existing-project',
+  };
+  const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url, init) => {
+    if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
+      return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-1', name: 'One' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      projectListCalls += 1;
+      return jsonResponse([oldMatch]);
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'POST') {
+      return jsonResponse({ error: { code: 'upstream_timeout', message: 'The create result is unknown.' } }, 503);
+    }
+    return jsonResponse({ error: 'unexpected_request' }, 500);
+  }));
+
+  await assert.rejects(api.createProject({ name: 'Existing Project' }), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'upstream_unavailable');
+    assert.equal(error.status, 503);
+    assert.equal(error.code, 'upstream_timeout');
+    return true;
+  });
+  assert.equal(projectListCalls, 2);
+});
+
 test('project creation auto-selects a sole organization and parses the direct POST response', async () => {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
   const api = createSpalaApiClient(config, 'sole-org-token', fetchStub((url, init) => {
     calls.push({ url, init });
     if (url.pathname === '/api/__internal/public-mcp/v1/principal') {
       return jsonResponse({ user: { id: 'user-1' }, organizations: [{ id: 'org-only', name: 'Only organization' }] });
+    }
+    if (url.pathname === '/api/__internal/public-mcp/v1/projects' && init.method === 'GET') {
+      return jsonResponse([]);
     }
     return jsonResponse({
       id: 'project-created',
@@ -1604,7 +1799,8 @@ test('project creation auto-selects a sole organization and parses the direct PO
     subdomain: 'sole-organization-project',
     organizationId: 'org-only',
   });
-  assert.equal(calls[1]?.init.body, JSON.stringify({
+  assert.equal(calls[1]?.url.searchParams.get('organizationId'), 'org-only');
+  assert.equal(calls[2]?.init.body, JSON.stringify({
     project_name: 'Sole Organization Project',
     organization_id: 'org-only',
   }));
@@ -1726,6 +1922,79 @@ test('invalid, unavailable, and plan-restricted upstream responses are typed wit
     assert.ok(error instanceof SpalaApiError);
     assert.equal(error.category, 'plan_restricted');
     assert.equal(error.checkoutUrl, 'https://billing.spala.ai/checkout/session');
+    return true;
+  });
+});
+
+test('quota 429 responses preserve only validated retry and limit metadata', async () => {
+  const secret = 'opaque-quota-secret';
+  const api = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: 'PROJECT_BUILDER_MUTATION_LIMIT_EXCEEDED',
+      message: 'Builder mutation quota reached.',
+      retryAfterSeconds: 3_600,
+      resetAt: '2026-10-01T00:00:00.000Z',
+      limit: {
+        resource: 'builder_mutations',
+        value: 1_000,
+        consumed: 1_000,
+        reserved: 0,
+        projected: 1_001,
+        credential: secret,
+      },
+      internal: { credential: secret },
+    },
+  }, 429)));
+
+  await assert.rejects(api.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.category, 'plan_restricted');
+    assert.equal(error.status, 429);
+    assert.equal(error.code, 'project_builder_mutation_limit_exceeded');
+    assert.equal(error.upstreamCode, 'project_builder_mutation_limit_exceeded');
+    assert.equal(error.retryAfterSeconds, 3_600);
+    assert.equal(error.resetAt, '2026-10-01T00:00:00.000Z');
+    assert.deepEqual(error.limit, {
+      resource: 'builder_mutations',
+      value: 1_000,
+      consumed: 1_000,
+      reserved: 0,
+      projected: 1_001,
+    });
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(secret));
+    return true;
+  });
+
+  const malformed = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: `quota-${secret}`,
+      message: 'Quota reached.',
+      retryAfterSeconds: -1,
+      resetAt: '2026-10-01 00:00:00',
+      limit: { resource: `builder_${secret}`, value: 1_000, consumed: '1000' },
+    },
+  }, 429)));
+  await assert.rejects(malformed.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.status, 429);
+    assert.equal(error.upstreamCode, undefined);
+    assert.equal(error.retryAfterSeconds, undefined);
+    assert.equal(error.resetAt, undefined);
+    assert.equal(error.limit, undefined);
+    assert.doesNotMatch(JSON.stringify(error), new RegExp(secret));
+    return true;
+  });
+
+  const unknownResource = createSpalaApiClient(config, secret, fetchStub(() => jsonResponse({
+    error: {
+      code: 'PROJECT_UNKNOWN_LIMIT_EXCEEDED',
+      retryAfterSeconds: 1,
+      limit: { resource: 'credential_material', value: 1, consumed: 1, projected: 2 },
+    },
+  }, 429)));
+  await assert.rejects(unknownResource.getPrincipal(), (error: unknown) => {
+    assert.ok(error instanceof SpalaApiError);
+    assert.equal(error.limit, undefined);
     return true;
   });
 });

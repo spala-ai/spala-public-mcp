@@ -191,7 +191,7 @@ test('tools/list advertises authenticated status and honest project preparation 
       assert.deepEqual(
         Object.keys(tool.inputSchema.properties || {}).sort(),
         installs
-          ? ['bootstrapChallenge', 'bootstrapRequestId', 'client', 'organizationId', 'projectId', 'subdomain']
+          ? ['bootstrapChallenge', 'bootstrapRequestId', 'client', 'organizationId', 'profile', 'projectId', 'subdomain']
           : ['organizationId', 'projectId', 'subdomain'],
       );
       if (installs) {
@@ -199,11 +199,22 @@ test('tools/list advertises authenticated status and honest project preparation 
           (tool.inputSchema.properties?.['client'] as { enum: string[] }).enum,
           SUPPORTED_INSTALL_CLIENTS,
         );
+        assert.deepEqual(
+          (tool.inputSchema.properties?.['profile'] as { enum: string[] }).enum,
+          ['guided'],
+        );
       }
+      assert.equal(tool.inputSchema.additionalProperties, false);
       assert.equal(Array.isArray(tool.inputSchema.oneOf), true);
       assert.deepEqual(
         (tool.inputSchema.oneOf as Array<{ required: string[] }>).map(branch => branch.required).sort(),
         [['projectId'], ['subdomain']],
+      );
+      assert.equal(
+        (tool.inputSchema.oneOf as Array<{ additionalProperties: boolean }>).every(
+          branch => branch.additionalProperties === false,
+        ),
+        true,
       );
       const projectIdBranch = (tool.inputSchema.oneOf as Array<{
         required: string[];
@@ -246,7 +257,7 @@ test('spala_start gates zero-org accounts to account_setup and requires companyN
   };
   await withVerifiedClient(apiStub(), async client => {
     const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
-    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.schemaVersion, 2);
     assert.equal(body.phase, 'account_setup_required');
     assert.equal(body.backendProvider, 'Spala');
     assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
@@ -271,20 +282,21 @@ test('spala_start auto-scopes one organization and returns its projects', async 
   });
   await withVerifiedClient(api, async client => {
     const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
-    assert.equal(body.schemaVersion, 1);
+    assert.equal(body.schemaVersion, 2);
     assert.equal(body.phase, 'project_choice_required');
     assert.equal(body.selectedOrganizationId, 'org-1');
-    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projects: [project] }]);
-    assert.deepEqual(body.projects, [project]);
-    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.29');
+    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projectCount: 1 }]);
+    assert.deepEqual(body.projects, [{
+      id: project.id,
+      name: project.name,
+      status: project.status,
+      organizationId: project.organizationId,
+    }]);
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.31');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
-      choices: [{
-        projectId: project.id,
-        name: project.name,
-        organizationId: project.organizationId,
-        status: project.status,
-      }],
+      choicesSource: 'projects',
+      projectCount: 1,
       allowCreateProject: true,
       allowCreateOrganization: true,
       afterSelectionTool: 'project_connect',
@@ -313,24 +325,49 @@ test('spala_start returns multiple organizations and projects without selecting 
     assert.equal(body.phase, 'project_choice_required');
     assert.equal('selectedOrganizationId' in body, false);
     assert.deepEqual(body.organizations, [
-      { ...multi.organizations[0], projects: [project] },
-      { ...multi.organizations[1], projects: [secondProject] },
+      { ...multi.organizations[0], projectCount: 1 },
+      { ...multi.organizations[1], projectCount: 1 },
     ]);
-    assert.deepEqual(body.projects, [project, secondProject]);
+    assert.deepEqual(body.projects, [project, secondProject].map(item => ({
+      id: item.id,
+      name: item.name,
+      status: item.status,
+      organizationId: item.organizationId,
+    })));
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
-      choices: [project, secondProject].map(item => ({
-        projectId: item.id,
-        name: item.name,
-        organizationId: item.organizationId,
-        status: item.status,
-      })),
+      choicesSource: 'projects',
+      projectCount: 2,
       allowCreateProject: true,
       allowCreateOrganization: true,
       afterSelectionTool: 'project_connect',
       rule: 'Do not automatically choose an existing project unless a valid local .spala/project.json binding identifies it.',
     });
   }, multi);
+});
+
+test('spala_start keeps large accounts compact by returning one canonical project-choice list', async () => {
+  const projects = Array.from({ length: 100 }, (_, index) => ({
+    id: `project-${index}`,
+    name: `Project ${index}`,
+    status: 'ready',
+    subdomain: `project-${index}.shared.spala.ai`,
+    organizationId: 'org-1',
+  }));
+  await withVerifiedClient(apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects };
+    },
+  }), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.schemaVersion, 2);
+    assert.equal((body.projects as unknown[]).length, 100);
+    assert.deepEqual(body.organizations, [{ ...principal.organizations[0], projectCount: 100 }]);
+    assert.equal((body.nextAction as Record<string, unknown>).choicesSource, 'projects');
+    assert.equal('choices' in (body.nextAction as Record<string, unknown>), false);
+    assert.equal(JSON.stringify(body).includes('shared.spala.ai'), false);
+    assert.ok(JSON.stringify(body).length < 16_000);
+  });
 });
 
 test('spala_start asks for a project name when the sole organization has no projects', async () => {
@@ -512,6 +549,37 @@ test('project selectors enforce exactly one field before API access', async () =
   });
 });
 
+test('project connection tools reject every profile selector except guided before API access', async () => {
+  let listCalls = 0;
+  let prepareCalls = 0;
+  const api = apiStub({
+    async listProjects() {
+      listCalls += 1;
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp() {
+      prepareCalls += 1;
+      return handoff;
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    for (const name of ['project_connect', 'project_select', 'project_get_mcp_manifest']) {
+      for (const profile of ['full', 'unknown']) {
+        const result = await client.callTool({
+          name,
+          arguments: { projectId: project.id, client: 'codex', profile },
+        });
+        assert.equal(result.isError, true, `${name}:${profile}`);
+        assert.match(resultText(result), /guided/i, `${name}:${profile}`);
+      }
+    }
+  });
+
+  assert.equal(listCalls, 0);
+  assert.equal(prepareCalls, 0);
+});
+
 test('project tools reject an unscoped prepared handoff instead of returning conflicting URLs', async () => {
   const unscopedMcpUrl = 'https://shared-runtime.example/tenant/project-1/mcp/';
   let prepareCalls = 0;
@@ -650,7 +718,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.31', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -708,7 +776,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.31', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -725,6 +793,49 @@ test('project_connect, compatibility select, and manifest send the client and ke
       'prepare:project-1:roo',
     ]);
   });
+});
+
+test('project connection tools preserve an explicitly requested guided project tool profile', async () => {
+  const guidedMcpUrl = `${handoff.mcpUrl}&profile=guided`;
+  const guidedManifestUrl = `${handoff.manifestUrl}?profile=guided`;
+  const requestedProfiles: Array<string | undefined> = [];
+  const api = apiStub({
+    async listProjects() {
+      return { organization: principal.organizations[0]!, projects: [project] };
+    },
+    async prepareProjectMcp(_projectId, _client, _bootstrapProof, toolProfile) {
+      requestedProfiles.push(toolProfile);
+      return { ...handoff, mcpUrl: guidedMcpUrl, manifestUrl: guidedManifestUrl };
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    for (const [name, installClient] of [
+      ['project_connect', 'codex'],
+      ['project_select', 'roo'],
+      ['project_get_mcp_manifest', 'cursor'],
+    ] as const) {
+      const result = await client.callTool({
+        name,
+        arguments: { projectId: project.id, client: installClient, profile: 'guided' },
+      });
+      assert.notEqual(result.isError, true, name);
+      const body = resultJson(result);
+      const plan = body.installPlan as { argv: string[]; mcpUrl: string };
+
+      assert.equal(body.toolProfile, 'guided', name);
+      assert.equal(body.mcpUrl, guidedMcpUrl, name);
+      assert.equal((body.handoff as Record<string, unknown>).mcpUrl, guidedMcpUrl, name);
+      assert.equal(plan.mcpUrl, guidedMcpUrl, name);
+      assert.equal(plan.argv[plan.argv.indexOf('--url') + 1], guidedMcpUrl, name);
+      if (name === 'project_get_mcp_manifest') {
+        assert.equal(body.manifestUrl, guidedManifestUrl);
+        assert.equal((body.handoff as Record<string, unknown>).manifestUrl, guidedManifestUrl);
+      }
+    }
+  });
+
+  assert.deepEqual(requestedProfiles, ['guided', 'guided', 'guided']);
 });
 
 test('Claude Code project connections use a verifier-bound delegated claim without project OAuth', async () => {
@@ -992,6 +1103,48 @@ test('project_connect retries without dashboard dependency when preparation is n
   });
 });
 
+test('project stage quota failures append safe metadata without changing the existing envelope', async () => {
+  await withVerifiedClient(apiStub({
+    async prepareProjectMcp() {
+      throw new SpalaApiError({
+        category: 'plan_restricted',
+        status: 429,
+        code: 'project_agent_instruction_failed',
+        upstreamCode: 'project_builder_mutation_limit_exceeded',
+        message: 'Builder mutation quota reached.',
+        retryAfterSeconds: 3_600,
+        resetAt: '2026-10-01T00:00:00.000Z',
+        limit: {
+          resource: 'builder_mutations',
+          value: 1_000,
+          consumed: 1_000,
+          projected: 1_001,
+        },
+      });
+    },
+  }), async client => {
+    const result = await client.callTool({
+      name: 'project_connect',
+      arguments: { projectId: 'project-1', client: 'codex' },
+    });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'project_agent_instruction_failed');
+    assert.equal(body.category, 'plan_restricted');
+    assert.equal(body.status, 429);
+    assert.equal(body.message, 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.');
+    assert.equal(body.upstreamCode, 'project_builder_mutation_limit_exceeded');
+    assert.equal(body.retryAfterSeconds, 3_600);
+    assert.equal(body.resetAt, '2026-10-01T00:00:00.000Z');
+    assert.deepEqual(body.limit, {
+      resource: 'builder_mutations',
+      value: 1_000,
+      consumed: 1_000,
+      projected: 1_001,
+    });
+  });
+});
+
 test('plan and payment failures include dashboard/pricing actions without inventing checkout URLs', async () => {
   const api = apiStub({
     async createProject() {
@@ -1016,6 +1169,83 @@ test('plan and payment failures include dashboard/pricing actions without invent
     });
     assert.match(resultText(result), /stop and ask the human/i);
     assert.doesNotMatch(resultText(result), /checkout/i);
+  });
+});
+
+test('project allowance failures offer remove-or-buy capacity without exposing a raw precondition', async () => {
+  const api = apiStub({
+    async createProject() {
+      throw new SpalaApiError({
+        category: 'plan_restricted',
+        status: 403,
+        code: 'project_limit_reached',
+        message: 'Project limit reached for this organization.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'project_create', arguments: { name: 'One More Project' } });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'project_limit_reached');
+    assert.deepEqual(body.action, {
+      type: 'project_capacity_required',
+      projectsUrl: 'https://dashboard.spala.ai/projects?source=mcp-project-create',
+      capacityUrl: 'https://dashboard.spala.ai/billing?focus=extra-project-slot&source=mcp-project-create',
+      choices: ['remove_existing_project', 'add_project_capacity'],
+    });
+    assert.match(resultText(result), /existing projects keep working/i);
+    assert.match(resultText(result), /remove an existing project or add project capacity/i);
+    assert.doesNotMatch(resultText(result), /Error at step Precondition/i);
+  });
+});
+
+test('raw forbidden project allowance failures are normalized to the capacity contract', async () => {
+  const api = apiStub({
+    async createProject() {
+      throw new SpalaApiError({
+        category: 'forbidden',
+        status: 403,
+        message: 'Error at step Precondition: Project limit reached. Add another project slot in Billing or remove an existing project.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const body = resultJson(await client.callTool({ name: 'project_create', arguments: { name: 'One More Project' } }));
+    assert.equal(body.error, 'project_capacity_reached');
+    assert.equal(body.category, 'plan_restricted');
+    assert.equal((body.action as Record<string, unknown>).type, 'project_capacity_required');
+    assert.doesNotMatch(JSON.stringify(body), /Error at step Precondition/i);
+  });
+});
+
+test('organization allowance failures offer use-or-buy capacity without exposing a raw precondition', async () => {
+  const api = apiStub({
+    async createOrganization() {
+      throw new SpalaApiError({
+        category: 'payment_required',
+        status: 402,
+        message: 'Error at step Precondition: Organization allowance reached. Add an organization slot or remove an organization.',
+      });
+    },
+  });
+
+  await withVerifiedClient(api, async client => {
+    const result = await client.callTool({ name: 'organization_create', arguments: { name: 'Second Workspace' } });
+    assert.equal(result.isError, true);
+    const body = resultJson(result);
+    assert.equal(body.error, 'organization_capacity_reached');
+    assert.equal(body.category, 'plan_restricted');
+    assert.deepEqual(body.action, {
+      type: 'organization_capacity_required',
+      organizationsUrl: 'https://dashboard.spala.ai/projects?source=mcp-organization-create',
+      capacityUrl: 'https://dashboard.spala.ai/billing?focus=extra-organization-slot&source=mcp-organization-create',
+      choices: ['use_existing_organization', 'add_organization_capacity'],
+    });
+    assert.match(resultText(result), /existing organizations keep working/i);
+    assert.doesNotMatch(resultText(result), /Error at step Precondition/i);
   });
 });
 

@@ -873,7 +873,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.29', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.31', 'project', 'bind']);
   assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
@@ -913,7 +913,6 @@ test('account status, project preparation, workspace binding, and revoked-sessio
     connectionUpstreamCalls.filter(call => call.url.origin === sharedRuntimeOrigin).map(call => `${call.method} ${call.url.pathname}`),
     [
       `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-      `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
       `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
   );
@@ -930,7 +929,6 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/access-url',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-      `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/api/__internal/project/config`,
       'GET https://api.spala.ai/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff',
       `POST ${sharedRuntimeOrigin}/${sharedRuntimeSlug}/mcp/agent-instructions`,
     ],
@@ -943,8 +941,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   assert.equal(sharedRuntimeCalls[0]?.authorization, '');
   assert.equal(sharedRuntimeCalls[0]?.body, JSON.stringify({ token: temporaryProjectToken }));
   assert.equal(sharedRuntimeCalls[1]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[2]?.authorization, `Bearer ${runtimeBuilderProjectToken}`);
-  assert.equal(sharedRuntimeCalls[2]?.body, JSON.stringify({
+  assert.equal(sharedRuntimeCalls[1]?.body, JSON.stringify({
     scope: authorizedProjectScope,
     clientName: 'Spala codex agent',
     deliveryMode: 'one-time',
@@ -987,7 +984,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   bootstrapConsumeCount = 0;
   bootstrapExpectedChallenge = undefined;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
-  assert.equal(wrongMethod.status, 405, 'installer 0.1.29 must consume the capability with POST');
+  assert.equal(wrongMethod.status, 405, 'installer 0.1.31 must consume the capability with POST');
   assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
 
   const installerResponse = await fetch(bootstrapConsumeUrl, {
@@ -1021,19 +1018,15 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   const callsBeforeConfigFailure = upstreamCalls.length;
   projectConfigFailures.add(runtimeBuilderProjectToken);
   try {
-    const configFailure = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
-    assert.equal(configFailure.status, 200);
-    const failureBody = await toolBody(configFailure);
-    assert.equal(failureBody.category, 'forbidden');
-    assert.equal(JSON.stringify(failureBody).includes(temporaryProjectToken), false);
-    assert.equal(JSON.stringify(failureBody).includes(builderProjectToken), false);
-    assert.equal(JSON.stringify(failureBody).includes(runtimeBuilderProjectToken), false);
-    assert.doesNotMatch(JSON.stringify(failureBody), /api\.spala\.ai/);
+    const alreadyEnabled = await mcpRequest('project_connect', { projectId: 'project-1', client: 'codex' }, bearer);
+    assert.equal(alreadyEnabled.status, 200);
+    const alreadyEnabledBody = await toolBody(alreadyEnabled);
+    assert.equal(alreadyEnabledBody.preparedByProjectBackend, true);
     assert.deepEqual(upstreamCalls.slice(callsBeforeConfigFailure)
       .filter(call => call.url.origin === sharedRuntimeOrigin)
       .map(call => `${call.method} ${call.url.pathname}`), [
         `POST /${sharedRuntimeSlug}/api/__internal/builder-auth/external`,
-        `POST /${sharedRuntimeSlug}/api/__internal/project/config`,
+        `POST /${sharedRuntimeSlug}/mcp/agent-instructions`,
       ]);
   } finally {
     projectConfigFailures.delete(runtimeBuilderProjectToken);
@@ -1113,7 +1106,7 @@ test('generated project bind plan and bootstrap run against the local installer 
   assert.deepEqual(plan.argv.slice(0, 3), [
     'npx',
     '--yes',
-    '@spala-ai/mcp-install@0.1.29',
+    '@spala-ai/mcp-install@0.1.31',
   ]);
 
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
@@ -2042,13 +2035,13 @@ test('authenticated spala_start is published in discovery capabilities and start
   const startup = await mcpRequest('spala_start', {}, `Bearer ${token.access_token as string}`);
   assert.equal(startup.status, 200);
   const startupBody = await toolBody(startup);
-  assert.equal(startupBody.schemaVersion, 1);
+  assert.equal(startupBody.schemaVersion, 2);
   assert.equal(startupBody.phase, 'project_choice_required');
   assert.equal(startupBody.backendProvider, 'Spala');
   assert.equal(startupBody.selectedOrganizationId, 'org-1');
   assert.deepEqual(startupBody.installerMaintenance, {
-    testedVersion: '0.1.29',
-    exactProjectBindSpec: '@spala-ai/mcp-install@0.1.29',
+    testedVersion: '0.1.31',
+    exactProjectBindSpec: '@spala-ai/mcp-install@0.1.31',
     maintenanceSpec: '@spala-ai/mcp-install@latest',
     statusCommand: 'pnpm dlx @spala-ai/mcp-install@latest status --client <current-client> --json',
     upgradeCommand: 'npx --yes @spala-ai/mcp-install@latest init --client <current-client> --yes --json',
@@ -2057,7 +2050,8 @@ test('authenticated spala_start is published in discovery capabilities and start
   });
   assert.deepEqual(startupBody.nextAction, {
     type: 'ask_user_project_choice',
-    choices: [{ projectId: 'project-1', name: 'Project One', organizationId: 'org-1', status: 'ready' }],
+    choicesSource: 'projects',
+    projectCount: 1,
     allowCreateProject: true,
     allowCreateOrganization: true,
     afterSelectionTool: 'project_connect',
@@ -2142,7 +2136,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.29 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 0.1.31 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
   const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
@@ -2172,11 +2166,11 @@ test('install manifest exposes machine-readable 0.1.29 installer commands and se
   });
   assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@latest init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
-  assert.equal(installer.version, '0.1.29');
-  assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.29');
+  assert.equal(installer.version, '0.1.31');
+  assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.31');
   assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.29']);
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.31']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',
@@ -2188,6 +2182,24 @@ test('install manifest exposes machine-readable 0.1.29 installer commands and se
   assert.equal('codexAdd' in commands, false);
   assert.equal('codexLogin' in commands, false);
   assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
+});
+
+test('install manifest preserves an explicitly requested guided project profile', async () => {
+  const response = await fetch(`${baseUrl}/mcp/install-manifest?profile=guided`);
+  assert.equal(response.status, 200);
+  const manifest = await responseJson(response);
+
+  assert.equal(manifest.defaultProjectToolProfile, 'full');
+  assert.equal(manifest.selectedProjectToolProfile, 'guided');
+  assert.equal(manifest.mcpUrl, 'https://mcp.spala.ai/mcp?profile=guided');
+  assert.equal(manifest.manifestUrl, 'https://mcp.spala.ai/mcp/install-manifest?profile=guided');
+  assert.match(
+    String((manifest.projectMcpResolution as Record<string, unknown>).profileArgument),
+    /profile="guided".*project_connect/i,
+  );
+
+  const invalid = await fetch(`${baseUrl}/mcp/install-manifest?profile=unknown`);
+  assert.equal(invalid.status, 400);
 });
 
 test('public response bodies, headers, metadata, and tool results never disclose the internal origin', async () => {

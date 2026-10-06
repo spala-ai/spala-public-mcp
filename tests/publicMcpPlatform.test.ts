@@ -167,4 +167,19 @@ test('platform OAuth adapter classifies retryable and invalid grants without lea
       && !error.message.includes(refreshToken)
     ),
   );
+
+  const rateLimited = createPublicMcpPlatformClient(config, (async () => json({
+    error: { code: 'oauth_rate_limited', detail: `${serviceSecret} ${refreshToken}` },
+  }, 429)) as typeof fetch);
+  await assert.rejects(
+    rateLimited.refreshTokens({ refreshToken, clientHash: sensitiveClientHash }),
+    (error: unknown) => (
+      error instanceof PublicMcpPlatformError
+      && error.category === 'upstream_unavailable'
+      && error.status === 429
+      && error.code === 'oauth_rate_limited'
+      && !error.message.includes(serviceSecret)
+      && !error.message.includes(refreshToken)
+    ),
+  );
 });

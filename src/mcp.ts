@@ -126,6 +126,7 @@ const PROJECT_SELECTOR_SCHEMA = {
 const PROJECT_INSTALL_SELECTOR_SCHEMA = {
   ...PROJECT_SELECTOR_SCHEMA,
   client: z.enum(SUPPORTED_INSTALL_CLIENTS).optional(),
+  profile: z.literal('guided').optional(),
   bootstrapRequestId: z.string().regex(/^claim_[A-Za-z0-9_-]{20,80}$/).optional(),
   bootstrapChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 };
@@ -194,6 +195,12 @@ const INSTALL_CLIENT_JSON_SCHEMA = {
   description: 'Target MCP client for @spala-ai/mcp-install. Omit to receive client_selection_required without an executable mutation plan.',
 } as const;
 
+const PROJECT_TOOL_PROFILE_JSON_SCHEMA = {
+  type: 'string',
+  enum: ['guided'],
+  description: 'Set to guided to preserve the compact build-and-test surface through project handoff. Omit for the default full compatibility surface.',
+} as const;
+
 const BOOTSTRAP_REQUEST_JSON_SCHEMA = {
   bootstrapRequestId: {
     type: 'string',
@@ -212,11 +219,17 @@ const PROJECT_INSTALL_SELECTOR_JSON_SCHEMA = {
   description: 'Provide exactly one project selector and a supported agentic workspace client (codex, roo, claude-code, or cursor) to receive executable installer argv.',
   oneOf: PROJECT_SELECTOR_JSON_SCHEMA.oneOf.map(branch => ({
     ...branch,
-    properties: { ...branch.properties, client: INSTALL_CLIENT_JSON_SCHEMA, ...BOOTSTRAP_REQUEST_JSON_SCHEMA },
+    properties: {
+      ...branch.properties,
+      client: INSTALL_CLIENT_JSON_SCHEMA,
+      profile: PROJECT_TOOL_PROFILE_JSON_SCHEMA,
+      ...BOOTSTRAP_REQUEST_JSON_SCHEMA,
+    },
   })),
   properties: {
     ...PROJECT_SELECTOR_JSON_SCHEMA.properties,
     client: INSTALL_CLIENT_JSON_SCHEMA,
+    profile: PROJECT_TOOL_PROFILE_JSON_SCHEMA,
     ...BOOTSTRAP_REQUEST_JSON_SCHEMA,
   },
 } as const;
@@ -390,6 +403,7 @@ const PROJECT_CONNECTION_OUTPUT = outputObject(
     project: OBJECT_OUTPUT,
     handoff: OBJECT_OUTPUT,
     mcpUrl: { type: 'string', format: 'uri' },
+    toolProfile: { type: 'string', enum: ['full', 'guided'] },
     serverName: STRING_OUTPUT,
     transport: STRING_OUTPUT,
     preparedByProjectBackend: BOOLEAN_OUTPUT,
@@ -520,6 +534,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
       handoff: OBJECT_OUTPUT,
       mcpUrl: { type: 'string', format: 'uri' },
       manifestUrl: { type: 'string', format: 'uri' },
+      toolProfile: { type: 'string', enum: ['full', 'guided'] },
       serverName: STRING_OUTPUT,
       transport: STRING_OUTPUT,
       auth: STRING_OUTPUT,
@@ -658,6 +673,7 @@ type ProjectSelector = {
   subdomain?: string;
   organizationId?: string;
   client?: SupportedInstallClient;
+  profile?: 'guided';
   bootstrapRequestId?: string;
   bootstrapChallenge?: string;
 };
@@ -824,7 +840,7 @@ function json(value: unknown, isError = false): ToolResult {
 }
 
 type AccountSetupField = 'firstName' | 'lastName' | 'companyName';
-export const PUBLIC_MCP_STARTUP_VERSION = 1;
+export const PUBLIC_MCP_STARTUP_VERSION = 2;
 const accountSetupLocks = new Map<string, Promise<void>>();
 const ACCOUNT_SETUP_BLOCKED_ACTIONS = [
   'inspect application source',
@@ -863,11 +879,34 @@ type StartupProjectDiscovery = {
   projects: SpalaProject[];
 };
 
+type StartupProjectChoice = Pick<SpalaProject, 'id' | 'name' | 'status'> & {
+  organizationId?: string;
+};
+
 async function discoverStartupProjects(api: SpalaApiClient, principal: SpalaPrincipal): Promise<StartupProjectDiscovery[]> {
   return Promise.all(principal.organizations.map(async organization => ({
     organization,
     projects: (await api.listProjects({ organizationId: organization.id })).projects,
   })));
+}
+
+function startupProjectChoices(discovered: StartupProjectDiscovery[]): StartupProjectChoice[] {
+  return discovered.flatMap(entry => entry.projects.map(project => ({
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    ...(project.organizationId ? { organizationId: project.organizationId } : {}),
+  })));
+}
+
+function safeQuotaMetadata(error: SpalaApiError | undefined): Record<string, unknown> {
+  if (!error || error.status !== 429) return {};
+  return {
+    ...(error.upstreamCode ? { upstreamCode: error.upstreamCode } : {}),
+    ...(error.retryAfterSeconds !== undefined ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+    ...(error.resetAt ? { resetAt: error.resetAt } : {}),
+    ...(error.limit ? { limit: { ...error.limit } } : {}),
+  };
 }
 
 function startupBillingError(error: unknown, config: AppConfig): ToolResult | undefined {
@@ -879,6 +918,7 @@ function startupBillingError(error: unknown, config: AppConfig): ToolResult | un
     phase: 'billing_required',
     error: error.code || error.category,
     message: 'Billing is required to continue project discovery. Continue through the safe Spala checkout flow, then retry spala_start.',
+    ...safeQuotaMetadata(error),
     nextAction: {
       type: 'continue_checkout',
       ...(error.checkoutUrl ? { checkoutUrl: error.checkoutUrl } : {}),
@@ -896,6 +936,7 @@ function startupFailure(error: unknown): ToolResult {
     error: apiError?.code || apiError?.category || 'spala_start_failed',
     message: 'Spala startup could not complete. Retry spala_start after the temporary service failure clears.',
     ...(apiError?.status ? { status: apiError.status } : {}),
+    ...safeQuotaMetadata(apiError),
     nextAction: {
       tool: 'spala_start',
       reason: 'Retry the authenticated versioned startup flow.',
@@ -952,6 +993,7 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
   const subdomain = input.subdomain?.trim();
   const organizationId = input.organizationId?.trim();
   const client = input.client;
+  const profile = input.profile;
   const bootstrapRequestId = input.bootstrapRequestId?.trim();
   const bootstrapChallenge = input.bootstrapChallenge?.trim();
   if (Number(projectId !== undefined) + Number(subdomain !== undefined) !== 1) {
@@ -982,8 +1024,8 @@ export function parseProjectSelector(input: ProjectSelector): ProjectSelector | 
     ? { bootstrapRequestId, bootstrapChallenge }
     : {};
   return projectId !== undefined
-    ? { projectId, ...(client ? { client } : {}), ...bootstrap }
-    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}), ...bootstrap };
+    ? { projectId, ...(client ? { client } : {}), ...(profile ? { profile } : {}), ...bootstrap }
+    : { subdomain, ...(organizationId ? { organizationId } : {}), ...(client ? { client } : {}), ...(profile ? { profile } : {}), ...bootstrap };
 }
 
 function requireInstallClient(selector: ProjectSelector): SupportedInstallClient | ToolResult {
@@ -1000,6 +1042,10 @@ function requireInstallClient(selector: ProjectSelector): SupportedInstallClient
 function safeProjectError(error: unknown, fallback: string, config: AppConfig): ToolResult {
   if (error instanceof SpalaApiError) {
     const planFailure = error.category === 'payment_required' || error.category === 'plan_restricted';
+    const capacityText = `${error.code || ''} ${error.message}`;
+    const projectCapacityFailure = /project[ _-]?(?:limit|allowance|quota)|(?:limit|allowance|quota)[ _-]?project/i.test(capacityText);
+    const organizationCapacityFailure = !projectCapacityFailure
+      && /organization[ _-]?(?:limit|allowance|capacity|quota)|(?:limit|allowance|capacity|quota)[ _-]?organization|organization slot/i.test(capacityText);
     const organizationSelection = error.category === 'organization_selection_required';
     const accountSetupRequired = error.code === 'organization_required';
     let action: Record<string, unknown> | undefined;
@@ -1013,6 +1059,20 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       action = { type: 'complete_account_setup', statusTool: 'account_status', setupTool: 'account_setup' };
     } else if (organizationSelection) {
       action = { type: 'select_organization', argument: 'organizationId' };
+    } else if (projectCapacityFailure) {
+      action = {
+        type: 'project_capacity_required',
+        projectsUrl: `${config.dashboardUrl}/projects?source=mcp-project-create`,
+        capacityUrl: `${config.dashboardUrl}/billing?focus=extra-project-slot&source=mcp-project-create`,
+        choices: ['remove_existing_project', 'add_project_capacity'],
+      };
+    } else if (organizationCapacityFailure) {
+      action = {
+        type: 'organization_capacity_required',
+        organizationsUrl: `${config.dashboardUrl}/projects?source=mcp-organization-create`,
+        capacityUrl: `${config.dashboardUrl}/billing?focus=extra-organization-slot&source=mcp-organization-create`,
+        choices: ['use_existing_organization', 'add_organization_capacity'],
+      };
     } else if (planFailure) {
       action = {
         type: 'human_payment_required',
@@ -1023,10 +1083,19 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
       action = { type: 'review_project_access', dashboardUrl: config.dashboardUrl };
     }
     return json({
-      error: error.category === 'authentication' ? 'reauthentication_required' : error.code || error.category,
-      category: error.category,
+      error: error.category === 'authentication'
+        ? 'reauthentication_required'
+        : error.code
+          || (projectCapacityFailure ? 'project_capacity_reached' : undefined)
+          || (organizationCapacityFailure ? 'organization_capacity_reached' : undefined)
+          || error.category,
+      category: projectCapacityFailure || organizationCapacityFailure ? 'plan_restricted' : error.category,
       status: error.status,
-      message: planFailure
+      message: projectCapacityFailure
+        ? 'This organization has reached its project allowance. Existing projects keep working. Stop and ask the human to remove an existing project or add project capacity in the Spala dashboard, then retry this tool.'
+        : organizationCapacityFailure
+          ? 'This account has reached its organization allowance. Existing organizations keep working. Stop and ask the human to use an existing organization or add organization capacity in the Spala dashboard, then retry this tool.'
+        : planFailure
         ? 'Payment or an eligible plan is required. Stop and ask the human to review billing in the Spala dashboard, then retry this tool.'
         : accountSetupRequired
           ? 'The account has no company/workspace organization yet. Call account_status, ask the human for its missing fields, then call account_setup and retry.'
@@ -1039,6 +1108,7 @@ function safeProjectError(error: unknown, fallback: string, config: AppConfig): 
               : error.category === 'not_found'
                 ? 'The requested project was not found or is not available to the signed-in account.'
                 : 'The project operation is temporarily unavailable. Retry later.',
+      ...safeQuotaMetadata(error),
       ...(error.organizationChoices ? { organizationChoices: error.organizationChoices } : {}),
       ...(action ? { action } : {}),
     }, true);
@@ -1256,7 +1326,7 @@ async function prepareHandoff(
     : undefined;
   return {
     project: resolved.project,
-    handoff: await api.prepareProjectMcp(resolved.projectId, client, bootstrapProof),
+    handoff: await api.prepareProjectMcp(resolved.projectId, client, bootstrapProof, selector.profile || 'full'),
   };
 }
 
@@ -1491,7 +1561,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
 
     try {
       const discovered = await discoverStartupProjects(api!, principal);
-      const projects = discovered.flatMap(entry => entry.projects);
+      const projects = startupProjectChoices(discovered);
       const oneOrganization = principal.organizations.length === 1;
       const hasProjects = projects.length > 0;
       const phase = hasProjects
@@ -1502,12 +1572,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       const nextAction = hasProjects
         ? {
             type: 'ask_user_project_choice',
-            choices: projects.map(project => ({
-              projectId: project.id,
-              name: project.name,
-              organizationId: project.organizationId,
-              status: project.status,
-            })),
+            choicesSource: 'projects',
+            projectCount: projects.length,
             allowCreateProject: true,
             allowCreateOrganization: true,
             afterSelectionTool: 'project_connect',
@@ -1535,7 +1601,10 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         user: principal.user,
         accountSetup: { state: 'ready', missingFields: [] },
         selectedOrganizationId: oneOrganization ? principal.organizations[0]!.id : undefined,
-        organizations: discovered.map(entry => ({ ...entry.organization, projects: entry.projects })),
+        organizations: discovered.map(entry => ({
+          ...entry.organization,
+          projectCount: entry.projects.length,
+        })),
         projects,
         installerMaintenance: INSTALLER_MAINTENANCE,
         nextAction,
@@ -1747,6 +1816,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         project: resolved.project,
         handoff: responseHandoff,
         mcpUrl: serverSideA2a ? installPlan.mcpUrl : handoff.mcpUrl,
+        toolProfile: selector.profile || 'full',
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         preparedByProjectBackend: true,
@@ -1839,6 +1909,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         handoff: publicHandoff,
         mcpUrl: handoff.mcpUrl,
         manifestUrl: handoff.manifestUrl,
+        toolProfile: selector.profile || 'full',
         serverName: installPlan.serverName,
         transport: 'streamable-http',
         auth: claudeCode ? 'local_credential_proxy_after_pkce_claim' : 'local_credential_proxy_after_bootstrap',

@@ -92,6 +92,7 @@ function errorCategory(status: number, code: string | undefined): PublicMcpPlatf
   if (status === 401) return 'authentication';
   if (status === 403 && code === 'insufficient_scope') return 'insufficient_scope';
   if (status === 403) return 'forbidden';
+  if (status === 429) return 'upstream_unavailable';
   if (status >= 500) return 'upstream_unavailable';
   return 'invalid_grant';
 }
