@@ -666,31 +666,36 @@ function parseProjectAccess(raw: unknown, expectedProjectUrlValue: string): Proj
   if (
     accessUrl.origin !== 'https://app.spala.ai'
     || accessUrl.pathname !== '/'
-    || accessUrl.hash
     || accessUrl.username
     || accessUrl.password
   ) return undefined;
-  const entries = [...accessUrl.searchParams.entries()];
+  // The platform emits fragment credentials to keep them out of HTTP requests.
+  // Keep legacy query delivery, but never combine the two credential channels.
+  if (accessUrl.hash && accessUrl.search) return undefined;
+  const credentialParams = accessUrl.hash
+    ? new URLSearchParams(accessUrl.hash.slice(1))
+    : accessUrl.searchParams;
+  const entries = [...credentialParams.entries()];
   if (entries.length !== 2 || new Set(entries.map(([key]) => key)).size !== 2) return undefined;
-  const hasLegacyProjectUrl = accessUrl.searchParams.has('url');
-  const hasExternalAuthHandoff = accessUrl.searchParams.has('handoff');
+  const hasLegacyProjectUrl = credentialParams.has('url');
+  const hasExternalAuthHandoff = credentialParams.has('handoff');
   if (
-    !accessUrl.searchParams.has('auth_token')
+    !credentialParams.has('auth_token')
     || hasLegacyProjectUrl === hasExternalAuthHandoff
   ) return undefined;
 
-  const token = accessUrl.searchParams.get('auth_token');
+  const token = credentialParams.get('auth_token');
   if (!validBearerToken(token)) return undefined;
   const expectedProjectUrl = parseProjectBaseUrl(expectedProjectUrlValue);
   if (!expectedProjectUrl) return undefined;
 
   if (hasExternalAuthHandoff) {
-    const externalAuthHandoff = accessUrl.searchParams.get('handoff');
+    const externalAuthHandoff = credentialParams.get('handoff');
     if (!validBearerToken(externalAuthHandoff) || externalAuthHandoff.length < 16) return undefined;
     return { projectUrl: expectedProjectUrl, token, externalAuthHandoff };
   }
 
-  const encodedProjectUrl = accessUrl.searchParams.get('url');
+  const encodedProjectUrl = credentialParams.get('url');
   if (!encodedProjectUrl) return undefined;
   const projectUrl = parseProjectBaseUrl(decodeBase64Url(encodedProjectUrl));
   if (!projectUrl || !expectedProjectUrl || projectUrl !== expectedProjectUrl) return undefined;

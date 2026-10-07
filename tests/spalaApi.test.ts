@@ -402,7 +402,8 @@ test('Claude Code preparation binds its delegated claim to the local installer c
   });
 });
 
-test('signed external-auth handoff resolves the backend and consumes its one-time token once', async () => {
+for (const separator of ['?', '#']) {
+test(`signed ${separator} external-auth handoff resolves the backend and consumes its one-time token once`, async () => {
   const projectUrl = 'https://project.example';
   const externalAuthHandoff = 'signed-external-auth-handoff-value';
   const projectToken = 'temporary-project-token';
@@ -414,7 +415,7 @@ test('signed external-auth handoff resolves the backend and consumes its one-tim
     }
     if (url.pathname.endsWith('/access-url')) {
       return jsonResponse({
-        url: `https://app.spala.ai/?handoff=${externalAuthHandoff}&auth_token=${projectToken}`,
+        url: `https://app.spala.ai/${separator}handoff=${externalAuthHandoff}&auth_token=${projectToken}`,
       });
     }
     if (url.pathname === '/api/__internal/builder-auth/external-handoff/resolve') {
@@ -446,7 +447,7 @@ test('signed external-auth handoff resolves the backend and consumes its one-tim
   assert.doesNotMatch(JSON.stringify(prepared), new RegExp(`${externalAuthHandoff}|${projectToken}|${builderToken}`));
 });
 
-test('signed external-auth handoff rejects a backend that differs from the authoritative project', async () => {
+test(`signed ${separator} external-auth handoff rejects a backend that differs from the authoritative project`, async () => {
   const externalAuthHandoff = 'signed-external-auth-handoff-value';
   const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((url) => {
     if (url.pathname.endsWith('/mcp-handoff')) {
@@ -454,7 +455,7 @@ test('signed external-auth handoff rejects a backend that differs from the autho
     }
     if (url.pathname.endsWith('/access-url')) {
       return jsonResponse({
-        url: `https://app.spala.ai/?handoff=${externalAuthHandoff}&auth_token=temporary-project-token`,
+        url: `https://app.spala.ai/${separator}handoff=${externalAuthHandoff}&auth_token=temporary-project-token`,
       });
     }
     if (url.pathname === '/api/__internal/builder-auth/external-handoff/resolve') {
@@ -471,6 +472,8 @@ test('signed external-auth handoff rejects a backend that differs from the autho
     return true;
   });
 });
+
+}
 
 test('project handoff rejects unresolved template placeholders in every URL component', () => {
   const handoff = {
@@ -2029,3 +2032,30 @@ test('upstream response bodies are capped while streaming without Content-Length
     return true;
   });
 });
+
+for (const url of [
+  'https://app.spala.ai/?handoff=signed-handoff-value#auth_token=temporary-project-token',
+  'https://app.spala.ai/?auth_token=temporary-project-token#handoff=signed-handoff-value',
+  'https://app.spala.ai/?extra=1#handoff=signed-handoff-value&auth_token=temporary-project-token',
+  'https://app.spala.ai/#handoff=signed-handoff-value&auth_token=temporary-project-token&auth_token=other-token',
+  'https://app.spala.ai/#handoff=signed-handoff-value&auth_token=temporary-project-token&extra=1',
+  'https://app.spala.ai/#handoff=signed-handoff-value',
+  'https://other.example/#handoff=signed-handoff-value&auth_token=temporary-project-token',
+]) {
+  test(`rejects ambiguous or invalid fragment handoff ${url}`, async () => {
+    let unexpectedCalls = 0;
+    const api = createSpalaApiClient(config, 'opaque-public-mcp-access', fetchStub((requestUrl) => {
+      if (requestUrl.pathname.endsWith('/mcp-handoff')) return jsonResponse(projectMcpHandoff());
+      if (requestUrl.pathname.endsWith('/access-url')) return jsonResponse({ url });
+      unexpectedCalls += 1;
+      return jsonResponse({ error: 'must not reach project runtime' }, 500);
+    }));
+    await assert.rejects(api.prepareProjectMcp('project-1', 'codex'), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.code, 'invalid_project_access_handoff');
+      assert.doesNotMatch(error.message, /temporary-project-token|signed-handoff-value/);
+      return true;
+    });
+    assert.equal(unexpectedCalls, 0);
+  });
+}
