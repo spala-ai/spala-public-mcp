@@ -6,6 +6,12 @@ import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catal
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
+import {
+  hasCompletedSpalaStart,
+  isStartupGatedTool,
+  markSpalaStartCompleted,
+  startupGateError,
+} from './startupGate.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
@@ -960,13 +966,20 @@ async function withAccountSetupLock<T>(subject: string, operation: () => Promise
 }
 
 function requireVerifiedPrincipal(ctx: RequestContext, api: SpalaApiClient | undefined, tool: string): string | ToolResult {
-  if (ctx.verifiedPrincipal && api) return ctx.verifiedPrincipal.subject;
-  recordTelemetry('mcp_auth_challenge', { source: 'tool', tool });
-  return json({
-    error: 'authentication_required',
-    tool,
-    message: `Authenticate with a Spala MCP OAuth token with ${PUBLIC_MCP_SCOPE} scope before using account or project tools.`,
-  }, true);
+  if (!(ctx.verifiedPrincipal && api)) {
+    recordTelemetry('mcp_auth_challenge', { source: 'tool', tool });
+    return json({
+      error: 'authentication_required',
+      tool,
+      message: `Authenticate with a Spala MCP OAuth token with ${PUBLIC_MCP_SCOPE} scope before using account or project tools.`,
+    }, true);
+  }
+  const subject = ctx.verifiedPrincipal.subject;
+  if (tool !== 'spala_start' && isStartupGatedTool(tool) && !hasCompletedSpalaStart(subject)) {
+    recordTelemetry('mcp_startup_gate', { tool });
+    return json(startupGateError(tool), true);
+  }
+  return subject;
 }
 
 function projectAuthMetadata(config: AppConfig): Record<string, unknown> {
@@ -1538,6 +1551,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const auth = requireVerifiedPrincipal(ctx, api, 'spala_start');
     if (typeof auth !== 'string') return auth;
     const principal = ctx.verifiedPrincipal!;
+    // Unlock gated tools for this subject even when setup is still required (nextAction may be account_setup).
+    markSpalaStartCompleted(principal.subject);
     const missingFields = missingAccountSetupFields(principal);
     if (missingFields.length > 0) {
       recordTelemetry('spala_start', { phase: 'account_setup_required' });
