@@ -1,4 +1,4 @@
-import { INSTALLER_UPDATE_POLICY } from '../src/installerContract.js';
+import { INSTALLER_UPDATE_POLICY, refreshProjectInstallerVersion, resetProjectInstallerVersion } from '../src/installerContract.js';
 import assert from 'node:assert/strict';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -2173,6 +2173,8 @@ test('install manifest exposes machine-readable 0.1.34 installer commands and se
   const installer = manifest.installer as Record<string, unknown>;
   assert.deepEqual(installer.updateCheck, { cadenceSeconds: 900, on: ['initialize', 'tools/call'], notice: 'once per newer tested version per proxy session', automaticInstall: false });
   assert.equal(installer.version, '0.1.34');
+  assert.equal(installer.minimumVersion, '0.1.34');
+  assert.equal(installer.versionSource, 'build-pin');
   assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.34');
   assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
@@ -2188,6 +2190,31 @@ test('install manifest exposes machine-readable 0.1.34 installer commands and se
   assert.equal('codexAdd' in commands, false);
   assert.equal('codexLogin' in commands, false);
   assert.doesNotMatch(JSON.stringify(commands), /--public --yes/);
+});
+
+test('install manifest serves the npm release the follower resolved and keeps the build floor visible', async () => {
+  const packument = {
+    name: '@spala-ai/mcp-install',
+    'dist-tags': { latest: '0.1.35' },
+    versions: { '0.1.34': {}, '0.1.35': {} },
+  };
+  const refreshed = await refreshProjectInstallerVersion((async () => new Response(JSON.stringify(packument))) as typeof fetch);
+  assert.deepEqual(refreshed, { ok: true, version: '0.1.35', changed: true });
+  try {
+    const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
+    const installer = manifest.installer as Record<string, unknown>;
+    assert.equal(installer.version, '0.1.35');
+    assert.equal(installer.minimumVersion, '0.1.34');
+    assert.equal(installer.versionSource, 'npm-registry');
+    assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.35');
+    assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.35']);
+    assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
+  } finally {
+    resetProjectInstallerVersion();
+  }
+  const restored = (await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`))).installer as Record<string, unknown>;
+  assert.equal(restored.version, '0.1.34');
+  assert.equal(restored.versionSource, 'build-pin');
 });
 
 test('install manifest preserves an explicitly requested guided project profile', async () => {

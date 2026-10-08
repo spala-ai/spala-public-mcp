@@ -10,8 +10,10 @@ import {
   createSpalaPublicMcpServer,
   directoryToolDefinitions,
   INSTALLER_MAINTENANCE_SPEC,
+  projectInstallerSpec,
+  projectInstallerVersion,
+  projectInstallerVersionSource,
   projectToolCapabilities,
-  PROJECT_INSTALLER_SPEC,
   PROJECT_INSTALLER_VERSION,
   PROJECT_DIRECT_INSTALL_EXECUTION,
   PROJECT_INSTALL_EXECUTION,
@@ -31,6 +33,7 @@ import {
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { configureTelemetry, drainTelemetry, recordTelemetry } from './telemetry.js';
+import { followNpmInstallerReleases } from './installerContract.js';
 
 const config = loadConfig();
 configureTelemetry(config.telemetryStatePath);
@@ -1288,12 +1291,14 @@ app.get('/mcp/install-manifest', (req, res) => {
     installer: {
       package: '@spala-ai/mcp-install',
       role: 'Project workspace binding installer and universal fallback for clients without a native public MCP integration.',
-      version: PROJECT_INSTALLER_VERSION,
+      version: projectInstallerVersion(),
+      minimumVersion: PROJECT_INSTALLER_VERSION,
+      versionSource: projectInstallerVersionSource(),
       updateCheck: { cadenceSeconds: 900, on: ['initialize', 'tools/call'], notice: 'once per newer tested version per proxy session', automaticInstall: false },
-      spec: PROJECT_INSTALLER_SPEC,
+      spec: projectInstallerSpec(),
       maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
       maintenancePolicy: 'Before public init or login, replace an exact older installer package spec in that command with the npm latest channel. Project bind argv remains exact-version pinned.',
-      codexArgvPrefix: ['npx', '--yes', PROJECT_INSTALLER_SPEC],
+      codexArgvPrefix: ['npx', '--yes', projectInstallerSpec()],
       execution: PROJECT_INSTALL_EXECUTION,
     },
     commands: {
@@ -1472,6 +1477,9 @@ app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
 export { app, config };
 
 export function startServer() {
+  // Only the hosted https service follows npm. Local http runs keep the
+  // build pin and make no registry calls.
+  if (new URL(config.publicBaseUrl).protocol === 'https:') followNpmInstallerReleases();
   if (typeof config.port === 'string') {
     if (existsSync(config.port) && statSync(config.port).isSocket()) {
       unlinkSync(config.port);

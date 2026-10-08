@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
-import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
+import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
 import { isProjectProvisioning, isProjectProvisioningFailed, SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
@@ -52,7 +52,7 @@ export const SUPPORTED_INSTALL_CLIENTS = [
   'cursor',
   'a2a',
 ] as const;
-export { INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
+export { INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_VERSION, projectInstallerSpec, projectInstallerVersion, projectInstallerVersionSource } from './installerContract.js';
 export const AGENT_INTEGRATIONS_REPOSITORY = 'https://github.com/spala-ai/agent-integrations';
 export const AGENT_INTEGRATIONS_CLIENTS = [
   'claude-code',
@@ -387,16 +387,18 @@ const BOOLEAN_OUTPUT = { type: 'boolean' } as const;
 const OBJECT_OUTPUT = { type: 'object', additionalProperties: true } as const;
 const ARRAY_OUTPUT = { type: 'array', items: OBJECT_OUTPUT } as const;
 
-export const INSTALLER_MAINTENANCE = {
-  updatePolicy: INSTALLER_UPDATE_POLICY,
-  testedVersion: PROJECT_INSTALLER_VERSION,
-  exactProjectBindSpec: PROJECT_INSTALLER_SPEC,
-  maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
-  statusCommand: `pnpm dlx ${INSTALLER_MAINTENANCE_SPEC} status --client <current-client> --json`,
-  upgradeCommand: `npx --yes ${INSTALLER_MAINTENANCE_SPEC} init --client <current-client> --yes --json`,
-  policy: 'Before running any public init or login command, inspect only that command text. If its package spec is an exact older @spala-ai/mcp-install release, replace that package spec with @latest and run it once. Do not inspect local skills or credential stores. Do not rewrite the exact installPlan.argv returned by project_connect.',
-  projectBindPolicy: 'Execute project_connect installPlan.argv exactly. Project binding remains pinned to the tested installer version even though maintenance commands use the npm latest channel.',
-} as const;
+export function installerMaintenance() {
+  return {
+    updatePolicy: INSTALLER_UPDATE_POLICY,
+    testedVersion: projectInstallerVersion(),
+    exactProjectBindSpec: projectInstallerSpec(),
+    maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
+    statusCommand: `pnpm dlx ${INSTALLER_MAINTENANCE_SPEC} status --client <current-client> --json`,
+    upgradeCommand: `npx --yes ${INSTALLER_MAINTENANCE_SPEC} init --client <current-client> --yes --json`,
+    policy: 'Before running any public init or login command, inspect only that command text. If its package spec is an exact older @spala-ai/mcp-install release, replace that package spec with @latest and run it once. Do not inspect local skills or credential stores. Do not rewrite the exact installPlan.argv returned by project_connect.',
+    projectBindPolicy: 'Execute project_connect installPlan.argv exactly. Project binding remains pinned to the tested installer version even though maintenance commands use the npm latest channel.',
+  } as const;
+}
 
 const PROJECT_CONNECTION_OUTPUT = outputObject(
   'Prepared project MCP connection and workspace-only installer handoff.',
@@ -1186,8 +1188,8 @@ function projectMcpInstallPlan(
     } as const;
   }
   const runnerArgv = client === 'roo'
-    ? ['pnpm', 'dlx', PROJECT_INSTALLER_SPEC]
-    : ['npx', '--yes', PROJECT_INSTALLER_SPEC];
+    ? ['pnpm', 'dlx', projectInstallerSpec()]
+    : ['npx', '--yes', projectInstallerSpec()];
   if (client === 'claude-code') {
     const verifierPrepared = Boolean(bootstrapProof && handoff.bootstrapConsumeUrl);
     return {
@@ -1365,7 +1367,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       `INSTALLER MAINTENANCE: before running any public init or login command, inspect only that command text. If it contains an exact older @spala-ai/mcp-install version, replace only its package spec with ${INSTALLER_MAINTENANCE_SPEC} and run it once. Never inspect local skills or credential stores, and never start a parallel OAuth flow. Project bind argv returned by project_connect remains exact-version pinned and must be executed unchanged.`,
-      `UPDATE CHECK: the tested project installer is ${PROJECT_INSTALLER_VERSION}. ${INSTALLER_UPDATE_POLICY} Use spala_get_onboarding with the known installerVersion for a read-only comparison; omit it if unknown.`,
+      `UPDATE CHECK: the tested project installer is ${projectInstallerVersion()}. ${INSTALLER_UPDATE_POLICY} Use spala_get_onboarding with the known installerVersion for a read-only comparison; omit it if unknown.`,
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap credentials are one-time and consumed only by the local installer; Claude Code uses an installer-held verifier and does not require project OAuth.',
       'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
@@ -1487,8 +1489,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           purpose: 'Install the reviewed local Spala skills and configure the public MCP through each client native plugin or extension format.',
         },
         package: '@spala-ai/mcp-install',
-        version: PROJECT_INSTALLER_VERSION,
-        spec: PROJECT_INSTALLER_SPEC,
+        version: projectInstallerVersion(),
+        spec: projectInstallerSpec(),
         maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
         maintenancePolicy: 'Before public init or login, replace an exact older installer package spec in that command with the npm latest channel. Execute project_connect bind argv unchanged because project binding remains exact-version pinned.',
         clientArgument: 'client',
@@ -1575,7 +1577,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         accountSetup: { state: 'required', missingFields },
         organizations: principal.organizations,
         projects: [],
-        installerMaintenance: INSTALLER_MAINTENANCE,
+        installerMaintenance: installerMaintenance(),
         nextAction: {
           tool: 'account_setup',
           requiredFields: missingFields,
@@ -1631,7 +1633,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           projectCount: entry.projects.length,
         })),
         projects,
-        installerMaintenance: INSTALLER_MAINTENANCE,
+        installerMaintenance: installerMaintenance(),
         nextAction,
       });
     } catch (error) {
