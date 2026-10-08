@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catalog.js';
+import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
@@ -551,7 +551,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
   ),
   project_get_public_context: outputObject(
     'Safe documented project handoff context without credentials or executable installer arguments.',
-    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT },
+    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT, vectorSearchGuidance: STRING_OUTPUT },
     ['project', 'intentBoundary', 'handoff'],
   ),
 };
@@ -667,6 +667,7 @@ const TOOL_DESCRIPTIONS = {
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
   ].join(' '),
   projectPublicContext: [
+    NATIVE_VECTOR_GUIDANCE,
     'AUTH REQUIRED; READ-ONLY. Returns documented MCP handoff fields for one accessible project without exposing tokens, private source code, unrelated customer data, or executable installer arguments.',
   ].join(' '),
 } as const;
@@ -1992,6 +1993,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       if (provisioning) return provisioning;
       return json({
         project: resolved.project,
+        vectorSearchGuidance: NATIVE_VECTOR_GUIDANCE,
         nextAction: { tool: 'project_connect', arguments: input, instruction: 'Provisioning is ready. Choose a supported client and connect; connect enables MCP, so do not wait for a manifest first.' },
         intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {

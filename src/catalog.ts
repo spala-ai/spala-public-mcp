@@ -1,7 +1,16 @@
 import { PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { INSTALLER_MAINTENANCE_SPEC } from './installerContract.js';
 
+export const NATIVE_VECTOR_GUIDANCE = 'For embeddings and similarity search, use Vector fields and native Similarity Search with owner/tenant filters. Do not store search embeddings as JSON arrays or compute cosine similarity in Custom Code. Keep embedding dimensions/model consistent. If pgvector is unavailable, request database administrator setup; do not substitute JSON. Migrating existing embeddings requires approval.';
+
 export const docsIndex = [
+  {
+    id: 'native-vector-search',
+    title: 'Native PostgreSQL vector search',
+    url: 'https://mcp.spala.ai/agents.md',
+    summary: NATIVE_VECTOR_GUIDANCE,
+    keywords: ['vector', 'pgvector', 'embedding', 'similarity', 'semantic search', 'rag'],
+  },
   {
     id: 'spala-backend-intent-boundary',
     title: 'Spala backend and setup-only intent boundary',

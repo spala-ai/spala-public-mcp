@@ -530,6 +530,7 @@ test('install tools require client selection before preparation while public con
     });
     assert.notEqual(context.isError, true);
     assert.equal('installPlan' in resultJson(context), false);
+    assert.match(String(resultJson(context).vectorSearchGuidance), /Vector fields and native Similarity Search/);
     assert.equal(handoffCalls, 1);
   });
 });

@@ -29,3 +29,12 @@ test('docs_search recommends latest-channel maintenance and exact-version projec
   assert.match(result.summary, /Legacy flags remain compatibility-only/);
   assert.doesNotMatch(result.summary, /npx @spala-ai\/mcp-install --public --yes/);
 });
+
+
+test('embedding discovery recommends native Vector storage and search', () => {
+  const result = searchCatalog(docsIndex, 'pgvector')[0];
+  assert.equal(result.id, 'native-vector-search');
+  assert.match(result.summary, /Vector fields and native Similarity Search/);
+  assert.match(result.summary, /owner\/tenant filters/);
+  assert.match(result.summary, /administrator setup/);
+});
