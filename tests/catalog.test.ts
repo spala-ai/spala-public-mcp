@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { docsIndex, searchCatalog } from '../src/catalog.js';
+import { addonCatalog, docsIndex, searchCatalog } from '../src/catalog.js';
 
 test('docs_search discovers the official native agent integration repository', () => {
   const result = searchCatalog(docsIndex, 'agent integrations plugin marketplace', 5).find(
@@ -38,3 +38,14 @@ test('embedding discovery recommends native Vector storage and search', () => {
   assert.match(result.summary, /owner\/tenant filters/);
   assert.match(result.summary, /administrator setup/);
 });
+
+for (const query of ['Telegram CRM', 'telegram bot']) {
+  test(`addon discovery finds the native integration for ${query}`, () => {
+    assert.equal(searchCatalog(addonCatalog, query, 5)[0].id, 'telegram');
+    const guide = searchCatalog(docsIndex, 'addon telegram', 5).find(x => x.id === 'addon-discovery');
+    assert.ok(guide);
+    assert.match(guide.summary, /addons_search\/addons_get/);
+    assert.match(guide.summary, /Incoming webhook handling remains application logic/);
+    assert.match(guide.summary, /Do not reinstall/);
+  });
+}

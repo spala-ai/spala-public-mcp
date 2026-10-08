@@ -1,4 +1,4 @@
-import { NATIVE_VECTOR_GUIDANCE } from './catalog.js';
+import { NATIVE_VECTOR_GUIDANCE, ADDON_DISCOVERY_GUIDANCE } from './catalog.js';
 import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -494,6 +494,10 @@ function agentMarkdown(): string {
 Spala Public MCP is the public agent entry point for Spala at ${publicMcpUrl()}.
 
 Use it to discover Spala, read onboarding, search docs, inspect templates and addons, manage projects, and obtain project MCP handoffs.
+
+## Integration discovery
+
+${ADDON_DISCOVERY_GUIDANCE}
 
 ## Native vector search
 

@@ -3,7 +3,10 @@ import { INSTALLER_MAINTENANCE_SPEC } from './installerContract.js';
 
 export const NATIVE_VECTOR_GUIDANCE = 'For embeddings and similarity search, use Vector fields and native Similarity Search with owner/tenant filters. Do not store search embeddings as JSON arrays or compute cosine similarity in Custom Code. Keep embedding dimensions/model consistent. If pgvector is unavailable, request database administrator setup; do not substitute JSON. Migrating existing embeddings requires approval.';
 
+export const ADDON_DISCOVERY_GUIDANCE = 'For a requested integration, search public addon_list, then inspect addons_search/addons_get and installed status on the connected project MCP before writing custom HTTP code. Telegram CRM or bot requests should inspect addonId telegram (Telegram Bot); it provides outbound messaging, media and keyboards and requires TELEGRAM_BOT_TOKEN in project secrets. Incoming webhook handling remains application logic. The public catalog is a curated subset, not proof an integration is unavailable. If addon tools are absent in a guided profile, use the full project MCP profile. Do not reinstall an existing addon or change webhook/configuration without the requested scope and approval.';
+
 export const docsIndex = [
+  { id: 'addon-discovery', title: 'Discover project integrations and Telegram Bot', url: 'https://mcp.spala.ai/agents.md', summary: ADDON_DISCOVERY_GUIDANCE, keywords: ['telegram', 'crm', 'bot', 'addon', 'integration'] },
   {
     id: 'native-vector-search',
     title: 'Native PostgreSQL vector search',
@@ -155,6 +158,7 @@ export const templateCatalog = [
 ];
 
 export const addonCatalog = [
+  { id: 'telegram', name: 'Telegram Bot', description: 'Outbound Telegram bot messages, photos, documents and inline keyboards. Requires TELEGRAM_BOT_TOKEN in project secrets; incoming webhook handling remains application logic.', tags: ['telegram', 'bot', 'crm', 'messaging'] },
   { id: 'webhook', name: 'Webhook', description: 'Receive or send webhook events.', tags: ['integration', 'http'] },
   { id: 'ap-http', name: 'HTTP', description: 'Call external HTTP APIs from backend workflows.', tags: ['integration', 'api'] },
   { id: 'ap-smtp', name: 'SMTP', description: 'Send transactional email.', tags: ['email'] },

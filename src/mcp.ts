@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE } from './catalog.js';
+import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE, ADDON_DISCOVERY_GUIDANCE } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
@@ -551,7 +551,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
   ),
   project_get_public_context: outputObject(
     'Safe documented project handoff context without credentials or executable installer arguments.',
-    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT, vectorSearchGuidance: STRING_OUTPUT },
+    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT, vectorSearchGuidance: STRING_OUTPUT, addonDiscoveryGuidance: STRING_OUTPUT },
     ['project', 'intentBoundary', 'handoff'],
   ),
 };
@@ -628,7 +628,7 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   addonList: [
     'Lists public Spala addons and integrations matching an optional query.',
-    'Invoke to discover capabilities such as webhooks, outbound HTTP API calls, transactional email, media uploads, and realtime messaging.',
+    'Curated public subset; use project addons_search/addons_get to verify availability and installed status. Invoke for Telegram bots and CRM, webhooks, outbound HTTP API calls, transactional email, media uploads, and realtime messaging.',
     'Returns addon ids, names, descriptions, and tags.',
   ].join(' '),
   accountStatus: [
@@ -1994,6 +1994,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       return json({
         project: resolved.project,
         vectorSearchGuidance: NATIVE_VECTOR_GUIDANCE,
+        addonDiscoveryGuidance: ADDON_DISCOVERY_GUIDANCE,
         nextAction: { tool: 'project_connect', arguments: input, instruction: 'Provisioning is ready. Choose a supported client and connect; connect enables MCP, so do not wait for a manifest first.' },
         intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {

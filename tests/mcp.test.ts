@@ -531,6 +531,7 @@ test('install tools require client selection before preparation while public con
     assert.notEqual(context.isError, true);
     assert.equal('installPlan' in resultJson(context), false);
     assert.match(String(resultJson(context).vectorSearchGuidance), /Vector fields and native Similarity Search/);
+    assert.match(String(resultJson(context).addonDiscoveryGuidance), /addonId telegram/);
     assert.equal(handoffCalls, 1);
   });
 });
@@ -1513,4 +1514,14 @@ test('project bind argv, tool map, startup maintenance, and onboarding serve the
   } finally {
     resetProjectInstallerVersion();
   }
+});
+
+test('public addon_list exposes Telegram CRM integration through MCP', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const response = await client.callTool({ name: 'addon_list', arguments: { query: 'Telegram CRM', limit: 5 } });
+    assert.notEqual(response.isError, true);
+    const result = resultJson(response);
+    assert.equal(result.addons[0].id, 'telegram');
+    assert.match(result.addons[0].description, /TELEGRAM_BOT_TOKEN/);
+  });
 });
