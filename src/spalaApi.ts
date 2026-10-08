@@ -42,6 +42,14 @@ export type ProjectMcpHandoff = {
   manifestUrl?: string;
 };
 
+export function isProjectProvisioning(status: string): boolean {
+  return ['pending', 'provisioning', 'creating', 'queued', 'initializing'].includes(status.toLowerCase());
+}
+
+export function isProjectProvisioningFailed(status: string): boolean {
+  return ['failed', 'error', 'provisioning_failed'].includes(status.toLowerCase());
+}
+
 export type PreparedProjectMcpHandoff = ProjectMcpHandoff & {
   bootstrapConsumeUrl?: string;
 };
@@ -460,7 +468,7 @@ function parseCreatedOrganization(raw: unknown): SpalaOrganization | undefined {
 
 function normalizedCode(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 128);
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 128).replace(/^[_-]+|[_-]+$/g, '');
   return normalized || undefined;
 }
 
@@ -518,7 +526,7 @@ function safeErrorPayload(raw: unknown, sensitiveTokens: readonly string[]): {
   const nestedRecord = nested && typeof nested === 'object' && !Array.isArray(nested)
     ? nested as Record<string, unknown>
     : undefined;
-  const rawCode = typeof nested === 'string' ? nested : nestedRecord?.['code'] ?? record['code'];
+  const rawCode = nestedRecord?.['code'] ?? record['code'] ?? (typeof nested === 'string' ? nested : undefined);
   const code = typeof rawCode === 'string' && !containsSensitiveToken(rawCode, sensitiveTokens)
     ? normalizedCode(rawCode)
     : undefined;
@@ -1290,6 +1298,11 @@ export function createSpalaApiClient(
         projectHandoff = verifiedProjectHandoff(handoffPayload, id);
       } catch (error) {
         rethrowProjectStage(error, 'invalid_project_mcp_handoff');
+      }
+      // Project roles and runtime resources are provisioned asynchronously. A
+      // pending handoff is authoritative: do not request credentials yet.
+      if (isProjectProvisioning(projectHandoff.status) || isProjectProvisioningFailed(projectHandoff.status)) {
+        return { ...projectHandoff, mcpEnabled: false, mcpUrl: undefined, manifestUrl: undefined };
       }
       const authorizedScope = projectScopeFromUrl(projectHandoff.mcpUrl);
 

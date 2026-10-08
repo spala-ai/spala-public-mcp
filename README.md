@@ -190,7 +190,7 @@ Claude Code uses two generated commands without `--bootstrap-stdin`. The first c
 npx --yes @spala-ai/mcp-install project prepare --project-id <project-id> --project-url <exact-project-url> --url <exact-scoped-mcp-url> --name <deterministic-server-name> --client claude-code --install-scope workspace --exact-url --yes --json
 ```
 
-Call `project_connect` again with those two non-secret values. Run the returned `project bind` argv immediately; it contains the one-time claim and request ID, but never the verifier. The installer redeems the claim, stores the project credential outside the workspace, and configures the project-scoped local proxy. Reload Claude Code and call `spala_start` on the new project MCP. Do not start native project OAuth for this flow.
+Call `project_connect` again with those two non-secret values. Run the returned `project bind` argv immediately; it contains the one-time claim and request ID, but never the verifier. The installer redeems the claim, stores the project credential outside the workspace, and configures the project-scoped local proxy. In Git worktrees, Claude’s local registration is shared under the main checkout’s physical path; `.spala/project.json` stays in the current worktree. Reload Claude Code and call `spala_start` on the new project MCP. Do not start native project OAuth for this flow.
 
 After the authenticated contract returns an exact project MCP URL, the agent should connect to that project MCP and call:
 
@@ -199,3 +199,11 @@ spala_start
 mcp_get_skill({ "name": "spala-developer" })
 project_get_builder_context
 ```
+
+### Asynchronous provisioning
+
+After `project_create`, reuse the returned project ID. Pending connect/context
+calls return `project_provisioning` (status 202), a 15-second retry interval, and
+a five-minute retry budget. Once active, call `project_connect` to enable MCP;
+a manifest is not a prerequisite. Failed provisioning is terminal: report the
+project ID instead of retrying or creating another project.

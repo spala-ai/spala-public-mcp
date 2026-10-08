@@ -2059,3 +2059,34 @@ for (const url of [
     assert.equal(unexpectedCalls, 0);
   });
 }
+
+test('pending and failed provisioning never requests project credentials or mutates the backend', async () => {
+  for (const status of ['pending', 'provisioning', 'creating', 'queued', 'initializing', 'failed', 'provisioning_failed']) {
+    const calls: string[] = [];
+    const api = createSpalaApiClient(config, 'opaque-public-access', fetchStub(url => {
+      calls.push(url.pathname);
+      assert.equal(url.pathname, '/api/__internal/public-mcp/v1/projects/project-1/mcp-handoff');
+      return jsonResponse({ ...projectMcpHandoff(), status, mcpEnabled: false, mcpUrl: undefined, manifestUrl: undefined });
+    }));
+    const handoff = await api.prepareProjectMcp('project-1', 'claude-code');
+    assert.equal(handoff.status, status);
+    assert.equal(handoff.mcpEnabled, false);
+    assert.equal(handoff.bootstrapConsumeUrl, undefined);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('upstream machine error codes win over prose and never end in separator punctuation', async () => {
+  for (const [body, expected] of [
+    [{ error: 'Endpoint execution failed.', code: 'PROJECT_ROLE_NOT_READY' }, 'project_role_not_ready'],
+    [{ error: 'Endpoint execution failed.' }, 'endpoint_execution_failed'],
+  ] as const) {
+    const api = createSpalaApiClient(config, 'opaque-public-access', fetchStub(() => jsonResponse(body, 500)));
+    await assert.rejects(api.getProjectHandoff('project-1'), (error: unknown) => {
+      assert.ok(error instanceof SpalaApiError);
+      assert.equal(error.code, expected);
+      assert.equal(error.status, 500);
+      return true;
+    });
+  }
+});

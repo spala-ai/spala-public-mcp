@@ -6,7 +6,7 @@ import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catal
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
-import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
+import { isProjectProvisioning, isProjectProvisioningFailed, SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
 
@@ -647,13 +647,13 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   projectCreate: [
     'AUTH REQUIRED; WRITES TO THE SPALA CONTROL PLANE.',
-    'Creates a real Spala project with the supplied project name in an accessible organization.',
+    'Creates a real Spala project with the supplied project name in an accessible organization. Provisioning is asynchronous; follow the returned retry interval and bounded retry guidance, never create a duplicate.',
     'Accepts an organization id when multiple organizations are available and automatically scopes a sole organization. This operation is not idempotent.',
   ].join(' '),
   projectConnect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible Spala project for agent access.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
-    'Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
+    'Pending projects return project_provisioning with status 202 and retryAfterSeconds; retry the same call within the stated budget. Active projects do not need a manifest before connect. Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
   ].join(' '),
   projectSelect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Compatibility alias for project_connect.',
@@ -1036,6 +1036,28 @@ function requireInstallClient(selector: ProjectSelector): SupportedInstallClient
     message: 'Choose one supported agentic workspace client (codex, roo, claude-code, or cursor) before requesting an executable install plan.',
     supportedClients: SUPPORTED_INSTALL_CLIENTS,
     action: { type: 'select_client', argument: 'client' },
+  }, true);
+}
+
+function projectProvisioningResult(
+  handoff: { projectId: string; status: string }, tool: string, input: ProjectSelector,
+): ToolResult | undefined {
+  const pending = isProjectProvisioning(handoff.status);
+  if (!pending && !isProjectProvisioningFailed(handoff.status)) return undefined;
+  return json({
+    error: pending ? 'project_provisioning' : 'project_provisioning_failed',
+    category: pending ? 'provisioning' : 'provisioning_failed',
+    status: pending ? 202 : 409,
+    projectId: handoff.projectId,
+    provisioningState: handoff.status,
+    retryable: pending,
+    ...(pending ? { retryAfterSeconds: 15, maxAttempts: 20, maxElapsedSeconds: 300 } : {}),
+    message: pending
+      ? 'Project provisioning is still running. Wait 15 seconds, then retry the same tool. Stop after 5 minutes and report the project ID; do not create another project or wait for a manifest before connecting.'
+      : 'Project provisioning failed. Stop retrying and report the project ID to Spala support.',
+    action: pending
+      ? { type: 'retry_tool', tool, arguments: input }
+      : { type: 'contact_support', projectId: handoff.projectId },
   }, true);
 }
 
@@ -1759,7 +1781,10 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           retry: {
             tool: 'project_get_public_context',
             arguments: { projectId: created.project.id },
-            instruction: 'Retry this read-only tool after provisioning completes. Do not construct a project MCP URL.',
+            retryAfterSeconds: 15,
+            maxAttempts: 20,
+            maxElapsedSeconds: 300,
+            instruction: 'Wait 15 seconds before retrying. Stop after 5 minutes and report the project ID. Once active, call project_connect; it enables MCP. Do not wait for a manifest or create another project.',
           },
         },
         next: 'Call project_connect with the created project ID and one supported agentic workspace client (codex, roo, claude-code, or cursor). It will prepare MCP server-side when provisioning is ready.',
@@ -1790,6 +1815,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         return json({ error: 'project_not_found' }, true);
       }
       const { handoff } = resolved;
+      const provisioning = projectProvisioningResult(handoff, tool, input);
+      if (provisioning) return provisioning;
       if (!handoff.mcpEnabled || !handoff.mcpUrl) {
         recordTelemetry('project_connect', { ok: false, outcome: 'mcp_not_ready', client, tool });
         return json({
@@ -1887,6 +1914,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       const resolved = await prepareHandoff(api!, selector, client, ctx.verifiedPrincipal!);
       if (!resolved) return json({ error: 'project_not_found' }, true);
       const { handoff } = resolved;
+      const provisioning = projectProvisioningResult(handoff, 'project_get_mcp_manifest', input);
+      if (provisioning) return provisioning;
       if (!handoff.mcpEnabled || !handoff.mcpUrl || !handoff.manifestUrl) {
         return json({
           error: 'project_mcp_not_ready',
@@ -1954,8 +1983,11 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     try {
       const resolved = await resolveHandoff(api!, selector, ctx.verifiedPrincipal!);
       if (!resolved) return json({ error: 'project_not_found' }, true);
+      const provisioning = projectProvisioningResult(resolved.handoff, 'project_get_public_context', input);
+      if (provisioning) return provisioning;
       return json({
         project: resolved.project,
+        nextAction: { tool: 'project_connect', arguments: input, instruction: 'Provisioning is ready. Choose a supported client and connect; connect enables MCP, so do not wait for a manifest first.' },
         intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {
           ...resolved.handoff,

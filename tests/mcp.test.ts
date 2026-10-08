@@ -292,7 +292,7 @@ test('spala_start auto-scopes one organization and returns its projects', async 
       status: project.status,
       organizationId: project.organizationId,
     }]);
-    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.32');
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.33');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
       choicesSource: 'projects',
@@ -674,7 +674,10 @@ test('project_list and project_create use authoritative organization inputs and 
       retry: {
         tool: 'project_get_public_context',
         arguments: { projectId: 'project-created' },
-        instruction: 'Retry this read-only tool after provisioning completes. Do not construct a project MCP URL.',
+        retryAfterSeconds: 15,
+        maxAttempts: 20,
+        maxElapsedSeconds: 300,
+        instruction: 'Wait 15 seconds before retrying. Stop after 5 minutes and report the project ID. Once active, call project_connect; it enables MCP. Do not wait for a manifest or create another project.',
       },
     });
     assert.deepEqual(received, [
@@ -718,7 +721,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.32', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.33', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -776,7 +779,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.32', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.33', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -1093,7 +1096,10 @@ test('project_connect retries without dashboard dependency when preparation is n
     });
     assert.equal(result.isError, true);
     const body = resultJson(result);
-    assert.equal(body.error, 'project_mcp_not_ready');
+    assert.equal(body.error, 'project_provisioning');
+    assert.equal(body.status, 202);
+    assert.equal(body.retryAfterSeconds, 15);
+    assert.equal(body.maxElapsedSeconds, 300);
     assert.deepEqual(body.action, {
       type: 'retry_tool',
       tool: 'project_connect',
@@ -1276,5 +1282,49 @@ test('public onboarding exposes the reviewed native integration repository', asy
     const nativeIntegrations = installer.nativeIntegrations as Record<string, unknown>;
     assert.equal(nativeIntegrations.repository, integrations.repository);
     assert.equal(nativeIntegrations.preferredForInitialSetup, true);
+  });
+});
+
+
+test('create then connect gives bounded provisioning guidance and succeeds when ready', async () => {
+  let pending = true;
+  const current = () => pending
+    ? { ...handoff, status: 'pending', mcpEnabled: false, mcpUrl: undefined, manifestUrl: undefined, bootstrapConsumeUrl: undefined }
+    : handoff;
+  await withVerifiedClient(apiStub({
+    async createProject() { return { organization: principal.organizations[0]!, project: { ...project, status: 'pending' } }; },
+    async getProjectHandoff() { return current(); },
+    async prepareProjectMcp() { return current(); },
+  }), async client => {
+    const created = resultJson(await client.callTool({ name: 'project_create', arguments: { name: 'Provisioning test' } }));
+    assert.equal(created.created, true);
+    assert.equal(((created.provisioning as any).retry).retryAfterSeconds, 15);
+    for (const tool of ['project_connect', 'project_select', 'project_get_mcp_manifest', 'project_get_public_context']) {
+      const args = tool === 'project_get_public_context' ? { projectId: project.id } : { projectId: project.id, client: 'claude-code' };
+      const result = resultJson(await client.callTool({ name: tool, arguments: args }));
+      assert.equal(result.error, 'project_provisioning');
+      assert.equal(result.status, 202);
+      assert.equal(result.retryAfterSeconds, 15);
+      assert.equal(result.maxAttempts, 20);
+      assert.equal((result.action as any).tool, tool);
+      assert.equal(result.installPlan, undefined);
+    }
+    pending = false;
+    const context = resultJson(await client.callTool({ name: 'project_get_public_context', arguments: { projectId: project.id } }));
+    assert.equal((context.nextAction as any).tool, 'project_connect');
+    const connected = await client.callTool({ name: 'project_connect', arguments: { projectId: project.id, client: 'claude-code' } });
+    assert.notEqual(connected.isError, true);
+    assert.ok(resultJson(connected).installPlan);
+  });
+});
+
+test('failed provisioning is terminal and does not invite indefinite retries', async () => {
+  await withVerifiedClient(apiStub({ async prepareProjectMcp() { return { ...handoff, status: 'failed' }; } }), async client => {
+    const body = resultJson(await client.callTool({ name: 'project_connect', arguments: { projectId: project.id, client: 'claude-code' } }));
+    assert.equal(body.error, 'project_provisioning_failed');
+    assert.equal(body.status, 409);
+    assert.equal(body.retryable, false);
+    assert.equal(body.retryAfterSeconds, undefined);
+    assert.equal((body.action as any).type, 'contact_support');
   });
 });
