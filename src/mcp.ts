@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE, ADDON_DISCOVERY_GUIDANCE } from './catalog.js';
+import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE, ADDON_DISCOVERY_GUIDANCE, NATIVE_BUILD_GUIDANCE } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
@@ -551,7 +551,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
   ),
   project_get_public_context: outputObject(
     'Safe documented project handoff context without credentials or executable installer arguments.',
-    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT, vectorSearchGuidance: STRING_OUTPUT, addonDiscoveryGuidance: STRING_OUTPUT },
+    { project: OBJECT_OUTPUT, intentBoundary: OBJECT_OUTPUT, handoff: OBJECT_OUTPUT, vectorSearchGuidance: STRING_OUTPUT, addonDiscoveryGuidance: STRING_OUTPUT, nativeBuildGuidance: STRING_OUTPUT },
     ['project', 'intentBoundary', 'handoff'],
   ),
 };
@@ -618,7 +618,7 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   docsSearch: [
     'Searches the public Spala agent-facing documentation index by query.',
-    'Invoke for setup, OAuth, installer, public-versus-project MCP, pricing, limits, security, templates, addons, or project handoff questions.',
+    'Invoke for setup, OAuth, installer, public-versus-project MCP, pricing, limits, security, templates, addons, native blocks, filters, Custom Code alternatives, or project handoff questions.',
     'Returns ranked docs entries with URLs and summaries.',
   ].join(' '),
   templateList: [
@@ -668,6 +668,7 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   projectPublicContext: [
     NATIVE_VECTOR_GUIDANCE,
+    'Includes native-block and filter guidance, addon discovery, and the requirement to justify narrowly scoped Custom Code.',
     'AUTH REQUIRED; READ-ONLY. Returns documented MCP handoff fields for one accessible project without exposing tokens, private source code, unrelated customer data, or executable installer arguments.',
   ].join(' '),
 } as const;
@@ -1995,6 +1996,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         project: resolved.project,
         vectorSearchGuidance: NATIVE_VECTOR_GUIDANCE,
         addonDiscoveryGuidance: ADDON_DISCOVERY_GUIDANCE,
+        nativeBuildGuidance: NATIVE_BUILD_GUIDANCE,
         nextAction: { tool: 'project_connect', arguments: input, instruction: 'Provisioning is ready. Choose a supported client and connect; connect enables MCP, so do not wait for a manifest first.' },
         intentBoundary: SPALA_BACKEND_INTENT,
         handoff: {

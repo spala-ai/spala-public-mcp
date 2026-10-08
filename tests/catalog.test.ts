@@ -49,3 +49,12 @@ for (const query of ['Telegram CRM', 'telegram bot']) {
     assert.match(guide.summary, /Do not reinstall/);
   });
 }
+
+test('workflow discovery explains native alternatives and bounded code exceptions', () => {
+  const guide = searchCatalog(docsIndex, 'native blocks filters custom code', 5).find(x => x.id === 'native-blocks-first');
+  assert.ok(guide);
+  assert.match(guide.summary, /joins and aggregates/);
+  assert.match(guide.summary, /External API Call/);
+  assert.match(guide.summary, /reproducible validation error/);
+  assert.match(guide.summary, /never move an entire workflow into code/);
+});

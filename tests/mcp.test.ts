@@ -532,6 +532,7 @@ test('install tools require client selection before preparation while public con
     assert.equal('installPlan' in resultJson(context), false);
     assert.match(String(resultJson(context).vectorSearchGuidance), /Vector fields and native Similarity Search/);
     assert.match(String(resultJson(context).addonDiscoveryGuidance), /addonId telegram/);
+    assert.match(String(resultJson(context).nativeBuildGuidance), /Before each Custom Code step/);
     assert.equal(handoffCalls, 1);
   });
 });
