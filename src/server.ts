@@ -506,6 +506,7 @@ Use it to discover Spala, read onboarding, search docs, inspect templates and ad
 - spala_start absorbs account_status and organization/project discovery. Follow exactly its one nextAction. Call spala_start again only when that action explicitly requests it after a state transition. If setup is required, use companyName when no organization exists. Never invent placeholder profile, company, or project names, and never silently choose an existing project without a valid local binding.
 - Do not hardcode, construct, append, or infer project MCP URLs. Use only exact URLs from project_connect or project_get_mcp_manifest.
 - Project creation is asynchronous. For project_provisioning, wait retryAfterSeconds and retry the same call for at most maxElapsedSeconds. Once active, call project_connect: it enables MCP, so do not wait for a manifest first or create a duplicate.
+- For installer updates, pass an already-known project proxy installerVersion to spala_get_onboarding. New proxies check at startup and every 15 minutes of tool activity; follow an update notice by reconnecting the same project and reloading at a safe stopping point. Unknown is not proof of being current.
 - Run project bind plans from the intended workspace. Project MCP must never be installed globally.
 - Follow the returned installPlan exactly. Codex, Roo, and Cursor send bootstrap.consumeUrl as the installer stdin line. Claude Code runs the prepare plan, calls project_connect again with the returned non-secret request ID and challenge, then runs the bind plan. All use a local project-scoped credential proxy without project OAuth.
 - Never put a returned bootstrap capability in argv or shell text, and do not inspect, log, store, or reuse it.
@@ -1288,6 +1289,7 @@ app.get('/mcp/install-manifest', (req, res) => {
       package: '@spala-ai/mcp-install',
       role: 'Project workspace binding installer and universal fallback for clients without a native public MCP integration.',
       version: PROJECT_INSTALLER_VERSION,
+      updateCheck: { cadenceSeconds: 900, on: ['initialize', 'tools/call'], notice: 'once per newer tested version per proxy session', automaticInstall: false },
       spec: PROJECT_INSTALLER_SPEC,
       maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
       maintenancePolicy: 'Before public init or login, replace an exact older installer package spec in that command with the npm latest channel. Project bind argv remains exact-version pinned.',

@@ -207,3 +207,15 @@ calls return `project_provisioning` (status 202), a 15-second retry interval, an
 a five-minute retry budget. Once active, call `project_connect` to enable MCP;
 a manifest is not a prerequisite. Failed provisioning is terminal: report the
 project ID instead of retrying or creating another project.
+
+### Installer update checks
+
+`spala_get_onboarding` accepts an optional known `installerVersion` and returns
+`installerUpdate` (`unknown`, `current`, `update_available`, or
+`newer_than_tested`). It compares against the service's tested pin, not the MCP
+client application's version. The public MCP updates remotely. New installer
+proxies also check the public manifest at initialization and every 15 minutes of
+tool activity, with one notice per newer release per session. Updates require
+reconnecting the same project through `project_connect` and reloading the client;
+there is no automatic install. Older proxies need one reconnect to gain checks.
+Native plugin and skill updates remain separate.

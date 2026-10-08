@@ -292,7 +292,7 @@ test('spala_start auto-scopes one organization and returns its projects', async 
       status: project.status,
       organizationId: project.organizationId,
     }]);
-    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.33');
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.34');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
       choicesSource: 'projects',
@@ -721,7 +721,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.33', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.34', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -779,7 +779,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.33', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.34', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -1327,4 +1327,21 @@ test('failed provisioning is terminal and does not invite indefinite retries', a
     assert.equal(body.retryAfterSeconds, undefined);
     assert.equal((body.action as any).type, 'contact_support');
   });
+});
+
+test('onboarding compares installer versions without account access or conflating unknown with current', async () => {
+  const server = createSpalaPublicMcpServer(config);
+  const client = new Client({ name: 'update-test', version: '999.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    for (const [version, status] of [[undefined, 'unknown'], ['0.1.33', 'update_available'], ['0.1.34', 'current'], ['0.1.100', 'newer_than_tested'], ['latest', 'unknown']]) {
+      const result = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: version ? { installerVersion: version } : {} }));
+      const update = result.installerUpdate as Record<string, any>;
+      assert.equal(update.status, status);
+      assert.equal(update.testedVersion, '0.1.34');
+      assert.equal(update.nextAction?.tool, status === 'update_available' ? 'project_connect' : undefined);
+    }
+  } finally { await client.close(); await server.close(); }
 });

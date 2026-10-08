@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { addonCatalog, docsIndex, searchCatalog, templateCatalog } from './catalog.js';
 import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
-import { INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
+import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, PROJECT_INSTALLER_SPEC, PROJECT_INSTALLER_VERSION } from './installerContract.js';
 import { isProjectProvisioning, isProjectProvisioningFailed, SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
@@ -354,7 +354,7 @@ const PROJECT_LIST_JSON_SCHEMA = {
 const TOOL_INPUT_SCHEMAS: Record<string, unknown> = {
   spala_start: NO_ARGUMENTS_JSON_SCHEMA,
   spala_help: NO_ARGUMENTS_JSON_SCHEMA,
-  spala_get_onboarding: NO_ARGUMENTS_JSON_SCHEMA,
+  spala_get_onboarding: { type: 'object', properties: { installerVersion: { type: 'string', maxLength: 64, description: 'Optional project proxy installer version already known from its registration command. Do not supply the Claude/Codex application version or read credential stores.' } }, additionalProperties: false },
   spala_get_tool_map: NO_ARGUMENTS_JSON_SCHEMA,
   docs_search: SEARCH_JSON_SCHEMA,
   template_list: CATALOG_LIST_JSON_SCHEMA,
@@ -388,6 +388,7 @@ const OBJECT_OUTPUT = { type: 'object', additionalProperties: true } as const;
 const ARRAY_OUTPUT = { type: 'array', items: OBJECT_OUTPUT } as const;
 
 export const INSTALLER_MAINTENANCE = {
+  updatePolicy: INSTALLER_UPDATE_POLICY,
   testedVersion: PROJECT_INSTALLER_VERSION,
   exactProjectBindSpec: PROJECT_INSTALLER_SPEC,
   maintenanceSpec: INSTALLER_MAINTENANCE_SPEC,
@@ -1364,6 +1365,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
       'CLIENT SAFETY: the Codex public installer owns one native browser OAuth flow when first configured. Never start another login or manually open its authorization URL while it is pending. If authorization later expires, run exactly one installer login command. Never read client credential stores, tokens, or browser storage, and never hand-roll MCP HTTP/JSON-RPC calls or helper scripts to bypass a client reload.',
       `INSTALLER MAINTENANCE: before running any public init or login command, inspect only that command text. If it contains an exact older @spala-ai/mcp-install version, replace only its package spec with ${INSTALLER_MAINTENANCE_SPEC} and run it once. Never inspect local skills or credential stores, and never start a parallel OAuth flow. Project bind argv returned by project_connect remains exact-version pinned and must be executed unchanged.`,
+      `UPDATE CHECK: the tested project installer is ${PROJECT_INSTALLER_VERSION}. ${INSTALLER_UPDATE_POLICY} Use spala_get_onboarding with the known installerVersion for a read-only comparison; omit it if unknown.`,
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap credentials are one-time and consumed only by the local installer; Claude Code uses an installer-held verifier and does not require project OAuth.',
       'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
@@ -1397,7 +1399,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     `Docs: ${config.docsUrl}`,
   ].join('\n')));
 
-  server.tool('spala_get_onboarding', TOOL_DESCRIPTIONS.onboarding, {}, async () => json({
+  server.tool('spala_get_onboarding', TOOL_DESCRIPTIONS.onboarding, { installerVersion: z.string().max(64).optional().describe('Known project proxy installer version, not the MCP client application version. Never read credentials to obtain it.') }, async ({ installerVersion }) => json({
+    installerUpdate: installerUpdate(installerVersion),
     product: 'Spala',
     publicMcpRole: 'Agent discovery, public docs/templates/addons lookup, OAuth metadata, authenticated project management, and exact project MCP handoff.',
     projectMcpRole: 'Build and operate one Spala backend project.',
