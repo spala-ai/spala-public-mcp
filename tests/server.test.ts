@@ -1891,6 +1891,72 @@ test('public MCP startup remains anonymous while native clients receive protecte
   }
 });
 
+test('Cursor signs in at initialize because it ignores login challenges that arrive later', async () => {
+  const challengeHeader = /^Bearer resource_metadata="https:\/\/mcp\.spala\.ai\/\.well-known\/oauth-protected-resource\/mcp", scope="api"$/;
+  const invalidTokenHeader = /^Bearer error="invalid_token", resource_metadata="https:\/\/mcp\.spala\.ai\/\.well-known\/oauth-protected-resource\/mcp", scope="api"$/;
+  const initializeAs = (name: string, authorization?: string) => mcpRpc('initialize', {
+    protocolVersion: '2025-11-25',
+    capabilities: {},
+    clientInfo: { name, version: '3.24.12' },
+  }, authorization);
+
+  // Cursor's MCP client reports cursor-vscode; the app itself is named Cursor.
+  for (const name of ['cursor-vscode', 'Cursor']) {
+    const response = await initializeAs(name);
+    assert.equal(response.status, 401, name);
+    assert.match(response.headers.get('www-authenticate') || '', challengeHeader);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await responseJson(response);
+    assert.equal(body.id, 1);
+    assert.equal((body.error as { code?: unknown }).code, -32001);
+  }
+  assert.equal((await initializeAs('claude-code')).status, 200, 'other clients keep anonymous startup');
+
+  for (const authorization of [
+    'Bearer cross-audience-credential',
+    'Basic malformed-credential',
+    'Bearer malformed credential',
+  ]) {
+    const response = await initializeAs('cursor-vscode', authorization);
+    assert.equal(response.status, 401, authorization);
+    assert.match(response.headers.get('www-authenticate') || '', invalidTokenHeader);
+  }
+
+  const authorization = await authorize();
+  const token = await responseJson(await redeem(
+    authorization.clientId,
+    authorization.code,
+    authorization.verifier,
+  ));
+  const bearer = `Bearer ${token.access_token as string}`;
+  const initialized = await initializeAs('cursor-vscode', bearer);
+  assert.equal(initialized.status, 200);
+  assert.equal(((await responseJson(initialized)).result as Record<string, unknown>).protocolVersion, '2025-11-25');
+  assert.equal((await mcpRequest('account_status', {}, bearer)).status, 200);
+  const delegatedAccessToken = latestDelegatedAccessToken();
+
+  // initialize grants nothing, so a platform outage must not lock Cursor out.
+  const principalPath = '/api/__internal/public-mcp/v1/principal';
+  for (const outage of [transientPlatformRoutes, networkFailurePlatformRoutes]) {
+    outage.add(principalPath);
+    try {
+      assert.equal((await initializeAs('cursor-vscode', bearer)).status, 200);
+    } finally {
+      outage.delete(principalPath);
+    }
+  }
+
+  revokedAccessTokens.add(delegatedAccessToken);
+  try {
+    const revoked = await initializeAs('cursor-vscode', bearer);
+    assert.equal(revoked.status, 401);
+    assert.match(revoked.headers.get('www-authenticate') || '', invalidTokenHeader);
+    assert.match(String(((await responseJson(revoked)).error as { message?: string }).message), /expired or was revoked/i);
+  } finally {
+    revokedAccessTokens.delete(delegatedAccessToken);
+  }
+});
+
 test('account status reports the validated OAuth resource for A2A audience enforcement', async () => {
   const authorization = await authorize(
     'dashboard-valid',

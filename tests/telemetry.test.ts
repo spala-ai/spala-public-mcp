@@ -47,11 +47,12 @@ test('events are schema-filtered: only declared enum fields survive, adversarial
       code: 'project_token_exchange_failed',
     });
     recordTelemetry('oauth_token', { ok: false, grant: 'evil_grant_type', code: 'access_denied' });
+    recordTelemetry('mcp_auth_challenge', { invalidToken: false, source: 'connect' });
     recordTelemetry('made_up_event', { ok: true });
     await drainTelemetry();
 
     const lines = eventLines(join(directory, 'nested'));
-    assert.equal(lines.length, 3, 'unknown events are dropped');
+    assert.equal(lines.length, 4, 'unknown events are dropped');
     const serialized = lines.join('\n');
     assert.doesNotMatch(serialized, /example\.com|203\.0\.113|eyJ|\/Users\//, 'no identifier-like value reaches disk');
 
@@ -66,6 +67,10 @@ test('events are schema-filtered: only declared enum fields survive, adversarial
     const token = JSON.parse(lines[2]!);
     assert.equal(token.grant, 'other', 'caller-controlled grant_type collapses to fallback');
     assert.equal(token.code, 'access_denied');
+
+    const connectChallenge = JSON.parse(lines[3]!);
+    assert.equal(connectChallenge.source, 'connect', 'connect-time sign-in challenges stay distinguishable');
+    assert.equal(connectChallenge.invalidToken, false);
   } finally {
     configureTelemetry(null);
     rmSync(directory, { recursive: true, force: true });

@@ -453,8 +453,9 @@ function authChallengeResponse(
   id: unknown,
   message = 'Authentication required',
   invalidToken = false,
+  source: 'http' | 'connect' = 'http',
 ): void {
-  recordTelemetry('mcp_auth_challenge', { invalidToken, source: 'http' });
+  recordTelemetry('mcp_auth_challenge', { invalidToken, source });
   setWwwAuthenticate(res, invalidToken ? 'invalid_token' : undefined);
   res.setHeader('Cache-Control', 'no-store');
   res.status(401).json({
@@ -720,6 +721,43 @@ function bearerCredential(req: Request):
   if (value.length > 8_192 || /[\r\n]/.test(value)) return { kind: 'invalid' };
   const token = value.match(/^Bearer ([^\s]+)$/i)?.[1];
   return token ? { kind: 'token', token } : { kind: 'invalid' };
+}
+
+// Cursor starts its OAuth login only for a 401 that answers initialize. It drops
+// a 401 that follows an anonymous initialize (for hosts outside its own list),
+// so a Cursor user could never sign in. Other clients keep anonymous startup.
+function isCursorInitialize(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const request = body as { method?: unknown; params?: unknown };
+  if (request.method !== 'initialize') return false;
+  const clientInfo = (request.params as { clientInfo?: unknown } | null | undefined)?.clientInfo;
+  if (!clientInfo || typeof clientInfo !== 'object' || Array.isArray(clientInfo)) return false;
+  const name = (clientInfo as { name?: unknown }).name;
+  return typeof name === 'string' && /cursor/i.test(name);
+}
+
+async function connectChallenge(req: Request): Promise<{ message?: string; invalidToken: boolean } | null> {
+  const bearer = bearerCredential(req);
+  if (bearer.kind === 'missing') return { invalidToken: false };
+  if (bearer.kind === 'invalid') {
+    return { message: 'The OAuth access token is invalid. Reauthenticate and retry.', invalidToken: true };
+  }
+  let delegatedAccess: ReturnType<PublicOAuthFacade['delegatedAccessToken']>;
+  try {
+    delegatedAccess = publicOAuth.delegatedAccessToken(bearer.token);
+  } catch {
+    return { message: 'Spala account session expired or was revoked. Reauthenticate and retry.', invalidToken: true };
+  }
+  try {
+    await createSpalaApiClient(config, delegatedAccess).getPrincipal();
+  } catch (error) {
+    // initialize grants nothing and every protected tool call checks the token
+    // again, so only a session the platform rejects blocks the connect.
+    if (error instanceof SpalaApiError && error.category === 'authentication') {
+      return { message: 'Spala account session expired or was revoked. Reauthenticate and retry.', invalidToken: true };
+    }
+  }
+  return null;
 }
 
 function isValidJsonRpcRequest(body: unknown): boolean {
@@ -1394,6 +1432,13 @@ app.post('/mcp', async (req, res) => {
         supportedProtocolVersions: ACCEPTED_PROTOCOL_VERSIONS,
       });
       return;
+    }
+    if (isCursorInitialize(req.body)) {
+      const challenge = await connectChallenge(req);
+      if (challenge) {
+        authChallengeResponse(res, jsonRpcId(req.body), challenge.message, challenge.invalidToken, 'connect');
+        return;
+      }
     }
   }
 

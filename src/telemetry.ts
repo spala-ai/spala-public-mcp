@@ -55,7 +55,7 @@ const AUTH_TOOL_NAMES = [
 
 const EVENT_SCHEMAS: Record<string, Record<string, 'boolean' | readonly string[]>> = {
   manifest_fetch: {},
-  mcp_auth_challenge: { invalidToken: 'boolean', source: ['http', 'tool', 'other'], tool: AUTH_TOOL_NAMES },
+  mcp_auth_challenge: { invalidToken: 'boolean', source: ['http', 'connect', 'tool', 'other'], tool: AUTH_TOOL_NAMES },
   rate_limited: { surface: ['mcp', 'oauth', 'other'] },
   oauth_register: { ok: 'boolean', code: OAUTH_ERROR_CODES },
   oauth_authorize_redirect: { ok: 'boolean', code: OAUTH_ERROR_CODES },
