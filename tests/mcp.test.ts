@@ -139,6 +139,7 @@ test('tools/list advertises authenticated status and honest project preparation 
       assert.equal(tool.title, title);
       assert.ok(tool.description?.trim(), `${name} description`);
       assert.ok(tool.annotations, `${name} annotations`);
+      assert.equal(tool.annotations?.title, title, `${name} annotation title`);
       assert.equal(tool.outputSchema?.type, 'object', `${name} output schema`);
       assert.ok(tool.outputSchema?.description, `${name} output description`);
     }
@@ -169,6 +170,7 @@ test('tools/list advertises authenticated status and honest project preparation 
       additionalProperties: false,
     });
     assert.deepEqual(start.annotations, {
+      title: 'Start Spala',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

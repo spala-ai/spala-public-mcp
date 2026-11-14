@@ -583,6 +583,7 @@ export function directoryToolDefinitions(config: AppConfig) {
     inputSchema: TOOL_INPUT_SCHEMAS[tool.name],
     outputSchema: TOOL_OUTPUT_SCHEMAS[tool.name],
     annotations: {
+      title: TOOL_TITLES[tool.name],
       readOnlyHint: tool.effect === 'read',
       destructiveHint: tool.effect === 'write',
       idempotentHint: tool.effect === 'read' || ('idempotent' in tool && tool.idempotent === true),
@@ -716,6 +717,10 @@ function advertiseDirectoryQualityMetadata(server: McpServer): void {
       }
       if (tool.name && ['spala_help', 'spala_get_onboarding', 'spala_get_tool_map', 'docs_search', 'template_list', 'addon_list'].includes(tool.name)) {
         tool.annotations = READ_ONLY_TOOL_ANNOTATIONS;
+      }
+      if (title) {
+        // Directory listings read the display name from annotations.title; keep it equal to the top-level title.
+        tool.annotations = { ...(tool.annotations as Record<string, unknown> | undefined), title };
       }
     }
     return result;

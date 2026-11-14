@@ -2171,6 +2171,7 @@ test('authenticated spala_start is published in discovery capabilities and start
       additionalProperties: false,
     },
     annotations: {
+      title: 'Start Spala',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
