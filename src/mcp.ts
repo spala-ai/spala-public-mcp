@@ -629,7 +629,7 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   addonList: [
     'Lists public Spala addons and integrations matching an optional query.',
-    'Curated public subset; use project addons_search/addons_get to verify availability and installed status. Invoke for Telegram bots and CRM, webhooks, outbound HTTP API calls, transactional email, media uploads, and realtime messaging.',
+    'Curated public subset; installed status is reported per project by the project MCP. Invoke for Telegram bots and CRM, webhooks, outbound HTTP API calls, transactional email, media uploads, and realtime messaging.',
     'Returns addon ids, names, descriptions, and tags.',
   ].join(' '),
   accountStatus: [
@@ -639,7 +639,7 @@ const TOOL_DESCRIPTIONS = {
   accountSetup: [
     'AUTH REQUIRED; WRITES MISSING ACCOUNT DATA TO THE SPALA CONTROL PLANE.',
     'Fills missing first and last name fields and creates the first company or workspace organization when none exists.',
-    'Invoke only with real account and organization values supplied by the user.',
+    'Takes the account and organization values supplied by the user.',
   ].join(' '),
   organizationCreate: [
     'AUTH REQUIRED; WRITES A NEW SPALA ORGANIZATION FOR THE SIGNED-IN ACCOUNT.',
@@ -651,13 +651,13 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   projectCreate: [
     'AUTH REQUIRED; WRITES TO THE SPALA CONTROL PLANE.',
-    'Creates a real Spala project with the supplied project name in an accessible organization. Provisioning is asynchronous; follow the returned retry interval and bounded retry guidance, never create a duplicate.',
+    'Creates a real Spala project with the supplied project name in an accessible organization. Provisioning is asynchronous; the response reports the provisioning state, a retry interval, and a retry budget.',
     'Accepts an organization id when multiple organizations are available and automatically scopes a sole organization. This operation is not idempotent.',
   ].join(' '),
   projectConnect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible Spala project for agent access.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
-    'Pending projects return project_provisioning with status 202 and retryAfterSeconds; retry the same call within the stated budget. Active projects do not need a manifest before connect. Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
+    'Pending projects return project_provisioning with status 202 and retryAfterSeconds. Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
   ].join(' '),
   projectSelect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Compatibility alias for project_connect.',
@@ -668,9 +668,8 @@ const TOOL_DESCRIPTIONS = {
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
   ].join(' '),
   projectPublicContext: [
-    NATIVE_VECTOR_GUIDANCE,
-    'Includes native-block and filter guidance, addon discovery, and the requirement to justify narrowly scoped Custom Code.',
     'AUTH REQUIRED; READ-ONLY. Returns documented MCP handoff fields for one accessible project without exposing tokens, private source code, unrelated customer data, or executable installer arguments.',
+    'The result also carries Spala build guidance: native blocks and filters, addon discovery, and vector search.',
   ].join(' '),
 } as const;
 

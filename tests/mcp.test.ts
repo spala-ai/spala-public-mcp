@@ -150,6 +150,11 @@ test('tools/list advertises authenticated status and honest project preparation 
       /continue into implementation/i,
       /the next assistant response/i,
       /call immediately after OAuth/i,
+      /\bdo not\b/i,
+      /\bnever\b/i,
+      /\bretry the same\b/i,
+      /\buse (?:project )?[a-z]+_[a-z_]+/i,
+      /Vector fields/i,
     ];
     for (const tool of tools) {
       for (const pattern of prohibitedDescriptionPatterns) {
