@@ -15,6 +15,7 @@ import {
   selectInstallerVersion,
 } from '../src/installerContract.js';
 import { SpalaApiError, type SpalaApiClient, type SpalaPrincipal } from '../src/spalaApi.js';
+import { deriveStartupDefaults, FREE_MAIL_DOMAIN_LABELS } from '../src/startupDefaults.js';
 
 const config = loadConfig({
   PUBLIC_BASE_URL: 'https://mcp.spala.ai',
@@ -280,13 +281,173 @@ test('spala_start gates zero-org accounts to account_setup and requires companyN
     assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
     assert.deepEqual(body.projects, []);
     assert.equal((body.installerMaintenance as Record<string, unknown>).maintenanceSpec, '@spala-ai/mcp-install@latest');
-    assert.deepEqual(body.nextAction, {
+    assert.deepEqual(body.suggestedDefaults, { companyName: 'Example', projectName: 'My first app' });
+    const nextAction = body.nextAction as Record<string, unknown>;
+    assert.match(String(nextAction.rule), /propose.*one question.*confirm or correct.*do not invent placeholders/i);
+    assert.deepEqual({ ...nextAction, rule: undefined }, {
       tool: 'account_setup',
       requiredFields: ['companyName'],
       arguments: {},
+      suggestedArguments: { companyName: 'Example' },
+      confirmWithUser: true,
+      rule: undefined,
     });
     assert.equal(Object.keys(body).filter(key => key === 'nextAction').length, 1);
   }, incomplete);
+});
+
+function startupPrincipal(user: Partial<SpalaPrincipal['user']>, organizations: SpalaPrincipal['organizations'] = []): SpalaPrincipal {
+  return { subject: 'derive-user', user: { id: 'derive-user', ...user }, organizations };
+}
+
+test('startup defaults are derived only from the verified principal and omitted when unclear', () => {
+  // Work email that clearly splits into a name.
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna.smith@acme.io' }), { projectCount: 0 }), {
+    firstName: 'Anna',
+    lastName: 'Smith',
+    companyName: 'Acme',
+    projectName: 'My first app',
+  });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'Anna_Smith+spala@mail.acme-labs.co.uk' })), {
+    firstName: 'Anna',
+    lastName: 'Smith',
+    companyName: 'Acme Labs',
+  });
+
+  // A mailbox provider is never a company.
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna.smith@gmail.com' })), {
+    firstName: 'Anna',
+    lastName: 'Smith',
+    companyName: "Anna's workspace",
+  });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'cooldev42@gmail.com' })), {});
+  for (const domain of ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.co.uk', 'live.com', 'yahoo.fr', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'gmx.de', 'mail.ru', 'yandex.ua', 'ukr.net', 'i.ua', 'aol.com']) {
+    assert.deepEqual(
+      deriveStartupDefaults(startupPrincipal({ email: `olena@${domain}`, firstName: 'Olena', lastName: 'Koval' })),
+      { companyName: "Olena's workspace" },
+      domain,
+    );
+    assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: `x1@${domain}` })), {}, domain);
+  }
+  assert.ok(FREE_MAIL_DOMAIN_LABELS.has('gmail'));
+
+  // Local parts that do not clearly split are not turned into names.
+  for (const email of ['asmith@acme.io', 'a.smith@acme.io', 'anna.b.smith@acme.io', 'anna.smith2@acme.io', 'sales.team@acme.io', 'no.reply@acme.io']) {
+    assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email })), { companyName: 'Acme' }, email);
+  }
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({})), {});
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna@localhost' })), {});
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna@192.168.0.1' })), {});
+
+  // Known names are never replaced; a single missing part is derived only when the known part matches.
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna.smith@acme.io', firstName: 'Ann', lastName: 'Smyth' })), { companyName: 'Acme' });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna.smith@acme.io', firstName: 'Anna' })), { lastName: 'Smith', companyName: 'Acme' });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'smith.anna@acme.io', lastName: 'Smith' })), { firstName: 'Anna', companyName: 'Acme' });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'anna.smith@acme.io', firstName: 'Bob' })), { companyName: 'Acme' });
+  assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'founder@acme.io', name: 'Ada Lovelace' })), {
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    companyName: 'Acme',
+  });
+
+  // An existing organization is never renamed, and a project name is suggested only with zero projects.
+  const withOrganization = startupPrincipal({ email: 'anna.smith@acme.io' }, [{ id: 'org-1', name: 'Existing' }]);
+  assert.deepEqual(deriveStartupDefaults(withOrganization, { projectCount: 0 }), { firstName: 'Anna', lastName: 'Smith', projectName: 'My first app' });
+  assert.deepEqual(deriveStartupDefaults(withOrganization, { projectCount: 3 }), { firstName: 'Anna', lastName: 'Smith' });
+  assert.match(deriveStartupDefaults(withOrganization, { projectCount: 0 }).projectName || '', /^[A-Za-z]/);
+});
+
+test('spala_start proposes confirmable defaults for a new work-email account without writing anything', async () => {
+  const setupInputs: unknown[] = [];
+  const api = apiStub({
+    async setupAccount(input) {
+      setupInputs.push(input);
+      throw new Error('spala_start must not write');
+    },
+    async createProject() { throw new Error('spala_start must not write'); },
+    async createOrganization() { throw new Error('spala_start must not write'); },
+  });
+  await withVerifiedClient(api, async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.schemaVersion, 2);
+    assert.equal(body.phase, 'account_setup_required');
+    assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['firstName', 'lastName', 'companyName'] });
+    assert.deepEqual(body.suggestedDefaults, { firstName: 'Anna', lastName: 'Smith', companyName: 'Acme', projectName: 'My first app' });
+    const nextAction = body.nextAction as Record<string, unknown>;
+    assert.equal(nextAction.tool, 'account_setup');
+    assert.deepEqual(nextAction.arguments, {});
+    assert.deepEqual(nextAction.suggestedArguments, { firstName: 'Anna', lastName: 'Smith', companyName: 'Acme' });
+    assert.equal(nextAction.confirmWithUser, true);
+
+    const status = resultJson(await client.callTool({ name: 'account_status', arguments: {} }));
+    const gate = status.gate as Record<string, unknown>;
+    assert.deepEqual(gate.suggestedDefaults, { firstName: 'Anna', lastName: 'Smith', companyName: 'Acme' });
+    assert.match(String(gate.nextAssistantResponse), /propose suggestedDefaults.*one concise terminal question.*confirm or correct.*then wait/i);
+    assert.match(String(gate.nextAssistantResponse), /do not invent placeholders for values the server did not suggest/i);
+    assert.match(String(status.next), /propose.*confirm or correct.*missing account fields.*wait/i);
+
+    // Suggestions are never auto-filled: account_setup still needs every missing field as an argument.
+    const empty = await client.callTool({ name: 'account_setup', arguments: {} });
+    assert.equal(empty.isError, true);
+    assert.deepEqual(resultJson(empty).missingFields, ['firstName', 'lastName', 'companyName']);
+    const partial = await client.callTool({ name: 'account_setup', arguments: { firstName: 'Anna', lastName: 'Smith' } });
+    assert.equal(partial.isError, true);
+    const partialBody = resultJson(partial);
+    assert.deepEqual(partialBody.missingFields, ['companyName']);
+    assert.deepEqual((partialBody.gate as Record<string, unknown>).suggestedDefaults, { companyName: 'Acme' });
+    assert.match(String(partialBody.rule), /user confirmed.*do not invent placeholders/i);
+    assert.equal(setupInputs.length, 0);
+  }, startupPrincipal({ email: 'anna.smith@acme.io' }));
+});
+
+test('spala_start never proposes a mailbox provider as the workspace', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['firstName', 'lastName', 'companyName'] });
+    assert.deepEqual(body.suggestedDefaults, { firstName: 'Anna', lastName: 'Smith', companyName: "Anna's workspace", projectName: 'My first app' });
+    assert.doesNotMatch(JSON.stringify(body.suggestedDefaults), /gmail/i);
+  }, startupPrincipal({ email: 'anna.smith@gmail.com' }));
+
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.deepEqual(body.suggestedDefaults, { projectName: 'My first app' });
+    const nextAction = body.nextAction as Record<string, unknown>;
+    assert.equal('suggestedArguments' in nextAction, false);
+    assert.deepEqual(nextAction.requiredFields, ['firstName', 'lastName', 'companyName']);
+    assert.deepEqual(nextAction.arguments, {});
+    assert.equal(nextAction.confirmWithUser, true);
+
+    const status = resultJson(await client.callTool({ name: 'account_status', arguments: {} }));
+    assert.equal('suggestedDefaults' in (status.gate as Record<string, unknown>), false);
+    assert.match(String((status.gate as Record<string, unknown>).nextAssistantResponse), /^Ask one concise terminal question for exactly missingFields/);
+  }, startupPrincipal({ email: 'cooldev42@gmail.com' }));
+
+  // No email and no names: nothing account-related can be derived, and an existing organization means no project guess either.
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal('suggestedDefaults' in body, false);
+    assert.deepEqual(body.nextAction, {
+      tool: 'account_setup',
+      requiredFields: ['firstName', 'lastName'],
+      arguments: {},
+    });
+  }, startupPrincipal({}, [{ id: 'org-1', name: 'Existing' }]));
+});
+
+test('spala_start suggests only the missing account fields for a user who already has names', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['companyName'] });
+    assert.deepEqual(body.suggestedDefaults, { companyName: 'Acme', projectName: 'My first app' });
+    assert.deepEqual((body.nextAction as Record<string, unknown>).suggestedArguments, { companyName: 'Acme' });
+  }, startupPrincipal({ email: 'anna.smith@acme.io', firstName: 'Hanna', lastName: 'Kovalenko' }));
+
+  // Names missing but an organization exists: projects are unknown at this point, so no project name is proposed.
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.deepEqual(body.accountSetup, { state: 'required', missingFields: ['firstName', 'lastName'] });
+    assert.deepEqual(body.suggestedDefaults, { firstName: 'Anna', lastName: 'Smith' });
+  }, startupPrincipal({ email: 'anna.smith@acme.io' }, [{ id: 'org-1', name: 'Existing' }]));
 });
 
 test('spala_start auto-scopes one organization and returns its projects', async () => {
@@ -395,12 +556,28 @@ test('spala_start asks for a project name when the sole organization has no proj
   }), async client => {
     const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
     assert.equal(body.phase, 'project_name_required');
-    assert.deepEqual(body.nextAction, {
+    assert.equal(body.suggestedProjectName, 'My first app');
+    assert.equal('suggestedDefaults' in body, false);
+    const nextAction = body.nextAction as Record<string, unknown>;
+    assert.match(String(nextAction.rule), /proposal.*confirm or change.*one question.*only with a name the user confirmed or provided/i);
+    assert.deepEqual({ ...nextAction, rule: undefined }, {
       type: 'ask_user_project_name',
       organizationId: 'org-1',
       createTool: 'project_create',
       allowCreateOrganization: true,
+      suggestedProjectName: 'My first app',
+      confirmWithUser: true,
+      rule: undefined,
     });
+  });
+});
+
+test('spala_start does not suggest a project name when projects already exist', async () => {
+  await withVerifiedClient(apiStub(), async client => {
+    const body = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
+    assert.equal(body.phase, 'project_choice_required');
+    assert.equal('suggestedProjectName' in body, false);
+    assert.equal('suggestedProjectName' in (body.nextAction as Record<string, unknown>), false);
   });
 });
 
@@ -1031,7 +1208,7 @@ test('account_status reports only request-verified identity state', async () => 
 test('incomplete accounts report exact fields and setup creates the first organization', async () => {
   const incomplete: SpalaPrincipal = {
     subject: 'new-user',
-    user: { id: 'new-user', email: 'new@example.test' },
+    user: { id: 'new-user', email: 'new@gmail.com' },
     organizations: [],
   };
   const completed: SpalaPrincipal = {

@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
 import { isProjectProvisioning, isProjectProvisioningFailed, SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
+import { deriveStartupDefaults } from './startupDefaults.js';
 import { PUBLIC_MCP_RESOURCE, PUBLIC_MCP_SCOPE } from './publicMcpContract.js';
 import { recordTelemetry } from './telemetry.js';
 
@@ -868,18 +869,35 @@ function missingAccountSetupFields(principal: SpalaPrincipal): AccountSetupField
   ];
 }
 
-function accountSetupGate(missingFields: AccountSetupField[]) {
+type AccountSetupSuggestions = Partial<Record<AccountSetupField, string>>;
+
+// Server-derived proposals for the still-missing account fields. They are never written
+// by the server: account_setup only accepts values the assistant passes after the user confirms.
+function accountSetupSuggestions(principal: SpalaPrincipal, missingFields: AccountSetupField[]): AccountSetupSuggestions {
+  const defaults = deriveStartupDefaults(principal);
+  return Object.fromEntries(missingFields.flatMap(field => (defaults[field] ? [[field, defaults[field]]] : [])));
+}
+
+const SUGGESTED_DEFAULTS_RULE = 'Suggested values are server-derived proposals, not confirmed data. Propose them to the user and ask in one question to confirm or correct them, together with any required value that has no suggestion. Write only values the user confirmed or provided. Do not invent placeholders for values the server did not suggest.';
+
+function accountSetupGate(missingFields: AccountSetupField[], suggestedDefaults: AccountSetupSuggestions = {}) {
+  const hasSuggestions = Object.keys(suggestedDefaults).length > 0;
   return {
     blocked: true,
     gate: {
       state: 'blocked',
       reason: 'account_setup_required',
       missingFields,
+      ...(hasSuggestions ? { suggestedDefaults } : {}),
       requiredNextAction: 'ask_human_then_call_account_setup',
-      nextAssistantResponse: 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
+      nextAssistantResponse: hasSuggestions
+        ? 'Propose suggestedDefaults and ask one concise terminal question to confirm or correct them and to provide any missingFields without a suggestion, then wait for the answer. Do not invent placeholders for values the server did not suggest. Do not include implementation progress or offer to continue other work.'
+        : 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
       prohibitedUntilResolved: ACCOUNT_SETUP_BLOCKED_ACTIONS,
     },
-    next: 'STOP. Ask the human one concise terminal question for exactly the missing account fields now, then wait and call account_setup with the real answers. Do not inspect source files or continue planning, design generation, scaffolding, coding, testing, or QA.',
+    next: hasSuggestions
+      ? 'STOP. Propose the suggested values and ask the human one concise terminal question to confirm or correct them and to provide any other missing account fields now, then wait and call account_setup with the confirmed or corrected answers. Do not invent placeholders for values the server did not suggest. Do not inspect source files or continue planning, design generation, scaffolding, coding, testing, or QA.'
+      : 'STOP. Ask the human one concise terminal question for exactly the missing account fields now, then wait and call account_setup with the real answers. Do not inspect source files or continue planning, design generation, scaffolding, coding, testing, or QA.',
   };
 }
 
@@ -1376,7 +1394,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       `UPDATE CHECK: the tested project installer is ${projectInstallerVersion()}. ${INSTALLER_UPDATE_POLICY} Use spala_get_onboarding with the known installerVersion for a read-only comparison; omit it if unknown.`,
       'Use it for discovery, docs/templates/addons, OAuth metadata, authenticated project management, and project MCP handoff.',
       'Authenticated tools use secure server-side delegation. Bearer tokens are never returned, logged, or placed in URLs. Bootstrap credentials are one-time and consumed only by the local installer; Claude Code uses an installer-held verifier and does not require project OAuth.',
-      'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations.',
+      'spala_start absorbs account_status and organization/project discovery. If setup is required, use its only nextAction and complete account_setup with companyName when no organization exists; do not guess across multiple organizations. When a result carries suggested values, propose them and get the user to confirm or correct them in one question before any write.',
       'After account setup, follow the single nextAction. Automatically reuse only a valid project binding from the current workspace; otherwise present existing projects or ask for a new project name. Never silently choose an existing project.',
       SPALA_BACKEND_INTENT_TEXT,
       'Agents must not construct, append, or infer project MCP URLs.',
@@ -1420,7 +1438,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       CLAUDE_CODE_READINESS_TEXT,
       `Before running any public init or login command, inspect only that command text. If it contains an exact older @spala-ai/mcp-install version, replace only its package spec with ${INSTALLER_MAINTENANCE_SPEC}. Do not inspect local skills or credential files, and do not rewrite project_connect installPlan.argv.`,
       'Follow only the returned nextAction. Call spala_start again only when that action explicitly asks for it after a state transition such as account or organization creation.',
-      'If setup is required, ask one concise terminal question for exactly the missing real values and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
+      'If setup is required, ask one concise terminal question for exactly the missing real values, proposing any server-suggested values for the user to confirm or correct, and call account_setup. Do not use placeholder personal, company, workspace, or project names.',
       'If .spala/project.json exists in the current workspace, verify and reuse that exact accessible project. Otherwise present all returned projects and let the user select one, or ask for a new project name. Never silently choose an existing project.',
       `Choose one installer client: ${SUPPORTED_INSTALL_CLIENTS.join(', ')}.`,
       'Call project_connect with client. The authenticated control plane returns the existing temporary project entry handoff; public MCP then enables MCP and prepares the authentication mode required by that client on the exact project backend.',
@@ -1574,6 +1592,13 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const missingFields = missingAccountSetupFields(principal);
     if (missingFields.length > 0) {
       recordTelemetry('spala_start', { phase: 'account_setup_required' });
+      const suggestedArguments = accountSetupSuggestions(principal, missingFields);
+      // Without an organization there are no projects yet, so the first project name can be confirmed in the same question.
+      const suggestedProjectName = principal.organizations.length === 0
+        ? deriveStartupDefaults(principal, { projectCount: 0 }).projectName
+        : undefined;
+      const suggestedDefaults = { ...suggestedArguments, ...(suggestedProjectName ? { projectName: suggestedProjectName } : {}) };
+      const hasSuggestions = Object.keys(suggestedDefaults).length > 0;
       return json({
         schemaVersion: PUBLIC_MCP_STARTUP_VERSION,
         phase: 'account_setup_required',
@@ -1581,6 +1606,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         backendProvider: 'Spala',
         user: principal.user,
         accountSetup: { state: 'required', missingFields },
+        ...(hasSuggestions ? { suggestedDefaults } : {}),
         organizations: principal.organizations,
         projects: [],
         installerMaintenance: installerMaintenance(),
@@ -1588,6 +1614,8 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           tool: 'account_setup',
           requiredFields: missingFields,
           arguments: {},
+          ...(Object.keys(suggestedArguments).length > 0 ? { suggestedArguments } : {}),
+          ...(hasSuggestions ? { confirmWithUser: true, rule: SUGGESTED_DEFAULTS_RULE } : {}),
         },
       });
     }
@@ -1597,6 +1625,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       const projects = startupProjectChoices(discovered);
       const oneOrganization = principal.organizations.length === 1;
       const hasProjects = projects.length > 0;
+      const suggestedProjectName = deriveStartupDefaults(principal, { projectCount: projects.length }).projectName;
       const phase = hasProjects
         ? 'project_choice_required'
         : oneOrganization
@@ -1618,6 +1647,9 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
               organizationId: principal.organizations[0]!.id,
               createTool: 'project_create',
               allowCreateOrganization: true,
+              suggestedProjectName,
+              confirmWithUser: true,
+              rule: 'suggestedProjectName is a server-derived proposal. Use a project name the user already confirmed or provided in this conversation; otherwise propose suggestedProjectName and ask the user to confirm or change it in one question. Call project_create only with a name the user confirmed or provided.',
             }
           : {
               type: 'ask_user_organization_choice',
@@ -1634,6 +1666,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
         user: principal.user,
         accountSetup: { state: 'ready', missingFields: [] },
         selectedOrganizationId: oneOrganization ? principal.organizations[0]!.id : undefined,
+        ...(phase === 'project_name_required' ? { suggestedProjectName } : {}),
         organizations: discovered.map(entry => ({
           ...entry.organization,
           projectCount: entry.projects.length,
@@ -1674,7 +1707,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
       },
       ...(accountReady
         ? { next: 'Ask for or confidently derive a real project name, then reuse .spala/project.json or call project_list before project_create.' }
-        : accountSetupGate(missingFields)),
+        : accountSetupGate(missingFields, accountSetupSuggestions(principal, missingFields))),
     });
   });
 
@@ -1694,14 +1727,17 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
     const missingFields = missingAccountSetupFields(principal);
     const stillMissing = missingFields.filter(field => !input[field]?.trim());
     if (stillMissing.length > 0) {
+      const suggestions = accountSetupSuggestions(principal, stillMissing);
       return json({
         error: 'account_data_required',
         category: 'account_setup_required',
         message: 'Ask the human for the missing account data in one concise terminal question, then retry account_setup.',
         missingFields: stillMissing,
         action: { type: 'ask_human_for_account_data', fields: stillMissing },
-        rule: 'Use real user-provided or explicitly known values. Do not invent placeholders.',
-        ...accountSetupGate(stillMissing),
+        rule: Object.keys(suggestions).length > 0
+          ? 'Use real user-provided or explicitly known values, or server-suggested values the user confirmed. Do not invent placeholders.'
+          : 'Use real user-provided or explicitly known values. Do not invent placeholders.',
+        ...accountSetupGate(stillMissing, suggestions),
       }, true);
     }
     try {

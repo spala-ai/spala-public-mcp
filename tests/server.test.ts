@@ -1354,8 +1354,9 @@ test('new account setup collects profile and company before first named project 
     state: 'blocked',
     reason: 'account_setup_required',
     missingFields: ['firstName', 'lastName', 'companyName'],
+    suggestedDefaults: { companyName: 'Example' },
     requiredNextAction: 'ask_human_then_call_account_setup',
-    nextAssistantResponse: 'Ask one concise terminal question for exactly missingFields, then wait for the answer. Do not include implementation progress or offer to continue other work.',
+    nextAssistantResponse: 'Propose suggestedDefaults and ask one concise terminal question to confirm or correct them and to provide any missingFields without a suggestion, then wait for the answer. Do not invent placeholders for values the server did not suggest. Do not include implementation progress or offer to continue other work.',
     prohibitedUntilResolved: [
       'inspect application source',
       'plan application implementation',
