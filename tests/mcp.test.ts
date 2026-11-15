@@ -321,7 +321,7 @@ test('startup defaults are derived only from the verified principal and omitted 
     companyName: "Anna's workspace",
   });
   assert.deepEqual(deriveStartupDefaults(startupPrincipal({ email: 'cooldev42@gmail.com' })), {});
-  for (const domain of ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.co.uk', 'live.com', 'yahoo.fr', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'gmx.de', 'mail.ru', 'yandex.ua', 'ukr.net', 'i.ua', 'aol.com']) {
+  for (const domain of ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.co.uk', 'live.com', 'yahoo.fr', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'gmx.de', 'mail.ru', 'yandex.ua', 'ukr.net', 'i.ua', 'aol.com', 'comcast.net', 'btinternet.com', 't-online.de', 'orange.fr', 'seznam.cz', 'mailinator.com', 'stanford.edu', 'student.ox.ac.uk', 'knu.edu.ua']) {
     assert.deepEqual(
       deriveStartupDefaults(startupPrincipal({ email: `olena@${domain}`, firstName: 'Olena', lastName: 'Koval' })),
       { companyName: "Olena's workspace" },

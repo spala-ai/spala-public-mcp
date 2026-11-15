@@ -15,7 +15,26 @@ export const FREE_MAIL_DOMAIN_LABELS: ReadonlySet<string> = new Set([
   'icloud', 'me', 'mac', 'proton', 'protonmail', 'pm', 'gmx', 'mail', 'email', 'inbox',
   'yandex', 'ya', 'ukr', 'i', 'meta', 'bigmir', 'rambler', 'aol', 'zoho', 'fastmail', 'hey',
   'tutanota', 'tuta', 'tutamail', 'duck', 'web', 'qq', '163', '126',
+  // Microsoft and Google consumer aliases
+  'windowslive', 'passport', 'outlook365', 'hotmail365',
+  // Internet providers that hand out personal mailboxes
+  'comcast', 'verizon', 'att', 'sbcglobal', 'bellsouth', 'cox', 'charter', 'spectrum', 'earthlink',
+  'optonline', 'frontier', 'centurylink', 'shaw', 'rogers', 'telus', 'bell', 'sympatico', 'bigpond',
+  'optusnet', 'btinternet', 'sky', 'virginmedia', 'talktalk', 'blueyonder', 'ntlworld', 'orange',
+  'wanadoo', 'free', 'laposte', 'sfr', 't-online', 'freenet', 'arcor', 'libero', 'virgilio', 'tiscali',
+  'alice', 'telenet', 'skynet', 'ziggo', 'kpnmail', 'bluewin', 'seznam', 'centrum', 'wp', 'o2', 'onet',
+  'interia', 'abv', 'online', 'list', 'bk', 'naver', 'daum', 'hanmail', 'sina', 'sohu', 'yeah', '139',
+  'rediffmail', 'terra', 'uol', 'bol',
+  // Privacy and forwarding mailboxes
+  'hushmail', 'mailfence', 'posteo', 'mailbox', 'startmail', 'runbox', 'pobox', 'simplelogin',
+  'anonaddy', 'addy', 'privaterelay', 'disroot', 'riseup', 'cock',
+  // Disposable mailboxes
+  'mailinator', 'guerrillamail', 'tempmail', 'temp-mail', '10minutemail', 'yopmail', 'sharklasers',
+  'trashmail', 'getnada', 'maildrop', 'dispostable', 'throwawaymail',
 ]);
+
+// Schools and universities give people mailboxes; a student is not the institution.
+const ACADEMIC_SUFFIXES: ReadonlySet<string> = new Set(['edu', 'ac', 'sch', 'k12']);
 
 const SECOND_LEVEL_SUFFIXES: ReadonlySet<string> = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac']);
 
@@ -66,7 +85,8 @@ function registrableDomainLabel(domain: string): string | undefined {
 function companyFromDomain(domain: string, firstName: string | undefined): string | undefined {
   const label = registrableDomainLabel(domain);
   if (!label) return undefined;
-  if (FREE_MAIL_DOMAIN_LABELS.has(label)) return firstName ? `${firstName}'s workspace` : undefined;
+  const personalMailbox = FREE_MAIL_DOMAIN_LABELS.has(label) || domain.split('.').slice(1).some(part => ACADEMIC_SUFFIXES.has(part));
+  if (personalMailbox) return firstName ? `${firstName}'s workspace` : undefined;
   if (!/^[a-z][a-z0-9-]+$/.test(label) || label.startsWith('xn--')) return undefined;
   return label.split('-').filter(Boolean).map(capitalize).join(' ');
 }
