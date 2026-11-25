@@ -1,6 +1,6 @@
 // Build-time floor. The monorepo deploy script reads this literal as the
 // expected minimum, so keep it a plain string assignment.
-export const PROJECT_INSTALLER_VERSION = '0.1.34';
+export const PROJECT_INSTALLER_VERSION = '1.35.1';
 export const INSTALLER_PACKAGE = '@spala-ai/mcp-install';
 export const INSTALLER_MAINTENANCE_SPEC = '@spala-ai/mcp-install@latest';
 export const INSTALLER_REGISTRY_URL = 'https://registry.npmjs.org/@spala-ai%2fmcp-install';

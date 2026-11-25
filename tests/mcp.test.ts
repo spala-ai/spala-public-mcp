@@ -480,7 +480,7 @@ test('spala_start auto-scopes one organization and returns its projects', async 
     const instructions = String(client.getInstructions());
     const position = instructions.indexOf(PROJECT_HANDOFF_COVERAGE_SHORT);
     assert.ok(position >= 0 && position + PROJECT_HANDOFF_COVERAGE_SHORT.length < 1000);
-    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.34');
+    assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '1.35.1');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',
       choicesSource: 'projects',
@@ -928,7 +928,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(connectedBody.workspaceOnly, true);
     const connectPlan = connectedBody.installPlan as Record<string, unknown> & { argv: string[] };
     assert.equal(connectPlan.mcpUrl, handoff.mcpUrl);
-    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.34', 'project', 'bind']);
+    assert.deepEqual(connectPlan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@1.35.1', 'project', 'bind']);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--url') + 1], handoff.mcpUrl);
     assert.equal(connectPlan.argv[connectPlan.argv.indexOf('--name') + 1], connectedBody.serverName);
     assert.equal(connectPlan.argv.includes('--bootstrap-stdin'), true);
@@ -986,7 +986,7 @@ test('project_connect, compatibility select, and manifest send the client and ke
     assert.equal(manifestBody.mcpUrl, handoff.mcpUrl);
     assert.equal(manifestBody.manifestUrl, handoff.manifestUrl);
     const manifestArgv = (manifestBody.installPlan as { argv: string[] }).argv;
-    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.34', 'project', 'bind']);
+    assert.deepEqual(manifestArgv.slice(0, 5), ['pnpm', 'dlx', '@spala-ai/mcp-install@1.35.1', 'project', 'bind']);
     assert.equal(manifestArgv[manifestArgv.indexOf('--client') + 1], 'roo');
     assert.equal(manifestArgv[manifestArgv.indexOf('--install-scope') + 1], 'workspace');
     assert.equal(manifestArgv.includes('--bootstrap-stdin'), true);
@@ -1543,11 +1543,11 @@ test('onboarding compares installer versions without account access or conflatin
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   try {
-    for (const [version, status] of [[undefined, 'unknown'], ['0.1.33', 'update_available'], ['0.1.34', 'current'], ['0.1.100', 'newer_than_tested'], ['latest', 'unknown']]) {
+    for (const [version, status] of [[undefined, 'unknown'], ['1.35.0', 'update_available'], ['1.35.1', 'current'], ['1.35.100', 'newer_than_tested'], ['latest', 'unknown']]) {
       const result = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: version ? { installerVersion: version } : {} }));
       const update = result.installerUpdate as Record<string, any>;
       assert.equal(update.status, status);
-      assert.equal(update.testedVersion, '0.1.34');
+      assert.equal(update.testedVersion, '1.35.1');
       assert.equal(update.nextAction?.tool, status === 'update_available' ? 'project_connect' : undefined);
     }
   } finally { await client.close(); await server.close(); }
@@ -1576,32 +1576,32 @@ async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<voi
 
 test('installer selection follows the newest stable release on the floor line without passing npm latest', () => {
   const versions = {
-    '0.1.33': {},
-    '0.1.34': {},
-    '0.1.35': {},
-    '0.1.36': { deprecated: 'broken build' },
-    '0.1.37': { deprecated: '' },
-    '0.1.38': {},
-    '0.1.39-beta.1': {},
+    '1.35.0': {},
+    '1.35.1': {},
+    '1.35.2': {},
+    '1.35.3': { deprecated: 'broken build' },
+    '1.35.4': { deprecated: '' },
+    '1.35.5': {},
+    '1.35.6-beta.1': {},
     '00.1.40': {},
-    '0.2.0': {},
+    '2.0.0': {},
   };
-  assert.equal(selectInstallerVersion(installerPackument('0.1.37', versions)), '0.1.37');
-  assert.equal(selectInstallerVersion(installerPackument('0.1.36', versions)), '0.1.35');
-  assert.equal(selectInstallerVersion(installerPackument('0.2.0', versions)), '0.1.38');
-  assert.equal(selectInstallerVersion(installerPackument('0.1.33', versions)), '0.1.34');
-  assert.equal(selectInstallerVersion(installerPackument('0.1.38', { '0.1.38': null })), '0.1.34');
-  assert.equal(selectInstallerVersion(installerPackument('0.1.34', { '0.1.34': {} })), '0.1.34');
+  assert.equal(selectInstallerVersion(installerPackument('1.35.4', versions)), '1.35.4');
+  assert.equal(selectInstallerVersion(installerPackument('1.35.3', versions)), '1.35.2');
+  assert.equal(selectInstallerVersion(installerPackument('2.0.0', versions)), '1.35.5');
+  assert.equal(selectInstallerVersion(installerPackument('1.35.0', versions)), '1.35.1');
+  assert.equal(selectInstallerVersion(installerPackument('1.35.5', { '1.35.5': null })), '1.35.1');
+  assert.equal(selectInstallerVersion(installerPackument('1.35.1', { '1.35.1': {} })), '1.35.1');
   assert.equal(selectInstallerVersion(installerPackument('2.0.0', { '1.2.0': {}, '1.9.9': {}, '2.0.0': {} }), '1.2.0'), '1.9.9');
   assert.equal(selectInstallerVersion(installerPackument('0.0.4', { '0.0.3': {}, '0.0.4': {} }), '0.0.3'), '0.0.3');
   for (const malformed of [
     null,
     [],
     {},
-    installerPackument('0.1.35', versions, '@spala-ai/another-package'),
+    installerPackument('1.35.2', versions, '@spala-ai/another-package'),
     installerPackument('next', versions),
-    { ...installerPackument('0.1.35', versions), 'dist-tags': null },
-    { ...installerPackument('0.1.35', versions), versions: [] },
+    { ...installerPackument('1.35.2', versions), 'dist-tags': null },
+    { ...installerPackument('1.35.2', versions), versions: [] },
   ]) {
     assert.equal(selectInstallerVersion(malformed), null);
   }
@@ -1609,39 +1609,39 @@ test('installer selection follows the newest stable release on the floor line wi
 
 test('installer refresh reads the abbreviated npm packument and keeps the served release on every failure', async () => {
   try {
-    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@0.1.34');
+    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@1.35.1');
     assert.equal(projectInstallerVersionSource(), 'build-pin');
 
-    const registry = registryFetch(installerPackument('0.1.35', { '0.1.34': {}, '0.1.35': {} }));
-    assert.deepEqual(await refreshProjectInstallerVersion(registry.fetchImpl), { ok: true, version: '0.1.35', changed: true });
+    const registry = registryFetch(installerPackument('1.35.2', { '1.35.1': {}, '1.35.2': {} }));
+    assert.deepEqual(await refreshProjectInstallerVersion(registry.fetchImpl), { ok: true, version: '1.35.2', changed: true });
     assert.equal(registry.requests.length, 1);
     const request = registry.requests[0]!;
     assert.equal(request.url, INSTALLER_REGISTRY_URL);
     assert.equal(new Headers(request.init?.headers).get('accept'), 'application/vnd.npm.install-v1+json');
     assert.equal(request.init?.redirect, 'error');
     assert.ok(request.init?.signal instanceof AbortSignal);
-    assert.equal(projectInstallerVersion(), '0.1.35');
-    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@0.1.35');
+    assert.equal(projectInstallerVersion(), '1.35.2');
+    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@1.35.2');
     assert.equal(projectInstallerVersionSource(), 'npm-registry');
-    assert.deepEqual(await refreshProjectInstallerVersion(registry.fetchImpl), { ok: true, version: '0.1.35', changed: false });
+    assert.deepEqual(await refreshProjectInstallerVersion(registry.fetchImpl), { ok: true, version: '1.35.2', changed: false });
 
     const failures: Array<[typeof fetch, string]> = [
       [registryFetch('{}', { status: 503 }).fetchImpl, 'registry_status_503'],
       [registryFetch('{not json').fetchImpl, 'invalid_registry_json'],
-      [registryFetch(installerPackument('next', { '0.1.36': {} })).fetchImpl, 'invalid_registry_metadata'],
+      [registryFetch(installerPackument('next', { '1.35.3': {} })).fetchImpl, 'invalid_registry_metadata'],
       [registryFetch('{}', { headers: { 'content-length': String(3 * 1024 * 1024) } }).fetchImpl, 'registry_response_too_large'],
       [registryFetch('x'.repeat(2 * 1024 * 1024 + 1)).fetchImpl, 'registry_response_too_large'],
       [(async () => { throw new TypeError('fetch failed'); }) as typeof fetch, 'registry_unreachable'],
     ];
     for (const [fetchImpl, reason] of failures) {
       assert.deepEqual(await refreshProjectInstallerVersion(fetchImpl), { ok: false, reason });
-      assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@0.1.35');
+      assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@1.35.2');
       assert.equal(projectInstallerVersionSource(), 'npm-registry');
     }
   } finally {
     resetProjectInstallerVersion();
   }
-  assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@0.1.34');
+  assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@1.35.1');
   assert.equal(projectInstallerVersionSource(), 'build-pin');
 });
 
@@ -1652,7 +1652,7 @@ test('installer follower retries failed registry checks, logs only transitions, 
     const status = outcomes[Math.min(calls, outcomes.length - 1)]!;
     calls += 1;
     return status === 200
-      ? new Response(JSON.stringify(installerPackument('0.1.35', { '0.1.34': {}, '0.1.35': {} })))
+      ? new Response(JSON.stringify(installerPackument('1.35.2', { '1.35.1': {}, '1.35.2': {} })))
       : new Response('', { status });
   }) as typeof fetch;
   const logs: string[] = [];
@@ -1667,11 +1667,11 @@ test('installer follower retries failed registry checks, logs only transitions, 
     const callsAtStop = calls;
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(calls, callsAtStop);
-    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@0.1.35');
+    assert.equal(projectInstallerSpec(), '@spala-ai/mcp-install@1.35.2');
     assert.deepEqual(logs, [
-      'warn [installer] npm registry check failed (registry_status_503); keeping @spala-ai/mcp-install@0.1.34',
+      'warn [installer] npm registry check failed (registry_status_503); keeping @spala-ai/mcp-install@1.35.1',
       'log [installer] npm registry check recovered',
-      'log [installer] project bind spec @spala-ai/mcp-install@0.1.35 (npm registry)',
+      'log [installer] project bind spec @spala-ai/mcp-install@1.35.2 (npm registry)',
     ]);
   } finally {
     resetProjectInstallerVersion();
@@ -1679,31 +1679,31 @@ test('installer follower retries failed registry checks, logs only transitions, 
 });
 
 test('project bind argv, tool map, startup maintenance, and onboarding serve the release the follower resolved', async () => {
-  const registry = registryFetch(installerPackument('0.1.35', { '0.1.34': {}, '0.1.35': {} }));
+  const registry = registryFetch(installerPackument('1.35.2', { '1.35.1': {}, '1.35.2': {} }));
   assert.equal((await refreshProjectInstallerVersion(registry.fetchImpl)).ok, true);
   try {
     await withVerifiedClient(apiStub(), async client => {
-      assert.match(String(client.getInstructions()), /the tested project installer is 0\.1\.35\./);
+      assert.match(String(client.getInstructions()), /the tested project installer is 1\.35\.2\./);
 
       const connected = resultJson(await client.callTool({ name: 'project_connect', arguments: { projectId: project.id, client: 'codex' } }));
-      assert.deepEqual((connected.installPlan as { argv: string[] }).argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.35', 'project', 'bind']);
+      assert.deepEqual((connected.installPlan as { argv: string[] }).argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@1.35.2', 'project', 'bind']);
       const roo = resultJson(await client.callTool({ name: 'project_connect', arguments: { projectId: project.id, client: 'roo' } }));
-      assert.deepEqual((roo.installPlan as { argv: string[] }).argv.slice(0, 3), ['pnpm', 'dlx', '@spala-ai/mcp-install@0.1.35']);
+      assert.deepEqual((roo.installPlan as { argv: string[] }).argv.slice(0, 3), ['pnpm', 'dlx', '@spala-ai/mcp-install@1.35.2']);
 
       const toolMap = resultJson(await client.callTool({ name: 'spala_get_tool_map', arguments: {} }));
       const installer = (toolMap.publicMcp as Record<string, any>).installer as Record<string, unknown>;
-      assert.equal(installer.version, '0.1.35');
-      assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.35');
+      assert.equal(installer.version, '1.35.2');
+      assert.equal(installer.spec, '@spala-ai/mcp-install@1.35.2');
       assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
 
       const startup = resultJson(await client.callTool({ name: 'spala_start', arguments: {} }));
       const maintenance = startup.installerMaintenance as Record<string, unknown>;
-      assert.equal(maintenance.testedVersion, '0.1.35');
-      assert.equal(maintenance.exactProjectBindSpec, '@spala-ai/mcp-install@0.1.35');
+      assert.equal(maintenance.testedVersion, '1.35.2');
+      assert.equal(maintenance.exactProjectBindSpec, '@spala-ai/mcp-install@1.35.2');
 
-      const onboarding = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: { installerVersion: '0.1.34' } }));
+      const onboarding = resultJson(await client.callTool({ name: 'spala_get_onboarding', arguments: { installerVersion: '1.35.1' } }));
       const update = onboarding.installerUpdate as Record<string, unknown>;
-      assert.equal(update.testedVersion, '0.1.35');
+      assert.equal(update.testedVersion, '1.35.2');
       assert.equal(update.status, 'update_available');
     });
   } finally {

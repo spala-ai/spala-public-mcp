@@ -874,7 +874,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
       stdin: Record<string, unknown>;
     };
   };
-  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@0.1.34', 'project', 'bind']);
+  assert.deepEqual(plan.argv.slice(0, 5), ['npx', '--yes', '@spala-ai/mcp-install@1.35.1', 'project', 'bind']);
   assert.equal((connectedBody.installPlan as Record<string, unknown>).mcpUrl, canonicalProjectMcpUrl);
   assert.equal(plan.argv[plan.argv.indexOf('--project-id') + 1], 'project-1');
   assert.equal(plan.argv[plan.argv.indexOf('--project-url') + 1], projectUrl);
@@ -985,7 +985,7 @@ test('account status, project preparation, workspace binding, and revoked-sessio
   bootstrapConsumeCount = 0;
   bootstrapExpectedChallenge = undefined;
   const wrongMethod = await fetch(bootstrapConsumeUrl);
-  assert.equal(wrongMethod.status, 405, 'installer 0.1.34 must consume the capability with POST');
+  assert.equal(wrongMethod.status, 405, 'installer 1.35.1 must consume the capability with POST');
   assert.equal(bootstrapConsumeCount, 0, 'a wrong-method request must not consume the capability');
 
   const installerResponse = await fetch(bootstrapConsumeUrl, {
@@ -1107,7 +1107,7 @@ test('generated project bind plan and bootstrap run against the local installer 
   assert.deepEqual(plan.argv.slice(0, 3), [
     'npx',
     '--yes',
-    '@spala-ai/mcp-install@0.1.34',
+    '@spala-ai/mcp-install@1.35.1',
   ]);
 
   const workspace = mkdtempSync(join(tmpdir(), 'spala-public-mcp-installer-smoke-'));
@@ -2112,8 +2112,8 @@ test('authenticated spala_start is published in discovery capabilities and start
   assert.equal(startupBody.selectedOrganizationId, 'org-1');
   assert.deepEqual(startupBody.installerMaintenance, {
     updatePolicy: INSTALLER_UPDATE_POLICY,
-    testedVersion: '0.1.34',
-    exactProjectBindSpec: '@spala-ai/mcp-install@0.1.34',
+    testedVersion: '1.35.1',
+    exactProjectBindSpec: '@spala-ai/mcp-install@1.35.1',
     maintenanceSpec: '@spala-ai/mcp-install@latest',
     statusCommand: 'pnpm dlx @spala-ai/mcp-install@latest status --client <current-client> --json',
     upgradeCommand: 'npx --yes @spala-ai/mcp-install@latest init --client <current-client> --yes --json',
@@ -2209,7 +2209,7 @@ test('authenticated spala_start is published in discovery capabilities and start
   }
 });
 
-test('install manifest exposes machine-readable 0.1.34 installer commands and secure Codex execution', async () => {
+test('install manifest exposes machine-readable 1.35.1 installer commands and secure Codex execution', async () => {
   const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
   const commands = manifest.commands as Record<string, unknown>;
   const agentIntegrations = manifest.agentIntegrations as Record<string, unknown>;
@@ -2240,13 +2240,13 @@ test('install manifest exposes machine-readable 0.1.34 installer commands and se
   assert.equal(commands.codex, 'npx --yes @spala-ai/mcp-install@latest init --client codex --yes --json');
   const installer = manifest.installer as Record<string, unknown>;
   assert.deepEqual(installer.updateCheck, { cadenceSeconds: 900, on: ['initialize', 'tools/call'], notice: 'once per newer tested version per proxy session', automaticInstall: false });
-  assert.equal(installer.version, '0.1.34');
-  assert.equal(installer.minimumVersion, '0.1.34');
+  assert.equal(installer.version, '1.35.1');
+  assert.equal(installer.minimumVersion, '1.35.1');
   assert.equal(installer.versionSource, 'build-pin');
-  assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.34');
+  assert.equal(installer.spec, '@spala-ai/mcp-install@1.35.1');
   assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
   assert.match(String(installer.role), /project workspace binding installer.*universal fallback/i);
-  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.34']);
+  assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@1.35.1']);
   assert.deepEqual((installer.execution as Record<string, unknown>).stdin, {
     tool: 'process_stdin',
     processSource: 'running_process',
@@ -2263,25 +2263,25 @@ test('install manifest exposes machine-readable 0.1.34 installer commands and se
 test('install manifest serves the npm release the follower resolved and keeps the build floor visible', async () => {
   const packument = {
     name: '@spala-ai/mcp-install',
-    'dist-tags': { latest: '0.1.35' },
-    versions: { '0.1.34': {}, '0.1.35': {} },
+    'dist-tags': { latest: '1.35.2' },
+    versions: { '1.35.1': {}, '1.35.2': {} },
   };
   const refreshed = await refreshProjectInstallerVersion((async () => new Response(JSON.stringify(packument))) as typeof fetch);
-  assert.deepEqual(refreshed, { ok: true, version: '0.1.35', changed: true });
+  assert.deepEqual(refreshed, { ok: true, version: '1.35.2', changed: true });
   try {
     const manifest = await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`));
     const installer = manifest.installer as Record<string, unknown>;
-    assert.equal(installer.version, '0.1.35');
-    assert.equal(installer.minimumVersion, '0.1.34');
+    assert.equal(installer.version, '1.35.2');
+    assert.equal(installer.minimumVersion, '1.35.1');
     assert.equal(installer.versionSource, 'npm-registry');
-    assert.equal(installer.spec, '@spala-ai/mcp-install@0.1.35');
-    assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@0.1.35']);
+    assert.equal(installer.spec, '@spala-ai/mcp-install@1.35.2');
+    assert.deepEqual(installer.codexArgvPrefix, ['npx', '--yes', '@spala-ai/mcp-install@1.35.2']);
     assert.equal(installer.maintenanceSpec, '@spala-ai/mcp-install@latest');
   } finally {
     resetProjectInstallerVersion();
   }
   const restored = (await responseJson(await fetch(`${baseUrl}/mcp/install-manifest`))).installer as Record<string, unknown>;
-  assert.equal(restored.version, '0.1.34');
+  assert.equal(restored.version, '1.35.1');
   assert.equal(restored.versionSource, 'build-pin');
 });
 
