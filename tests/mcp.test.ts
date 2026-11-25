@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadConfig } from '../src/config.js';
+import { PROJECT_HANDOFF_COVERAGE, PROJECT_HANDOFF_COVERAGE_SHORT } from '../src/intent.js';
 import { createSpalaPublicMcpServer, SUPPORTED_INSTALL_CLIENTS } from '../src/mcp.js';
 import {
   followNpmInstallerReleases,
@@ -470,6 +471,15 @@ test('spala_start auto-scopes one organization and returns its projects', async 
       status: project.status,
       organizationId: project.organizationId,
     }]);
+    // The handoff rules travel in the result because clients cut long server instructions.
+    assert.deepEqual(body.projectHandoff, PROJECT_HANDOFF_COVERAGE);
+    assert.match(PROJECT_HANDOFF_COVERAGE.scope, /any project the signed-in account can open/);
+    assert.match(PROJECT_HANDOFF_COVERAGE.changePath, /Do not change a project's resources by editing files on its server/);
+    assert.match(PROJECT_HANDOFF_COVERAGE.missingTools, /not loaded here/);
+    // Claude Code keeps about 2,000 characters of server instructions.
+    const instructions = String(client.getInstructions());
+    const position = instructions.indexOf(PROJECT_HANDOFF_COVERAGE_SHORT);
+    assert.ok(position >= 0 && position + PROJECT_HANDOFF_COVERAGE_SHORT.length < 1000);
     assert.equal((body.installerMaintenance as Record<string, unknown>).testedVersion, '0.1.34');
     assert.deepEqual(body.nextAction, {
       type: 'ask_user_project_choice',

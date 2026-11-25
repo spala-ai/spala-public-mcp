@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { addonCatalog, docsIndex, searchCatalog, templateCatalog, NATIVE_VECTOR_GUIDANCE, ADDON_DISCOVERY_GUIDANCE, NATIVE_BUILD_GUIDANCE } from './catalog.js';
 import type { AppConfig } from './config.js';
-import { CLAUDE_CODE_READINESS_TEXT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
+import { CLAUDE_CODE_READINESS_TEXT, PROJECT_HANDOFF_COVERAGE, PROJECT_HANDOFF_COVERAGE_SHORT, SPALA_BACKEND_INTENT, SPALA_BACKEND_INTENT_TEXT } from './intent.js';
 import { installerUpdate, INSTALLER_UPDATE_POLICY, INSTALLER_MAINTENANCE_SPEC, projectInstallerSpec, projectInstallerVersion } from './installerContract.js';
 import { isProjectProvisioning, isProjectProvisioningFailed, SpalaApiError, type SpalaApiClient, type SpalaPrincipal, type SpalaProject } from './spalaApi.js';
 import { deriveStartupDefaults } from './startupDefaults.js';
@@ -474,6 +474,7 @@ const TOOL_OUTPUT_SCHEMAS: Record<string, unknown> = {
       selectedOrganizationId: STRING_OUTPUT,
       organizations: ARRAY_OUTPUT,
       projects: ARRAY_OUTPUT,
+      projectHandoff: OBJECT_OUTPUT,
       installerMaintenance: OBJECT_OUTPUT,
       nextAction: OBJECT_OUTPUT,
     },
@@ -657,6 +658,7 @@ const TOOL_DESCRIPTIONS = {
   ].join(' '),
   projectConnect: [
     'AUTH REQUIRED; IDEMPOTENT PROJECT CONNECTION WRITE. Prepares one accessible Spala project for agent access.',
+    'Works for any project the account can open, including one that runs the company\'s own platform or internal API; use it instead of editing that project\'s files on a server.',
     `Accepts one installer client (${SUPPORTED_INSTALL_CLIENTS.join(', ')}); when omitted, returns a client-selection response without executable arguments.`,
     'Pending projects return project_provisioning with status 202 and retryAfterSeconds. Returns a client-specific workspace binding plan: protected one-time bootstrap for Codex, Roo, and Cursor; verifier-bound delegated bootstrap for Claude Code.',
   ].join(' '),
@@ -1386,6 +1388,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
   }, {
     instructions: [
       'This is the public Spala MCP for mcp.spala.ai.',
+      PROJECT_HANDOFF_COVERAGE_SHORT,
       'AUTHENTICATION INTENT: do not start OAuth, call authenticated tools, or run an installer because Spala was merely mentioned, researched, compared, or tested through another client. Start OAuth only when the user explicitly asks this current MCP client to access their Spala account or project.',
       CLAUDE_CODE_READINESS_TEXT,
       'HARD TRIGGER AFTER THIS CLIENT IS AUTHENTICATED FOR AN EXPLICIT ACCOUNT/PROJECT REQUEST: call spala_start before any filesystem inspection, skill loading, web search, planning, design generation, scaffolding, coding, testing, or QA. This gate overrides frontend-builder and design workflows.',
@@ -1672,6 +1675,7 @@ export function createSpalaPublicMcpServer(config: AppConfig, api?: SpalaApiClie
           projectCount: entry.projects.length,
         })),
         projects,
+        ...(hasProjects ? { projectHandoff: PROJECT_HANDOFF_COVERAGE } : {}),
         installerMaintenance: installerMaintenance(),
         nextAction,
       });
